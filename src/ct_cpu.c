@@ -53,6 +53,32 @@ static float trilinear(const float *vol, int Nxz, int Ny,
          + c011*(1-dx)*dy*dz         + c111*dx*dy*dz;
 }
 
+/*
+ * prep_proj_for_bp: apply Python's pre-processing done at start of bp_func:
+ *   proj[:, ::-1, :].transpose(0,2,1)  →  flip H-axis, then swap W↔H axes
+ *   proj /= voxelSize
+ *
+ * Input  layout: [np][H][W]  (as loaded from HDF5, Python default)
+ * Output layout: [np][W][H]  (col-major slices, as bp_cpu expects)
+ *
+ * dst may equal src only if a temp buffer is used — caller passes separate buf.
+ */
+static void prep_proj_for_bp(const float *src, float *dst,
+                              int np, int W, int H, float voxelSize)
+{
+    for (int ip = 0; ip < np; ip++) {
+        const float *s = src + ip * H * W;
+        float       *d = dst + ip * W * H;
+        for (int iw = 0; iw < W; iw++) {
+            for (int ih = 0; ih < H; ih++) {
+                /* Python [::-1, :] on H axis: source row = (H-1-ih) */
+                /* Python .transpose(0,2,1): src[ip][ih][iw] → dst[ip][iw][ih] */
+                d[iw * H + ih] = s[(H - 1 - ih) * W + iw] / voxelSize;
+            }
+        }
+    }
+}
+
 /* ── cone weight ───────────────────────────────────────────────────────── */
 void cone_weight_cpu(float *proj, const CBpara *p)
 {
@@ -74,6 +100,10 @@ void cone_weight_cpu(float *proj, const CBpara *p)
 }
 
 /* ── backprojection ────────────────────────────────────────────────────── */
+/*
+ * proj must already be preprocessed (flip+transpose+scale via prep_proj_for_bp).
+ * Layout: [np][W][H] col-major slices.
+ */
 void bp_cpu(const float *proj, float *volume, const CBpara *p)
 {
     int Nxz = p->Volumen_num_xz;
@@ -86,8 +116,14 @@ void bp_cpu(const float *proj, float *volume, const CBpara *p)
     float px  = (float)p->pixelSize;
     int   np  = p->num_projs;
 
-    float radius    = Nxz / 2.0f - 0.5f;
-    float radius_z  = Ny  / 2.0f - 0.5f;
+    float radius   = Nxz / 2.0f - 0.5f;
+    float radius_z = Ny  / 2.0f - 0.5f;
+
+    /* a[] and b[] pixel-position arrays matching Python's _get_pixelposition */
+    float *a_arr = (float *)malloc(W * sizeof(float));
+    float *b_arr = (float *)malloc(H * sizeof(float));
+    for (int i = 0; i < W; i++) a_arr[i] = -(float)(i - (W-1)*0.5f) * px;
+    for (int i = 0; i < H; i++) b_arr[i] =  (float)(i - (H-1)*0.5f) * px;
 
     memset(volume, 0, (size_t)Nxz * Nxz * Ny * sizeof(float));
 
@@ -107,12 +143,16 @@ void bp_cpu(const float *proj, float *volume, const CBpara *p)
                     float ai = SDD * t / U;
                     float bi = zpr * SDD / U;
 
-                    const float *slice = proj + ip * H * W;
-                    float val = bilinear(slice, W, H, ai / px, bi / px);
+                    /* Convert to pixel-space coords using a_arr/b_arr mapping */
+                    float uf = ai / px;
+                    float vf = bi / px;
+
+                    const float *slice = proj + ip * W * H;
+                    float val = bilinear(slice, W, H, uf, vf);
                     sum += val * (SOD*SOD) / (U*U);
                 }
 
-                /* Final scale and flip to match Python [::-1,::-1,:] */
+                /* flip [::-1,::-1,:] to match Python output */
                 volume[VOL_IDX(Nxz-1-ix, Nxz-1-iy, iz, Nxz, Ny)] =
                     sum * (float)M_PI / (float)np;
             }
@@ -123,6 +163,7 @@ void bp_cpu(const float *proj, float *volume, const CBpara *p)
         }
     }
     printf("\n");
+    free(a_arr); free(b_arr);
 }
 
 /* ── forward projection ────────────────────────────────────────────────── */
@@ -245,27 +286,44 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
     int np   = p->num_projs;
 
     size_t vol_size  = (size_t)Nxz * Nxz * Ny;
-    size_t proj_size = (size_t)np * H * W;
+    size_t proj_size = (size_t)np * H * W;   /* [np][H][W] before prep */
+    size_t proj_size_t = (size_t)np * W * H; /* [np][W][H] after  prep */
 
-    float *b        = (float *)malloc(proj_size * sizeof(float));
-    float *ratio    = (float *)malloc(proj_size * sizeof(float));
-    float *bp_ratio = (float *)malloc(vol_size  * sizeof(float));
-    float *bp_ones  = (float *)malloc(vol_size  * sizeof(float));
-    float *ones_p   = (float *)malloc(proj_size * sizeof(float));
+    float *b        = (float *)malloc(proj_size_t * sizeof(float));
+    float *ratio    = (float *)malloc(proj_size_t * sizeof(float));
+    float *ratio_bp = (float *)malloc(proj_size_t * sizeof(float)); /* prep'd */
+    float *bp_ratio = (float *)malloc(vol_size    * sizeof(float));
+    float *bp_ones  = (float *)malloc(vol_size    * sizeof(float));
 
-    /* Precompute bp(ones) — the sensitivity / normalization volume */
-    for (size_t i = 0; i < proj_size; i++) ones_p[i] = 1.f;
+    /*
+     * Preprocess measured projections once:
+     * flip H-axis + transpose [np,H,W]->[np,W,H] + divide by voxelSize.
+     * Stored in proj_p — used as the target each epoch.
+     */
+    float *proj_p = (float *)malloc(proj_size_t * sizeof(float));
+    prep_proj_for_bp(proj_measured, proj_p, np, W, H, (float)p->voxelSize);
+
+    /* Precompute bp(ones) using prep'd all-ones projections */
+    float *ones_raw = (float *)malloc(proj_size * sizeof(float));
+    float *ones_p   = (float *)malloc(proj_size_t * sizeof(float));
+    for (size_t i = 0; i < proj_size; i++) ones_raw[i] = 1.f;
+    prep_proj_for_bp(ones_raw, ones_p, np, W, H, (float)p->voxelSize);
     bp_cpu(ones_p, bp_ones, p);
+    free(ones_raw); free(ones_p);
 
     for (int epoch = 0; epoch < epochs; epoch++) {
         printf("[epoch %d/%d]\n", epoch+1, epochs);
 
+        /* fp outputs [np][H][W] — same layout as measured projections */
         fp_cpu(volume, b, p);
 
+        /* ratio = proj_measured / b, stored as [np][H][W] */
         for (size_t i = 0; i < proj_size; i++)
             ratio[i] = (b[i] != 0.f) ? proj_measured[i] / b[i] : 0.f;
 
-        bp_cpu(ratio, bp_ratio, p);
+        /* preprocess ratio before bp */
+        prep_proj_for_bp(ratio, ratio_bp, np, W, H, (float)p->voxelSize);
+        bp_cpu(ratio_bp, bp_ratio, p);
 
         for (size_t i = 0; i < vol_size; i++) {
             float denom = bp_ones[i];
@@ -274,5 +332,5 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
         }
     }
 
-    free(b); free(ratio); free(bp_ratio); free(bp_ones); free(ones_p);
+    free(b); free(ratio); free(ratio_bp); free(bp_ratio); free(bp_ones); free(proj_p);
 }
