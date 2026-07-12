@@ -6,72 +6,112 @@ Cone-beam CT reconstruction using iterative MLEM update on CPU and GPU (OpenCL).
 
 ```
 src/
-  main.c       — argument parsing, timing, MSE reporting
-  utils.c/h    — HDF5 load/save, timing
-  ct_cpu.c/h   — CPU reference: bp, fp, cone-weight, iterative loop
-  ct_gpu.c/h   — OpenCL host code: buffer and image variants
+  main.c            — argument parsing, timing, MSE reporting
+  utils.c/h         — HDF5 load/save, timing
+  ct_cpu.c/h        — CPU reference: bp, fp, cone-weight, iterative loop
+  ct_gpu.c/h        — OpenCL host code: buffer, image, and optimized variants
 kernels/
-  bp_buffer.cl — backprojection kernel (buffer)
-  fp_buffer.cl — forward projection kernel (buffer)
-  bp_image.cl  — backprojection kernel (image2D array)
-  fp_image.cl  — forward projection kernel (image3D)
+  bp_buffer.cl      — backprojection kernel (buffer)
+  fp_buffer.cl      — forward projection kernel (buffer)
+  bp_image.cl       — backprojection kernel (image2D array, hardware sampler)
+  fp_image.cl       — forward projection kernel (image3D, hardware sampler)
+  bp_buffer_opt.cl  — optimized bp: sin/cos LUT + local mem cache + atomics
+  fp_buffer_opt.cl  — optimized fp: float3 stepping + 4x loop unroll + early exit
 ```
 
-## Build
+## Setup (lab machine — Linux with GPU)
 
+### 1. Clone and switch to features branch
+```bash
+git clone https://github.com/sananakther6642/CTreconstruction_GPU.git
+cd CTreconstruction_GPU
+git checkout features
+```
+
+### 2. Install dependencies
+```bash
+sudo apt install libhdf5-dev ocl-icd-opencl-dev opencl-headers gcc make
+```
+
+Verify OpenCL sees your GPU:
+```bash
+clinfo | head -20
+```
+
+### 3. Build
 ```bash
 make
 ```
+Produces `build/ct_recon`.
 
-Requires: `gcc`, `libhdf5-dev`, OpenCL headers + ICD loader.
-
-On lab machines (Linux):
+### 4. Get hardware info (required for report)
 ```bash
-sudo apt install libhdf5-dev ocl-icd-opencl-dev opencl-headers
-```
-
-Check GPU/CPU info for the report:
-```bash
-grep name /proc/cpuinfo | head -1
+grep "model name" /proc/cpuinfo | head -1
 lspci | grep VGA
 ```
 
 ## Run
 
+Data path `/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5` is the default — no need to pass `DATA=` on the lab machines.
+
 ```bash
 # CPU reference
-make run-cpu   DATA=/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 EPOCHS=100
+make run-cpu EPOCHS=100
 
 # GPU buffer version
-make run-gpu-buf
+make run-gpu-buf EPOCHS=100
 
-# GPU image version
-make run-gpu-img
+# GPU image version (hardware sampler)
+make run-gpu-img EPOCHS=100
+
+# GPU optimized version (LUT + local mem + float4 + loop unroll)
+make run-gpu-opt EPOCHS=100
 ```
 
-Or directly:
+Quick test with 10 epochs first to check correctness:
+```bash
+make run-cpu EPOCHS=10
+make run-gpu-buf EPOCHS=10
+make run-gpu-img EPOCHS=10
+make run-gpu-opt EPOCHS=10
+```
+
+Or run directly:
 ```bash
 ./build/ct_recon --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 \
                  --out output.hdf5 \
-                 --mode gpu-buf \
+                 --mode gpu-opt \
                  --epochs 100 \
                  --kernels kernels/
 ```
 
-Modes: `cpu`, `gpu-buf`, `gpu-img`
+Modes: `cpu`, `gpu-buf`, `gpu-img`, `gpu-opt`
 
 ## Validate (Python)
 
-```python
+First run the Python reference to get ground truth:
+```bash
+# Edit out_path in Topic_2_CTreconstruction.py, then:
+python3 Topic_2_CTreconstruction.py
+```
+
+Then compare all versions:
+```bash
+python3 - <<'EOF'
 import h5py, numpy as np
 from skimage.metrics import mean_squared_error
 
-with h5py.File('output_python.hdf5') as f: v_py  = f['Volume'][:]
-with h5py.File('output_cpu.hdf5')    as f: v_cpu = f['Volume'][:]
-with h5py.File('output_gpu_buf.hdf5')as f: v_gpu = f['Volume'][:]
+with h5py.File('output_python.hdf5')  as f: vp = f['Volume'][:]
+with h5py.File('output_cpu.hdf5')     as f: vc = f['Volume'][:]
+with h5py.File('output_gpu_buf.hdf5') as f: vb = f['Volume'][:]
+with h5py.File('output_gpu_img.hdf5') as f: vi = f['Volume'][:]
+with h5py.File('output_gpu_opt.hdf5') as f: vo = f['Volume'][:]
 
-print('MSE cpu  vs python:', mean_squared_error(v_py, v_cpu))
-print('MSE gpu  vs python:', mean_squared_error(v_py, v_gpu))
+print(f"MSE cpu     vs python: {mean_squared_error(vp, vc):.6f}")
+print(f"MSE gpu-buf vs python: {mean_squared_error(vp, vb):.6f}")
+print(f"MSE gpu-img vs python: {mean_squared_error(vp, vi):.6f}")
+print(f"MSE gpu-opt vs python: {mean_squared_error(vp, vo):.6f}")
+EOF
 ```
 
 ## Algorithm
@@ -84,5 +124,15 @@ for each epoch:
     v0    *= bp(ratio) / bp(ones)     # multiplicative update
 ```
 
-Backprojection parallelism: one work-item per voxel (ix, iy, iz).  
-Forward projection parallelism: one work-item per detector pixel (iu, iv, ip).
+Backprojection parallelism: one work-item per voxel `(ix, iy, iz)`.
+Forward projection parallelism: one work-item per detector pixel `(iu, iv, ip)`.
+
+## Optimizations (features branch)
+
+| Optimization | Kernel | Effect |
+|---|---|---|
+| Sin/cos LUT (`float2 angle_cs`) | `bp_buffer_opt.cl`, `fp_buffer_opt.cl` | Eliminates trig per voxel/pixel |
+| `__local` projection cache | `bp_buffer_opt.cl:bp_opt` | Cuts global mem reads by work-group size |
+| Angle-parallel + atomic accumulate | `bp_buffer_opt.cl:bp_angle_parallel` | 4th dimension of parallelism |
+| `float3` ray stepping + 4× unroll | `fp_buffer_opt.cl` | ILP, reduces loop overhead |
+| Early OOB exit in trilinear | `fp_buffer_opt.cl` | Skips 8 checks for out-of-volume rays |
