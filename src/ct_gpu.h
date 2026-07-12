@@ -11,7 +11,8 @@
 
 typedef enum {
     GPU_MODE_BUFFER = 0,
-    GPU_MODE_IMAGE  = 1
+    GPU_MODE_IMAGE  = 1,
+    GPU_MODE_OPT    = 2   /* optimized: LUT + local mem + float4 + unroll */
 } GPUMode;
 
 /* OpenCL context and pre-compiled kernels */
@@ -34,6 +35,12 @@ typedef struct {
     cl_kernel  k_bp_img;
     cl_kernel  k_fp_img;
 
+    /* optimized kernels */
+    cl_program prog_opt;
+    cl_kernel  k_bp_opt;
+    cl_kernel  k_bp_ang;  /* angle-parallel bp with atomics */
+    cl_kernel  k_fp_opt;
+
     GPUMode mode;
 } CLState;
 
@@ -51,5 +58,10 @@ void gpu_cleanup(CLState *cl);
 void reconstruct_gpu(CLState *cl, const CBpara *p,
                      const float *proj_measured, float *volume,
                      int epochs);
+
+/* Optimized reconstruction (LUT + local mem + float4 + loop unroll) */
+void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
+                         const float *proj_measured, float *volume,
+                         int epochs);
 
 #endif /* CT_GPU_H */

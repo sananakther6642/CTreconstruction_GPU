@@ -10,7 +10,7 @@
 static void print_usage(const char *prog)
 {
     fprintf(stderr,
-        "Usage: %s --data <file.hdf5> --out <out.hdf5> --mode <cpu|gpu-buf|gpu-img>\n"
+        "Usage: %s --data <file.hdf5> --out <out.hdf5> --mode <cpu|gpu-buf|gpu-img|gpu-opt>\n"
         "           [--epochs N]  (default: 100)\n"
         "           [--kernels <kernel_dir>]  (default: ../kernels)\n",
         prog);
@@ -99,6 +99,19 @@ int main(int argc, char **argv)
         t_end = get_time_sec();
 
         printf("GPU time: %.2f s\n", t_end - t_start);
+        gpu_cleanup(&cl);
+
+    } else if (!strcmp(mode_str, "gpu-opt")) {
+        printf("\n=== GPU-OPT mode (LUT+local+float4+unroll), %d epochs ===\n", epochs);
+
+        CLState cl;
+        if (gpu_init(&cl, GPU_MODE_OPT, kernel_dir) != 0) return 1;
+
+        t_start = get_time_sec();
+        reconstruct_gpu_opt(&cl, &para, proj_measured, volume, epochs);
+        t_end = get_time_sec();
+
+        printf("GPU-opt time: %.2f s\n", t_end - t_start);
         gpu_cleanup(&cl);
 
     } else {

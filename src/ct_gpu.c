@@ -84,10 +84,13 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
     /* Build paths */
     char path_bp_buf[512], path_fp_buf[512];
     char path_bp_img[512], path_fp_img[512];
-    snprintf(path_bp_buf, sizeof(path_bp_buf), "%s/bp_buffer.cl", kernel_dir);
-    snprintf(path_fp_buf, sizeof(path_fp_buf), "%s/fp_buffer.cl", kernel_dir);
-    snprintf(path_bp_img, sizeof(path_bp_img), "%s/bp_image.cl",  kernel_dir);
-    snprintf(path_fp_img, sizeof(path_fp_img), "%s/fp_image.cl",  kernel_dir);
+    char path_bp_opt[512], path_fp_opt[512];
+    snprintf(path_bp_buf, sizeof(path_bp_buf), "%s/bp_buffer.cl",     kernel_dir);
+    snprintf(path_fp_buf, sizeof(path_fp_buf), "%s/fp_buffer.cl",     kernel_dir);
+    snprintf(path_bp_img, sizeof(path_bp_img), "%s/bp_image.cl",      kernel_dir);
+    snprintf(path_fp_img, sizeof(path_fp_img), "%s/fp_image.cl",      kernel_dir);
+    snprintf(path_bp_opt, sizeof(path_bp_opt), "%s/bp_buffer_opt.cl", kernel_dir);
+    snprintf(path_fp_opt, sizeof(path_fp_opt), "%s/fp_buffer_opt.cl", kernel_dir);
 
     /* ── Buffer-mode program (bp + fp + utilities all in one) ── */
     {
@@ -123,18 +126,52 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "fp_image");
     }
 
+    /* ── Optimized program ── */
+    if (mode == GPU_MODE_OPT) {
+        char *src_bp   = load_source(path_bp_opt);
+        char *src_fp   = load_source(path_fp_opt);
+        /* also need utility kernels (cone_weight, proj_divide, vol_update) */
+        char *src_util = load_source(path_bp_buf);
+        char *tmp      = concat_src(src_bp, src_fp);
+        char *combined = concat_src(tmp, src_util);
+        cl->prog_opt = build_program(cl->ctx, cl->device, combined);
+        free(src_bp); free(src_fp); free(src_util); free(tmp); free(combined);
+
+        cl->k_bp_opt = clCreateKernel(cl->prog_opt, "bp_opt", &err);
+        CL_CHECK(err, "bp_opt");
+        cl->k_bp_ang = clCreateKernel(cl->prog_opt, "bp_angle_parallel", &err);
+        CL_CHECK(err, "bp_angle_parallel");
+        cl->k_fp_opt = clCreateKernel(cl->prog_opt, "fp_opt", &err);
+        CL_CHECK(err, "fp_opt");
+        /* reuse utility kernels from buffer prog */
+        cl->k_cone   = clCreateKernel(cl->prog_opt, "cone_weight", &err);
+        CL_CHECK(err, "cone_weight (opt)");
+        cl->k_divide = clCreateKernel(cl->prog_opt, "proj_divide", &err);
+        CL_CHECK(err, "proj_divide (opt)");
+        cl->k_update = clCreateKernel(cl->prog_opt, "vol_update", &err);
+        CL_CHECK(err, "vol_update (opt)");
+    }
+
     return 0;
 }
 
 void gpu_cleanup(CLState *cl)
 {
-    clReleaseKernel(cl->k_bp_buf); clReleaseKernel(cl->k_fp_buf);
-    clReleaseKernel(cl->k_cone);   clReleaseKernel(cl->k_divide);
-    clReleaseKernel(cl->k_update);
-    clReleaseProgram(cl->prog_buffer);
+    if (cl->mode != GPU_MODE_OPT) {
+        clReleaseKernel(cl->k_bp_buf); clReleaseKernel(cl->k_fp_buf);
+        clReleaseKernel(cl->k_cone);   clReleaseKernel(cl->k_divide);
+        clReleaseKernel(cl->k_update);
+        clReleaseProgram(cl->prog_buffer);
+    }
     if (cl->mode == GPU_MODE_IMAGE) {
         clReleaseKernel(cl->k_bp_img); clReleaseKernel(cl->k_fp_img);
         clReleaseProgram(cl->prog_image);
+    }
+    if (cl->mode == GPU_MODE_OPT) {
+        clReleaseKernel(cl->k_bp_opt); clReleaseKernel(cl->k_bp_ang);
+        clReleaseKernel(cl->k_fp_opt); clReleaseKernel(cl->k_cone);
+        clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
+        clReleaseProgram(cl->prog_opt);
     }
     clReleaseCommandQueue(cl->queue);
     clReleaseContext(cl->ctx);
@@ -503,4 +540,216 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     if (proj_img_array) clReleaseMemObject(proj_img_array);
     if (vol_img)        clReleaseMemObject(vol_img);
     free(ang_f);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * reconstruct_gpu_opt — uses optimized kernels (bp_opt + fp_opt)
+ *
+ * Key differences from reconstruct_gpu:
+ *  - Passes float2 angle_cs (cos/sin LUT) instead of raw angle array
+ *  - Passes __local scratch buffer sized W*H floats to bp_opt
+ *  - Uses k_bp_opt / k_fp_opt
+ * ═══════════════════════════════════════════════════════════════════════════ */
+void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
+                         const float *proj_measured, float *volume,
+                         int epochs)
+{
+    cl_int err;
+    int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
+    int W   = p->detector_width,  H  = p->detector_height;
+    int np  = p->num_projs;
+
+    size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
+    size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
+
+    /* Build float2 cos/sin LUT */
+    float *ang_cs = (float *)malloc(np * 2 * sizeof(float));
+    for (int i = 0; i < np; i++) {
+        ang_cs[2*i]   = (float)cos(p->angles[i]);
+        ang_cs[2*i+1] = (float)sin(p->angles[i]);
+    }
+
+    /* Device buffers */
+    cl_mem d_ang_cs = clCreateBuffer(cl->ctx,
+        CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR, np*2*sizeof(float), ang_cs, &err);
+    CL_CHECK(err, "d_ang_cs");
+
+    cl_mem d_proj_meas = clCreateBuffer(cl->ctx,
+        CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR, proj_bytes, (void*)proj_measured, &err);
+    CL_CHECK(err, "d_proj_meas opt");
+
+    cl_mem d_vol = clCreateBuffer(cl->ctx,
+        CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR, vol_bytes, volume, &err);
+    CL_CHECK(err, "d_vol opt");
+
+    cl_mem d_proj_b   = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+    CL_CHECK(err, "d_proj_b opt");
+    cl_mem d_ratio    = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+    CL_CHECK(err, "d_ratio opt");
+    cl_mem d_bp_ratio = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
+    CL_CHECK(err, "d_bp_ratio opt");
+    cl_mem d_bp_ones  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
+    CL_CHECK(err, "d_bp_ones opt");
+
+    /* Local memory size: W*H floats — queried against device limit */
+    size_t lmem_bytes = (size_t)W * H * sizeof(float);
+    size_t dev_lmem   = 0;
+    clGetDeviceInfo(cl->device, CL_DEVICE_LOCAL_MEM_SIZE,
+                    sizeof(dev_lmem), &dev_lmem, NULL);
+    int use_local = (lmem_bytes <= dev_lmem / 2);  /* keep half for other use */
+    if (!use_local) {
+        printf("  [opt] W*H=%d too large for __local (%zu B). "
+               "Using global fallback.\n", W*H, dev_lmem);
+        lmem_bytes = 4; /* minimal non-zero size */
+    }
+
+    /* ── Cone-weight measured projections ── */
+    {
+        cl_kernel k = cl->k_cone;
+        float SDD=(float)p->SDD, px=(float)p->pixelSize;
+        clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
+        clSetKernelArg(k,1,sizeof(int),&W);
+        clSetKernelArg(k,2,sizeof(int),&H);
+        clSetKernelArg(k,3,sizeof(float),&SDD);
+        clSetKernelArg(k,4,sizeof(float),&px);
+        size_t gws[3]={(size_t)W,(size_t)H,(size_t)np};
+        size_t lws[3]={16,16,1};
+        for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
+        err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
+        CL_CHECK(err,"cone_weight opt");
+        clFinish(cl->queue);
+    }
+
+    /* ── bp_ones ── */
+    {
+        float zero=0.f, one=1.f;
+        clEnqueueFillBuffer(cl->queue,d_bp_ones,&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
+        cl_mem d_ones_p = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+        CL_CHECK(err,"d_ones_p");
+        clEnqueueFillBuffer(cl->queue,d_ones_p,&one,sizeof(float),0,proj_bytes,0,NULL,NULL);
+        clFinish(cl->queue);
+
+        cl_kernel k = cl->k_bp_opt;
+        int ns=p->num_projs; float SOD=(float)p->SOD,SDD=(float)p->SDD;
+        float vs=(float)p->voxelSize,px=(float)p->pixelSize;
+        clSetKernelArg(k,0,sizeof(cl_mem),&d_ones_p);
+        clSetKernelArg(k,1,sizeof(cl_mem),&d_ang_cs);
+        clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
+        clSetKernelArg(k,3,lmem_bytes,NULL);
+        clSetKernelArg(k,4,sizeof(int),&Nxz);
+        clSetKernelArg(k,5,sizeof(int),&Ny);
+        clSetKernelArg(k,6,sizeof(int),&W);
+        clSetKernelArg(k,7,sizeof(int),&H);
+        clSetKernelArg(k,8,sizeof(int),&ns);
+        clSetKernelArg(k,9,sizeof(float),&SOD);
+        clSetKernelArg(k,10,sizeof(float),&SDD);
+        clSetKernelArg(k,11,sizeof(float),&vs);
+        clSetKernelArg(k,12,sizeof(float),&px);
+        size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
+        size_t lws[3]={8,8,4};
+        for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
+        err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
+        CL_CHECK(err,"bp_opt ones");
+        clFinish(cl->queue);
+        clReleaseMemObject(d_ones_p);
+        printf("  bp_opt(ones) computed.\n");
+    }
+
+    int proj_n = np*H*W;
+    int vol_n  = Nxz*Nxz*Ny;
+    int n_samples = (int)ceilf(Nxz*2.f);
+    float SOD=(float)p->SOD, SDD=(float)p->SDD;
+    float vs=(float)p->voxelSize, px=(float)p->pixelSize;
+
+    for (int epoch = 0; epoch < epochs; epoch++) {
+        printf("\r  GPU-opt epoch %d/%d", epoch+1, epochs); fflush(stdout);
+
+        /* ── fp_opt ── */
+        {
+            cl_kernel k = cl->k_fp_opt;
+            clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
+            clSetKernelArg(k,1,sizeof(cl_mem),&d_ang_cs);
+            clSetKernelArg(k,2,sizeof(cl_mem),&d_proj_b);
+            clSetKernelArg(k,3,sizeof(int),&Nxz);
+            clSetKernelArg(k,4,sizeof(int),&Ny);
+            clSetKernelArg(k,5,sizeof(int),&W);
+            clSetKernelArg(k,6,sizeof(int),&H);
+            clSetKernelArg(k,7,sizeof(int),&np);
+            clSetKernelArg(k,8,sizeof(int),&n_samples);
+            clSetKernelArg(k,9,sizeof(float),&SOD);
+            clSetKernelArg(k,10,sizeof(float),&SDD);
+            clSetKernelArg(k,11,sizeof(float),&vs);
+            clSetKernelArg(k,12,sizeof(float),&px);
+            size_t gws[3]={(size_t)W,(size_t)H,(size_t)np};
+            size_t lws[3]={16,16,1};
+            for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
+            err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
+            CL_CHECK(err,"fp_opt");
+        }
+        clFinish(cl->queue);
+
+        /* ── ratio = p0/b ── */
+        {
+            cl_kernel k = cl->k_divide;
+            clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
+            clSetKernelArg(k,1,sizeof(cl_mem),&d_proj_b);
+            clSetKernelArg(k,2,sizeof(cl_mem),&d_ratio);
+            clSetKernelArg(k,3,sizeof(int),&proj_n);
+            size_t gws=(size_t)proj_n;
+            err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
+            CL_CHECK(err,"divide opt");
+        }
+        clFinish(cl->queue);
+
+        /* ── bp_opt(ratio) ── */
+        {
+            float zero=0.f;
+            clEnqueueFillBuffer(cl->queue,d_bp_ratio,&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
+            cl_kernel k = cl->k_bp_opt;
+            clSetKernelArg(k,0,sizeof(cl_mem),&d_ratio);
+            clSetKernelArg(k,1,sizeof(cl_mem),&d_ang_cs);
+            clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ratio);
+            clSetKernelArg(k,3,lmem_bytes,NULL);
+            clSetKernelArg(k,4,sizeof(int),&Nxz);
+            clSetKernelArg(k,5,sizeof(int),&Ny);
+            clSetKernelArg(k,6,sizeof(int),&W);
+            clSetKernelArg(k,7,sizeof(int),&H);
+            clSetKernelArg(k,8,sizeof(int),&np);
+            clSetKernelArg(k,9,sizeof(float),&SOD);
+            clSetKernelArg(k,10,sizeof(float),&SDD);
+            clSetKernelArg(k,11,sizeof(float),&vs);
+            clSetKernelArg(k,12,sizeof(float),&px);
+            size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
+            size_t lws[3]={8,8,4};
+            for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
+            err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
+            CL_CHECK(err,"bp_opt ratio");
+        }
+        clFinish(cl->queue);
+
+        /* ── update ── */
+        {
+            cl_kernel k = cl->k_update;
+            clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
+            clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
+            clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
+            clSetKernelArg(k,3,sizeof(int),&vol_n);
+            size_t gws=(size_t)vol_n;
+            err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
+            CL_CHECK(err,"update opt");
+        }
+        clFinish(cl->queue);
+    }
+    printf("\n");
+
+    clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
+
+    clReleaseMemObject(d_ang_cs);
+    clReleaseMemObject(d_proj_meas);
+    clReleaseMemObject(d_vol);
+    clReleaseMemObject(d_proj_b);
+    clReleaseMemObject(d_ratio);
+    clReleaseMemObject(d_bp_ratio);
+    clReleaseMemObject(d_bp_ones);
+    free(ang_cs);
 }
