@@ -97,16 +97,27 @@ __kernel void bp_opt(
     float sum = 0.f;
     int slice_sz = W * H;
 
-    for (int ip = 0; ip < num_projs; ip++) {
+    /*
+     * USE_LOCAL_CACHE: runtime check via lmem size.
+     * If lmem was allocated W*H floats the cooperative load works.
+     * If only 16 bytes were allocated (detector too large), skip the load
+     * and read directly from global — correct but slower.
+     * We detect this by checking get_local_size product vs slice_sz.
+     */
+    int can_use_local = (lsz >= slice_sz / 4);  /* rough: group covers slice */
 
-        /* ── Cooperative load: all work-items in group fill lmem ── */
+    for (int ip = 0; ip < num_projs; ip++) {
         __global const float *gslice = proj + ip * slice_sz;
-        for (int k = lid; k < slice_sz; k += lsz)
-            lmem[k] = gslice[k];
-        barrier(CLK_LOCAL_MEM_FENCE);
+
+        if (can_use_local) {
+            /* Cooperative load into __local */
+            for (int k = lid; k < slice_sz; k += lsz)
+                lmem[k] = gslice[k];
+            barrier(CLK_LOCAL_MEM_FENCE);
+        }
 
         if (ix < Nxz && iy < Nxz && iz < Ny) {
-            float2 cs = angle_cs[ip];   /* .x=cos, .y=sin */
+            float2 cs = angle_cs[ip];
             float ca = cs.x, sa = cs.y;
 
             float U  = SOD + ypr*sa + xpr*ca;
@@ -114,11 +125,16 @@ __kernel void bp_opt(
             float ai = SDD * t / U;
             float bi = zpr * SDD / U;
 
-            float val = bilinear_opt(lmem, W, H, ai/pixelSize, bi/pixelSize, W, H);
+            float val;
+            if (can_use_local)
+                val = bilinear_opt(lmem,    W, H, ai/pixelSize, bi/pixelSize, W, H);
+            else
+                val = bilinear_opt(gslice,  W, H, ai/pixelSize, bi/pixelSize, W, H);
             sum += val * (SOD*SOD) / (U*U);
         }
 
-        barrier(CLK_LOCAL_MEM_FENCE);
+        if (can_use_local)
+            barrier(CLK_LOCAL_MEM_FENCE);
     }
 
     if (ix < Nxz && iy < Nxz && iz < Ny) {

@@ -86,6 +86,34 @@ __kernel void bp_buffer(
     volume[out_ix * Nxz * Ny + out_iy * Ny + iz] = sum;
 }
 
+/*
+ * preprocess_proj — mirrors Python's bp_func first line:
+ *   proj[:, ::-1, :].transpose(0,2,1)  then  /= voxelSize
+ *
+ * src: [num_projs * H * W]  (row-major: proj[ip][ih][iw])
+ * dst: [num_projs * W * H]  (col-major: proj[ip][iw][ih])
+ *
+ * Work-item: one element (ip, iw, ih) in dst space.
+ */
+__kernel void preprocess_proj(
+    __global const float *src,
+    __global       float *dst,
+    int   W,
+    int   H,
+    float voxelSize
+)
+{
+    int iw = get_global_id(0);
+    int ih = get_global_id(1);
+    int ip = get_global_id(2);
+    if (iw >= W || ih >= H) return;
+
+    /* flip H-axis: src row = H-1-ih; src is [H][W] per slice */
+    float val = src[ip * H * W + (H - 1 - ih) * W + iw] / voxelSize;
+    /* transpose: dst is [W][H] per slice */
+    dst[ip * W * H + iw * H + ih] = val;
+}
+
 /* ── Cone-weight kernel (apply once before iteration loop) ──────────────
  * proj: [num_projs * W * H], modified in-place
  * Work-item: one pixel (ip, iw, ih)
