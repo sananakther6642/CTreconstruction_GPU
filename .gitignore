@@ -1,0 +1,32 @@
+# Build artifacts
+build/
+*.o
+*.a
+
+# Output data
+*.hdf5
+*.h5
+
+# macOS
+.DS_Store
+
+# Reports / presentation (not source code)
+*.pptx
+*.pdf
+*.tex
+*.log
+*.aux
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+.code-review-graph/
+
+# clFFT (third-party, link as submodule or install separately)
+clFFT/

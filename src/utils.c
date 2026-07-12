@@ -1,0 +1,102 @@
+#include "utils.h"
+#include <hdf5.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
+
+static float read_float_scalar(hid_t file, const char *name)
+{
+    float v = 0.f;
+    hid_t ds = H5Dopen2(file, name, H5P_DEFAULT);
+    if (ds < 0) { fprintf(stderr, "HDF5: cannot open dataset %s\n", name); return 0.f; }
+    H5Dread(ds, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, &v);
+    H5Dclose(ds);
+    return v;
+}
+
+static int read_int_scalar(hid_t file, const char *name)
+{
+    int v = 0;
+    hid_t ds = H5Dopen2(file, name, H5P_DEFAULT);
+    if (ds < 0) { fprintf(stderr, "HDF5: cannot open dataset %s\n", name); return 0; }
+    H5Dread(ds, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, &v);
+    H5Dclose(ds);
+    return v;
+}
+
+int load_hdf5(const char *path, CBpara *para, float **projections)
+{
+    hid_t file = H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
+    if (file < 0) { fprintf(stderr, "Cannot open %s\n", path); return -1; }
+
+    para->voxelSize       = (double)read_float_scalar(file, "voxelSize");
+    para->pixelSize       = (double)read_float_scalar(file, "pixelSize");
+    para->SDD             = (double)read_float_scalar(file, "SDD");
+    para->SOD             = (double)read_float_scalar(file, "SOD");
+    para->Volumen_num_xz  = read_int_scalar(file, "Volumen_num_xz");
+    para->Volumen_num_y   = read_int_scalar(file, "Volumen_num_y");
+    para->detector_width  = read_int_scalar(file, "detector_width");
+    para->detector_height = read_int_scalar(file, "detector_height");
+    para->num_projs       = read_int_scalar(file, "num_projs");
+
+    /* Load angles */
+    para->angles = (double *)malloc(para->num_projs * sizeof(double));
+    {
+        hid_t ds = H5Dopen2(file, "Angle", H5P_DEFAULT);
+        H5Dread(ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, para->angles);
+        H5Dclose(ds);
+    }
+
+    /* Load projections [num_projs, H, W] */
+    {
+        size_t n = (size_t)para->num_projs *
+                   (size_t)para->detector_height *
+                   (size_t)para->detector_width;
+        *projections = (float *)malloc(n * sizeof(float));
+        hid_t ds = H5Dopen2(file, "Projection", H5P_DEFAULT);
+        H5Dread(ds, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, *projections);
+        H5Dclose(ds);
+    }
+
+    H5Fclose(file);
+    return 0;
+}
+
+int save_hdf5(const char *path, const CBpara *para, const float *volume)
+{
+    hid_t file = H5Fcreate(path, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    if (file < 0) { fprintf(stderr, "Cannot create %s\n", path); return -1; }
+
+    /* voxelSize scalar */
+    {
+        hsize_t dims[1] = {1};
+        hid_t sp = H5Screate_simple(1, dims, NULL);
+        float v = (float)para->voxelSize;
+        hid_t ds = H5Dcreate2(file, "voxelSize", H5T_NATIVE_FLOAT, sp,
+                               H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        H5Dwrite(ds, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, &v);
+        H5Dclose(ds); H5Sclose(sp);
+    }
+
+    /* Volume [Nxz, Nxz, Ny] */
+    {
+        hsize_t dims[3] = {(hsize_t)para->Volumen_num_xz,
+                           (hsize_t)para->Volumen_num_xz,
+                           (hsize_t)para->Volumen_num_y};
+        hid_t sp = H5Screate_simple(3, dims, NULL);
+        hid_t ds = H5Dcreate2(file, "Volume", H5T_NATIVE_FLOAT, sp,
+                               H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        H5Dwrite(ds, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, volume);
+        H5Dclose(ds); H5Sclose(sp);
+    }
+
+    H5Fclose(file);
+    return 0;
+}
+
+double get_time_sec(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
