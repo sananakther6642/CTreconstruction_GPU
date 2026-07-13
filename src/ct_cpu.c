@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <omp.h>
 
 /* ── index helpers ─────────────────────────────────────────────────────── */
 #define PROJ_IDX(p, h, w, H, W)  ((p)*(H)*(W) + (h)*(W) + (w))
@@ -103,6 +104,12 @@ void cone_weight_cpu(float *proj, const CBpara *p)
 /*
  * proj must already be preprocessed (flip+transpose+scale via prep_proj_for_bp).
  * Layout: [np][W][H] col-major slices.
+ *
+ * Optimizations vs naive version:
+ *  1. OMP: angle loop parallelized, per-thread accumulation buffer avoids atomics
+ *  2. Angle outer / voxels inner: each thread streams one full proj slice → cache
+ *  3. x_sin/x_cos hoisted out of j/k loops
+ *  4. 1/U multiply instead of division
  */
 void bp_cpu(const float *proj, float *volume, const CBpara *p)
 {
@@ -110,60 +117,95 @@ void bp_cpu(const float *proj, float *volume, const CBpara *p)
     int Ny   = p->Volumen_num_y;
     int W    = p->detector_width;
     int H    = p->detector_height;
-    float SOD = (float)p->SOD;
-    float SDD = (float)p->SDD;
-    float vs  = (float)p->voxelSize;
-    float px  = (float)p->pixelSize;
-    int   np  = p->num_projs;
+    float SOD  = (float)p->SOD;
+    float SDD  = (float)p->SDD;
+    float vs   = (float)p->voxelSize;
+    float px   = (float)p->pixelSize;
+    int   np   = p->num_projs;
+    float sod2 = SOD * SOD;
 
-    float radius   = Nxz / 2.0f - 0.5f;
-    float radius_z = Ny  / 2.0f - 0.5f;
+    float radius   = Nxz * 0.5f - 0.5f;
+    float radius_z = Ny  * 0.5f - 0.5f;
+    size_t vol_n   = (size_t)Nxz * Nxz * Ny;
 
-    /* a[] and b[] pixel-position arrays matching Python's _get_pixelposition */
-    float *a_arr = (float *)malloc(W * sizeof(float));
-    float *b_arr = (float *)malloc(H * sizeof(float));
-    for (int i = 0; i < W; i++) a_arr[i] = -(float)(i - (W-1)*0.5f) * px;
-    for (int i = 0; i < H; i++) b_arr[i] =  (float)(i - (H-1)*0.5f) * px;
+    /* Precompute LUT: a_min and step for detector pixel → ai conversion */
+    /* proj slice layout [W][H]: row iw col ih */
+    /* a_min = a[0] = -(0 - (W-1)/2)*px, step = px (positive direction) */
+    float a_min = -(0.f - (W-1)*0.5f) * px;  /* = (W-1)/2 * px */
+    float da    = -px;                          /* a decreases as iw increases */
+    float b_min =  (0.f - (H-1)*0.5f) * px;
+    float db    =  px;
 
-    memset(volume, 0, (size_t)Nxz * Nxz * Ny * sizeof(float));
+    /* Per-thread accumulation buffers to avoid false-sharing */
+    int nthreads;
+    #pragma omp parallel
+    { nthreads = omp_get_num_threads(); }
 
-    for (int ix = 0; ix < Nxz; ix++) {
-        float xpr = ((float)ix - radius) * vs;
-        for (int iy = 0; iy < Nxz; iy++) {
-            float ypr = ((float)iy - radius) * vs;
-            for (int iz = 0; iz < Ny; iz++) {
-                float zpr = ((float)iz - radius_z) * vs;
-                float sum = 0.f;
+    float **tbuf = (float **)malloc(nthreads * sizeof(float *));
+    for (int t = 0; t < nthreads; t++) {
+        tbuf[t] = (float *)calloc(vol_n, sizeof(float));
+    }
 
-                for (int ip = 0; ip < np; ip++) {
-                    float angle = (float)p->angles[ip];
-                    float ca = cosf(angle), sa = sinf(angle);
-                    float U  = SOD + ypr*sa + xpr*ca;
-                    float t  = ypr*ca - xpr*sa;
-                    float ai = SDD * t / U;
-                    float bi = zpr * SDD / U;
+    /* Precompute cos/sin LUT */
+    float *ca_lut = (float *)malloc(np * sizeof(float));
+    float *sa_lut = (float *)malloc(np * sizeof(float));
+    for (int ip = 0; ip < np; ip++) {
+        ca_lut[ip] = cosf((float)p->angles[ip]);
+        sa_lut[ip] = sinf((float)p->angles[ip]);
+    }
 
-                    /* Convert to pixel-space coords using a_arr/b_arr mapping */
-                    float uf = ai / px;
-                    float vf = bi / px;
+    #pragma omp parallel for schedule(dynamic,1)
+    for (int ip = 0; ip < np; ip++) {
+        int tid    = omp_get_thread_num();
+        float *buf = tbuf[tid];
+        float  ca  = ca_lut[ip], sa = sa_lut[ip];
+        const float *slice = proj + ip * W * H;
 
-                    const float *slice = proj + ip * W * H;
-                    float val = bilinear(slice, W, H, uf, vf);
-                    sum += val * (SOD*SOD) / (U*U);
+        for (int ix = 0; ix < Nxz; ix++) {
+            float xpr   = ((float)ix - radius) * vs;
+            float x_sin = xpr * sa;
+            float x_cos = xpr * ca;
+
+            for (int iy = 0; iy < Nxz; iy++) {
+                float ypr = ((float)iy - radius) * vs;
+                float t   = ypr * ca - x_sin;
+                float U   = SOD + ypr * sa + x_cos;
+                float Uinv = 1.f / U;
+                float ai  = SDD * t * Uinv;
+                float w   = sod2 * Uinv * Uinv;
+                float zf  = SDD * Uinv;
+
+                /* Convert ai to image index */
+                float uf = (ai - a_min) / da;
+                if (uf < 0.f || uf >= (float)(W-1)) continue;
+                int u0 = (int)uf; float du = uf - u0;
+
+                for (int iz = 0; iz < Ny; iz++) {
+                    float zpr = ((float)iz - radius_z) * vs;
+                    float bi  = zpr * zf;
+                    float vf  = (bi - b_min) / db;
+                    if (vf < 0.f || vf >= (float)(H-1)) continue;
+                    int v0 = (int)vf; float dv = vf - v0;
+
+                    float val = (slice[u0*H+v0]    * (1-du) + slice[(u0+1)*H+v0]    * du) * (1-dv)
+                              + (slice[u0*H+v0+1]  * (1-du) + slice[(u0+1)*H+v0+1]  * du) * dv;
+
+                    /* flip output indices to match Python [::-1,::-1,:] */
+                    buf[VOL_IDX(Nxz-1-ix, Nxz-1-iy, iz, Nxz, Ny)] += val * w;
                 }
-
-                /* flip [::-1,::-1,:] to match Python output */
-                volume[VOL_IDX(Nxz-1-ix, Nxz-1-iy, iz, Nxz, Ny)] =
-                    sum * (float)M_PI / (float)np;
             }
         }
-        if (ix % 32 == 0) {
-            printf("\r  bp_cpu: %d/%d slices done", ix+1, Nxz);
-            fflush(stdout);
-        }
     }
-    printf("\n");
-    free(a_arr); free(b_arr);
+
+    /* Reduce thread buffers */
+    float scale = (float)M_PI / (float)np;
+    memset(volume, 0, vol_n * sizeof(float));
+    for (int t = 0; t < nthreads; t++) {
+        for (size_t i = 0; i < vol_n; i++)
+            volume[i] += tbuf[t][i] * scale;
+        free(tbuf[t]);
+    }
+    free(tbuf); free(ca_lut); free(sa_lut);
 }
 
 /* ── forward projection ────────────────────────────────────────────────── */
@@ -227,6 +269,7 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
 
     memset(proj, 0, (size_t)np * H * W * sizeof(float));
 
+    #pragma omp parallel for schedule(dynamic,1)
     for (int ip = 0; ip < np; ip++) {
         float angle = (float)p->angles[ip];
         float R[3][3], T[3];
@@ -267,12 +310,7 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
                 slice[iv*W + iu] = val;
             }
         }
-        if (ip % 5 == 0) {
-            printf("\r  fp_cpu: %d/%d projections done", ip+1, np);
-            fflush(stdout);
-        }
     }
-    printf("\n");
 }
 
 /* ── iterative reconstruction loop ────────────────────────────────────── */
