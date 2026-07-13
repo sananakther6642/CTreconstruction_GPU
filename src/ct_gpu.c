@@ -405,31 +405,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     cl_mem d_bp_ones   = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes,  NULL, &err);
     CL_CHECK(err, "d_bp_ones");
 
-    /* Apply cone weight to raw [np][H][W] measured projections once */
-    {
-        cl_kernel k = cl->k_cone_hw;
-        float SDD=(float)p->SDD, px=(float)p->pixelSize;
-        clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
-        clSetKernelArg(k,1,sizeof(int),&W);
-        clSetKernelArg(k,2,sizeof(int),&H);
-        clSetKernelArg(k,3,sizeof(float),&SDD);
-        clSetKernelArg(k,4,sizeof(float),&px);
-        size_t gws[3]={(size_t)W,(size_t)H,(size_t)np};
-        size_t lws[3]={16,16,1};
-        for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
-        err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
-        CL_CHECK(err,"cone_weight_hw");
-        clFinish(cl->queue);
-    }
-
-    /*
-     * Preprocess measured projections once:
-     *   flip H-axis + transpose [np,H,W]→[np,W,H] + /voxelSize
-     * Result in d_proj_prep — used as bp target each epoch.
-     * d_proj_meas now holds cone-weighted raw data for ratio = p0/b.
-     */
-    run_preprocess(cl, p, d_proj_meas, d_proj_prep);
-    clFinish(cl->queue);
+    /* d_proj_meas stays raw — cone weight applied to ratio after divide, matching Python */
 
     /* ── Precompute bp(ones) ── */
     {
@@ -593,6 +569,24 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             free(dbg);
         }
 
+        /* cone-weight ratio in-place (raw [np,H,W]) before preprocess+bp
+         * matches Python: bp_f(result) applies cone_weight inside bp_func */
+        {
+            cl_kernel k = cl->k_cone_hw;
+            float SDD=(float)p->SDD, px=(float)p->pixelSize;
+            clSetKernelArg(k,0,sizeof(cl_mem),&d_ratio);
+            clSetKernelArg(k,1,sizeof(int),&W);
+            clSetKernelArg(k,2,sizeof(int),&H);
+            clSetKernelArg(k,3,sizeof(float),&SDD);
+            clSetKernelArg(k,4,sizeof(float),&px);
+            size_t gws[3]={(size_t)W,(size_t)H,(size_t)np};
+            size_t lws[3]={16,16,1};
+            for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
+            err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
+            CL_CHECK(err,"cone_weight ratio");
+            clFinish(cl->queue);
+        }
+
         /* preprocess ratio → d_ratio_prep before passing to bp */
         run_preprocess(cl, p, d_ratio, d_ratio_prep);
         clFinish(cl->queue);
@@ -661,7 +655,20 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             free(dbg);
         }
 
-        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
+        /* DEBUG: vol stats every epoch */
+        {
+            float *dbg = (float*)malloc(vol_bytes);
+            clEnqueueReadBuffer(cl->queue,d_vol,CL_TRUE,0,vol_bytes,dbg,0,NULL,NULL);
+            float mn=dbg[0],mx=dbg[0]; int nnan=0,ninf=0;
+            for(int i=0;i<vol_n;i++){
+                if(isnan(dbg[i]))nnan++;
+                else if(isinf(dbg[i]))ninf++;
+                else{if(dbg[i]<mn)mn=dbg[i];if(dbg[i]>mx)mx=dbg[i];}
+            }
+            printf("  epoch %3d/%d  %.3f s  vol=[%.4f,%.4f] nan=%d inf=%d\n",
+                   epoch+1, epochs, get_time_sec()-t_ep, mn, mx, nnan, ninf);
+            free(dbg);
+        }
     }
 
     /* Read back result */
@@ -747,25 +754,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     /* image format for proj image array */
     cl_image_format img_fmt = {CL_R, CL_FLOAT};
 
-    /* Apply cone weight to raw [np][H][W] measured projections once */
-    {
-        cl_kernel k = cl->k_cone_hw;
-        float SDD=(float)p->SDD, px=(float)p->pixelSize;
-        clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
-        clSetKernelArg(k,1,sizeof(int),&W);
-        clSetKernelArg(k,2,sizeof(int),&H);
-        clSetKernelArg(k,3,sizeof(float),&SDD);
-        clSetKernelArg(k,4,sizeof(float),&px);
-        size_t gws[3]={(size_t)W,(size_t)H,(size_t)np};
-        size_t lws[3]={16,16,1};
-        for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
-        err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
-        CL_CHECK(err,"cone_weight_hw opt");
-        clFinish(cl->queue);
-    }
-
-    /* Preprocess measured projections once: flip+transpose+scale → d_proj_prep */
-    run_preprocess(cl, p, d_proj_meas, d_proj_prep);
+    /* d_proj_meas stays raw — cone weight applied to ratio after divide, matching Python */
     clFinish(cl->queue);
 
     /* ── bp_ones: preprocess all-ones → image, run bp_opt ── */
@@ -889,6 +878,23 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             }
             printf("  [DBG-OPT] ratio ep1: min=%.4f max=%.4f nan=%d inf=%d\n",mn,mx,nnan,ninf);
             free(dbg);
+        }
+
+        /* cone-weight ratio in-place (raw [np,H,W]) — matches Python bp_func */
+        {
+            cl_kernel k = cl->k_cone_hw;
+            float SDD=(float)p->SDD, px=(float)p->pixelSize;
+            clSetKernelArg(k,0,sizeof(cl_mem),&d_ratio);
+            clSetKernelArg(k,1,sizeof(int),&W);
+            clSetKernelArg(k,2,sizeof(int),&H);
+            clSetKernelArg(k,3,sizeof(float),&SDD);
+            clSetKernelArg(k,4,sizeof(float),&px);
+            size_t gws[3]={(size_t)W,(size_t)H,(size_t)np};
+            size_t lws[3]={16,16,1};
+            for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
+            err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
+            CL_CHECK(err,"cone_weight ratio opt");
+            clFinish(cl->queue);
         }
 
         /* preprocess ratio → d_ratio_prep */
