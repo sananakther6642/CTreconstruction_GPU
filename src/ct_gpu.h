@@ -30,6 +30,7 @@ typedef struct {
     cl_kernel  k_divide;
     cl_kernel  k_update;
     cl_kernel  k_preproc;  /* flip+transpose+scale proj before bp */
+    cl_kernel  k_cone_hw;  /* cone weight for raw [np][H][W] layout */
 
     /* image-mode kernels */
     cl_program prog_image;

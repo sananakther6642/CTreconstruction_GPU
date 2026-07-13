@@ -139,6 +139,28 @@ __kernel void cone_weight(
     proj[ip * W * H + iw * H + ih] *= w;
 }
 
+/*
+ * cone_weight_hw — cone weight for raw [np][H][W] layout (row-major).
+ * Same formula as cone_weight but index order matches HDF5-loaded data.
+ */
+__kernel void cone_weight_hw(
+    __global float *proj,
+    int   W,
+    int   H,
+    float SDD,
+    float pixelSize
+)
+{
+    int iw = get_global_id(0);
+    int ih = get_global_id(1);
+    int ip = get_global_id(2);
+    if (iw >= W || ih >= H) return;
+    float u = (-(float)(iw - (W-1)*0.5f)) * pixelSize;
+    float v = (  (float)(ih - (H-1)*0.5f)) * pixelSize;
+    float w = SDD / sqrt(SDD*SDD + u*u + v*v);
+    proj[ip * H * W + ih * W + iw] *= w;
+}
+
 /* ── Divide projections element-wise: ratio = p0 / b ──────────────────── */
 __kernel void proj_divide(
     __global const float *p0,
