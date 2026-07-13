@@ -486,7 +486,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     int vol_n  = Nxz * Nxz * Ny;
 
     for (int epoch = 0; epoch < epochs; epoch++) {
-        printf("\r  GPU epoch %d/%d", epoch+1, epochs); fflush(stdout);
+        double t_ep = get_time_sec();
 
         /* forward project: b = F(v0) */
         if (cl->mode == GPU_MODE_BUFFER) {
@@ -562,8 +562,8 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             CL_CHECK(err,"vol_update");
         }
         clFinish(cl->queue);
+        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
     }
-    printf("\n");
 
     /* Read back result */
     clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
@@ -715,7 +715,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
     for (int epoch = 0; epoch < epochs; epoch++) {
-        printf("\r  GPU-opt epoch %d/%d", epoch+1, epochs); fflush(stdout);
+        double t_ep = get_time_sec();
 
         /* ── fp_opt ── */
         {
@@ -796,8 +796,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             CL_CHECK(err,"update opt");
         }
         clFinish(cl->queue);
+        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
     }
-    printf("\n");
 
     clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
 

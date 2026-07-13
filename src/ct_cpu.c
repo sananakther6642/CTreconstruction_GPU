@@ -312,7 +312,7 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
     free(ones_raw); free(ones_p);
 
     for (int epoch = 0; epoch < epochs; epoch++) {
-        printf("[epoch %d/%d]\n", epoch+1, epochs);
+        double t_ep = get_time_sec();
 
         /* fp outputs [np][H][W] — same layout as measured projections */
         fp_cpu(volume, b, p);
@@ -330,6 +330,7 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
             if (denom > 1e-10f)
                 volume[i] *= bp_ratio[i] / denom;
         }
+        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
     }
 
     free(b); free(ratio); free(ratio_bp); free(bp_ratio); free(bp_ones); free(proj_p);
