@@ -451,18 +451,22 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         if (cl->mode == GPU_MODE_BUFFER) {
             run_bp_buffer(cl, p, d_ones_prep, d_angles, d_bp_ones);
         } else {
+            /* ones_prep is already [np][W][H] with /voxelSize applied —
+             * same scale as ratio_prep, so bp_ones/bp_ratio cancel correctly */
             cl_image_format fmt = {CL_R, CL_FLOAT};
             cl_image_desc desc = {0};
             desc.image_type       = CL_MEM_OBJECT_IMAGE2D_ARRAY;
             desc.image_width      = (size_t)W;
             desc.image_height     = (size_t)H;
             desc.image_array_size = (size_t)np;
-            float *ones_h = (float*)malloc(proj_bytes);
-            for (size_t i=0;i<(size_t)np*H*W;i++) ones_h[i]=1.f;
-            cl_mem ones_img = clCreateImage(cl->ctx,
-                CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR, &fmt, &desc, ones_h, &err);
+            cl_mem ones_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &fmt, &desc, NULL, &err);
             CL_CHECK(err,"ones_img");
-            free(ones_h);
+            size_t oorigin[3]={0,0,0};
+            size_t oregion[3]={(size_t)W,(size_t)H,(size_t)np};
+            err = clEnqueueCopyBufferToImage(cl->queue, d_ones_prep, ones_img,
+                                             0, oorigin, oregion, 0, NULL, NULL);
+            CL_CHECK(err,"CopyBufferToImage ones_prep");
+            clFinish(cl->queue);
             run_bp_image(cl, p, ones_img, d_angles, d_bp_ones);
             clReleaseMemObject(ones_img);
         }
@@ -547,13 +551,18 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         if (epoch == 0) {
             float *dbg = (float*)malloc(proj_bytes);
             clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0, proj_bytes, dbg, 0,NULL,NULL);
-            float mn=dbg[0],mx=dbg[0]; int nnan=0,ninf=0;
+            float mn=dbg[0],mx=dbg[0],nz_min=1e30f; int nnan=0,ninf=0,nzero=0;
             for (size_t i=0;i<(size_t)np*H*W;i++){
                 if(isnan(dbg[i]))nnan++;
                 else if(isinf(dbg[i]))ninf++;
-                else{if(dbg[i]<mn)mn=dbg[i];if(dbg[i]>mx)mx=dbg[i];}
+                else{
+                    if(dbg[i]<mn)mn=dbg[i];if(dbg[i]>mx)mx=dbg[i];
+                    if(dbg[i]<=0.f)nzero++;
+                    else if(dbg[i]<nz_min)nz_min=dbg[i];
+                }
             }
-            printf("  [DBG] d_proj_b (fp output) ep1: min=%.4f max=%.4f nan=%d inf=%d\n",mn,mx,nnan,ninf);
+            printf("  [DBG] fp ep1: min=%.6f max=%.4f nzmin=%.2e zeros=%d nan=%d inf=%d\n",
+                   mn,mx,nz_min,nzero,nnan,ninf);
             free(dbg);
         }
 
@@ -569,6 +578,20 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             CL_CHECK(err,"proj_divide");
         }
         clFinish(cl->queue);
+
+        /* DEBUG epoch 1: ratio after proj_divide */
+        if (epoch == 0) {
+            float *dbg = (float*)malloc(proj_bytes);
+            clEnqueueReadBuffer(cl->queue, d_ratio, CL_TRUE, 0, proj_bytes, dbg, 0,NULL,NULL);
+            float mn=dbg[0],mx=dbg[0]; int nnan=0,ninf=0;
+            for (size_t i=0;i<(size_t)proj_n;i++){
+                if(isnan(dbg[i]))nnan++;
+                else if(isinf(dbg[i]))ninf++;
+                else{if(dbg[i]<mn)mn=dbg[i];if(dbg[i]>mx)mx=dbg[i];}
+            }
+            printf("  [DBG] ratio ep1: min=%.4f max=%.4f nan=%d inf=%d\n",mn,mx,nnan,ninf);
+            free(dbg);
+        }
 
         /* preprocess ratio → d_ratio_prep before passing to bp */
         run_preprocess(cl, p, d_ratio, d_ratio_prep);
@@ -745,22 +768,38 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     run_preprocess(cl, p, d_proj_meas, d_proj_prep);
     clFinish(cl->queue);
 
-    /* ── bp_ones: create image of all-ones, run bp_opt ── */
+    /* ── bp_ones: preprocess all-ones → image, run bp_opt ── */
     {
+        /* Build ones_prep: ones raw → preprocess (flip+transpose+/voxelSize)
+         * Must match ratio_prep scale so bp_ones/bp_ratio cancel correctly */
+        cl_mem d_ones_raw  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+        CL_CHECK(err,"d_ones_raw opt");
+        cl_mem d_ones_prep = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+        CL_CHECK(err,"d_ones_prep opt");
+        float one=1.f;
+        clEnqueueFillBuffer(cl->queue, d_ones_raw, &one, sizeof(float), 0, proj_bytes, 0, NULL, NULL);
+        clFinish(cl->queue);
+        run_preprocess(cl, p, d_ones_raw, d_ones_prep);
+        clFinish(cl->queue);
+        clReleaseMemObject(d_ones_raw);
+
         float zero=0.f;
         clEnqueueFillBuffer(cl->queue,d_bp_ones,&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
         clFinish(cl->queue);
 
-        float *ones_h = (float*)malloc(proj_bytes);
-        for (size_t i = 0; i < (size_t)np*H*W; i++) ones_h[i] = 1.f;
         cl_image_desc idesc={0};
         idesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
         idesc.image_width=(size_t)W; idesc.image_height=(size_t)H;
         idesc.image_array_size=(size_t)np;
-        cl_mem ones_img = clCreateImage(cl->ctx,
-            CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR, &img_fmt, &idesc, ones_h, &err);
+        cl_mem ones_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &img_fmt, &idesc, NULL, &err);
         CL_CHECK(err,"ones_img opt");
-        free(ones_h);
+        size_t oorigin[3]={0,0,0};
+        size_t oregion[3]={(size_t)W,(size_t)H,(size_t)np};
+        err = clEnqueueCopyBufferToImage(cl->queue, d_ones_prep, ones_img,
+                                         0, oorigin, oregion, 0, NULL, NULL);
+        CL_CHECK(err,"CopyBufferToImage ones_prep opt");
+        clFinish(cl->queue);
+        clReleaseMemObject(d_ones_prep);
 
         cl_kernel k = cl->k_bp_opt;
         int ns=np; float SOD=(float)p->SOD,SDD=(float)p->SDD;
@@ -837,6 +876,20 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             CL_CHECK(err,"divide opt");
         }
         clFinish(cl->queue);
+
+        /* DEBUG epoch 1: ratio after proj_divide (opt) */
+        if (epoch == 0) {
+            float *dbg = (float*)malloc(proj_bytes);
+            clEnqueueReadBuffer(cl->queue, d_ratio, CL_TRUE, 0, proj_bytes, dbg, 0,NULL,NULL);
+            float mn=dbg[0],mx=dbg[0]; int nnan=0,ninf=0;
+            for (size_t i=0;i<(size_t)proj_n;i++){
+                if(isnan(dbg[i]))nnan++;
+                else if(isinf(dbg[i]))ninf++;
+                else{if(dbg[i]<mn)mn=dbg[i];if(dbg[i]>mx)mx=dbg[i];}
+            }
+            printf("  [DBG-OPT] ratio ep1: min=%.4f max=%.4f nan=%d inf=%d\n",mn,mx,nnan,ninf);
+            free(dbg);
+        }
 
         /* preprocess ratio → d_ratio_prep */
         run_preprocess(cl, p, d_ratio, d_ratio_prep);

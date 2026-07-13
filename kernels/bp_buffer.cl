@@ -171,7 +171,7 @@ __kernel void proj_divide(
 {
     int i = get_global_id(0);
     if (i >= n) return;
-    ratio[i] = (b[i] != 0.f) ? p0[i] / b[i] : 0.f;
+    ratio[i] = (b[i] > 1e-3f) ? p0[i] / b[i] : 0.f;
 }
 
 /* ── Update volume: v0 *= bp_ratio / bp_ones ──────────────────────────── */
