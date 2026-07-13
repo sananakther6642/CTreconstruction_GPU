@@ -117,8 +117,8 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "preprocess_proj");
     }
 
-    /* ── Image-mode program ── */
-    if (mode == GPU_MODE_IMAGE) {
+    /* ── Image-mode program (also used by OPT for fp_image) ── */
+    if (mode == GPU_MODE_IMAGE || mode == GPU_MODE_OPT) {
         char *src_bp  = load_source(path_bp_img);
         char *src_fp  = load_source(path_fp_img);
         char *combined = concat_src(src_bp, src_fp);
@@ -176,7 +176,9 @@ void gpu_cleanup(CLState *cl)
         clReleaseKernel(cl->k_bp_opt); clReleaseKernel(cl->k_bp_ang);
         clReleaseKernel(cl->k_fp_opt); clReleaseKernel(cl->k_cone);
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
+        clReleaseKernel(cl->k_fp_img); clReleaseKernel(cl->k_bp_img);
         clReleaseProgram(cl->prog_opt);
+        clReleaseProgram(cl->prog_image);
     }
     clReleaseCommandQueue(cl->queue);
     clReleaseContext(cl->ctx);
@@ -605,17 +607,22 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
     size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
 
-    /* Build float2 cos/sin LUT */
+    /* Build float2 cos/sin LUT + raw float angles for fp_image */
     float *ang_cs = (float *)malloc(np * 2 * sizeof(float));
+    float *ang_f  = (float *)malloc(np * sizeof(float));
     for (int i = 0; i < np; i++) {
         ang_cs[2*i]   = (float)cos(p->angles[i]);
         ang_cs[2*i+1] = (float)sin(p->angles[i]);
+        ang_f[i]      = (float)p->angles[i];
     }
 
     /* Device buffers */
     cl_mem d_ang_cs = clCreateBuffer(cl->ctx,
         CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR, np*2*sizeof(float), ang_cs, &err);
     CL_CHECK(err, "d_ang_cs");
+    cl_mem d_angles = clCreateBuffer(cl->ctx,
+        CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR, np*sizeof(float), ang_f, &err);
+    CL_CHECK(err, "d_angles opt");
 
     cl_mem d_proj_meas = clCreateBuffer(cl->ctx,
         CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR, proj_bytes, (void*)proj_measured, &err);
@@ -714,34 +721,39 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     float SOD=(float)p->SOD, SDD=(float)p->SDD;
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
+    /* Persistent image2d_array for ratio — reused every epoch via CopyBufferToImage */
+    cl_image_desc rdesc={0};
+    rdesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
+    rdesc.image_width=(size_t)W; rdesc.image_height=(size_t)H;
+    rdesc.image_array_size=(size_t)np;
+    cl_mem ratio_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &img_fmt, &rdesc, NULL, &err);
+    CL_CHECK(err,"ratio_img persistent");
+
+    /* Persistent image3D for volume — rebuilt each epoch */
+    cl_mem vol_img = NULL;
+
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
 
-        /* ── fp_opt ── */
+        /* ── fp: use fp_image with image3D volume (texture cache) ── */
         {
-            cl_kernel k = cl->k_fp_opt;
-            clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
-            clSetKernelArg(k,1,sizeof(cl_mem),&d_ang_cs);
-            clSetKernelArg(k,2,sizeof(cl_mem),&d_proj_b);
-            clSetKernelArg(k,3,sizeof(int),&Nxz);
-            clSetKernelArg(k,4,sizeof(int),&Ny);
-            clSetKernelArg(k,5,sizeof(int),&W);
-            clSetKernelArg(k,6,sizeof(int),&H);
-            clSetKernelArg(k,7,sizeof(int),&np);
-            clSetKernelArg(k,8,sizeof(int),&n_samples);
-            clSetKernelArg(k,9,sizeof(float),&SOD);
-            clSetKernelArg(k,10,sizeof(float),&SDD);
-            clSetKernelArg(k,11,sizeof(float),&vs);
-            clSetKernelArg(k,12,sizeof(float),&px);
-            size_t gws[3]={(size_t)W,(size_t)H,(size_t)np};
-            size_t lws[3]={16,16,1};
-            for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
-            err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
-            CL_CHECK(err,"fp_opt");
+            float *vol_h = (float*)malloc(vol_bytes);
+            clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, vol_h, 0,NULL,NULL);
+            if (vol_img) clReleaseMemObject(vol_img);
+            cl_image_desc vdesc={0};
+            vdesc.image_type=CL_MEM_OBJECT_IMAGE3D;
+            vdesc.image_width=(size_t)Ny;
+            vdesc.image_height=(size_t)Nxz;
+            vdesc.image_depth=(size_t)Nxz;
+            vol_img = clCreateImage(cl->ctx,
+                CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR, &img_fmt, &vdesc, vol_h, &err);
+            CL_CHECK(err,"vol_img opt");
+            free(vol_h);
+            run_fp_image(cl, p, vol_img, d_angles, d_proj_b);
         }
         clFinish(cl->queue);
 
-        /* ── ratio = p0/b  (raw [np,H,W] layout) ── */
+        /* ── ratio = p0/b ── */
         {
             cl_kernel k = cl->k_divide;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
@@ -754,28 +766,24 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         }
         clFinish(cl->queue);
 
-        /* preprocess ratio → d_ratio_prep before bp */
+        /* preprocess ratio → d_ratio_prep */
         run_preprocess(cl, p, d_ratio, d_ratio_prep);
         clFinish(cl->queue);
 
-        /* ── bp_opt(ratio_prep): upload ratio buffer as image, run kernel ── */
+        /* ── copy d_ratio_prep buffer → ratio_img (no host roundtrip) ── */
+        {
+            size_t origin[3]={0,0,0};
+            size_t region[3]={(size_t)W,(size_t)H,(size_t)np};
+            err=clEnqueueCopyBufferToImage(cl->queue, d_ratio_prep, ratio_img,
+                                           0, origin, region, 0, NULL, NULL);
+            CL_CHECK(err,"CopyBufferToImage ratio");
+        }
+        clFinish(cl->queue);
+
+        /* ── bp_opt(ratio_img) ── */
         {
             float zero=0.f;
             clEnqueueFillBuffer(cl->queue,d_bp_ratio,&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
-            clFinish(cl->queue);
-
-            /* read ratio_prep back to host, create image */
-            float *ratio_h = (float*)malloc(proj_bytes);
-            clEnqueueReadBuffer(cl->queue,d_ratio_prep,CL_TRUE,0,proj_bytes,ratio_h,0,NULL,NULL);
-            cl_image_desc rdesc={0};
-            rdesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
-            rdesc.image_width=(size_t)W; rdesc.image_height=(size_t)H;
-            rdesc.image_array_size=(size_t)np;
-            cl_mem ratio_img = clCreateImage(cl->ctx,
-                CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR, &img_fmt, &rdesc, ratio_h, &err);
-            CL_CHECK(err,"ratio_img opt");
-            free(ratio_h);
-
             cl_kernel k = cl->k_bp_opt;
             clSetKernelArg(k,0,sizeof(cl_mem),&ratio_img);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_ang_cs);
@@ -795,9 +803,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ratio");
-            clFinish(cl->queue);
-            clReleaseMemObject(ratio_img);
         }
+        clFinish(cl->queue);
 
         /* ── update ── */
         {
@@ -813,10 +820,13 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         clFinish(cl->queue);
         printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
     }
+    if (vol_img) clReleaseMemObject(vol_img);
+    clReleaseMemObject(ratio_img);
 
     clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
 
     clReleaseMemObject(d_ang_cs);
+    clReleaseMemObject(d_angles);
     clReleaseMemObject(d_proj_meas);
     clReleaseMemObject(d_proj_prep);
     clReleaseMemObject(d_vol);
@@ -826,4 +836,5 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     clReleaseMemObject(d_bp_ratio);
     clReleaseMemObject(d_bp_ones);
     free(ang_cs);
+    free(ang_f);
 }
