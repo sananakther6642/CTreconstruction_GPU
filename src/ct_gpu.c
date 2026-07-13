@@ -77,11 +77,12 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
 
     cl->ctx   = clCreateContext(NULL, 1, &cl->device, NULL, NULL, &err);
     CL_CHECK(err, "clCreateContext");
-    cl_queue_properties props[] = {CL_QUEUE_PROPERTIES,
-                                   CL_QUEUE_PROFILING_ENABLE, 0};
-    cl->queue = clCreateCommandQueueWithProperties(cl->ctx, cl->device,
-                                                   props, &err);
-    CL_CHECK(err, "clCreateCommandQueueWithProperties");
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    cl->queue = clCreateCommandQueue(cl->ctx, cl->device,
+                                     CL_QUEUE_PROFILING_ENABLE, &err);
+#pragma GCC diagnostic pop
+    CL_CHECK(err, "clCreateCommandQueue");
 
     /* Build paths */
     char path_bp_buf[512], path_fp_buf[512];
