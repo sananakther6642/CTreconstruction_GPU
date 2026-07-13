@@ -77,9 +77,11 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
 
     cl->ctx   = clCreateContext(NULL, 1, &cl->device, NULL, NULL, &err);
     CL_CHECK(err, "clCreateContext");
-    cl->queue = clCreateCommandQueue(cl->ctx, cl->device,
-                                     CL_QUEUE_PROFILING_ENABLE, &err);
-    CL_CHECK(err, "clCreateCommandQueue");
+    cl_queue_properties props[] = {CL_QUEUE_PROPERTIES,
+                                   CL_QUEUE_PROFILING_ENABLE, 0};
+    cl->queue = clCreateCommandQueueWithProperties(cl->ctx, cl->device,
+                                                   props, &err);
+    CL_CHECK(err, "clCreateCommandQueueWithProperties");
 
     /* Build paths */
     char path_bp_buf[512], path_fp_buf[512];
@@ -363,7 +365,6 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 
     size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
     size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
-    size_t ang_bytes  = (size_t)np  * sizeof(double);
 
     /* Convert angles to float */
     float *ang_f = (float *)malloc(np * sizeof(float));
