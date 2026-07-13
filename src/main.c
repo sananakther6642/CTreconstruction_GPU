@@ -72,19 +72,9 @@ int main(int argc, char **argv)
     if (!strcmp(mode_str, "cpu")) {
         printf("\n=== CPU mode, %d epochs ===\n", epochs);
 
-        /* cone-weight is applied inside reconstruct_cpu via bp_func,
-           but we match Python which applies it in bp_func per-call.
-           So we apply once here on a copy and pass the weighted projections. */
-        size_t proj_bytes = (size_t)para.num_projs * para.detector_height
-                            * para.detector_width * sizeof(float);
-        float *proj_w = (float *)malloc(proj_bytes);
-        memcpy(proj_w, proj_measured, proj_bytes);
-        cone_weight_cpu(proj_w, &para);
-
         t_start = get_time_sec();
-        reconstruct_cpu(proj_w, volume, &para, epochs);
+        reconstruct_cpu(proj_measured, volume, &para, epochs);
         t_end = get_time_sec();
-        free(proj_w);
         printf("CPU time: %.2f s\n", t_end - t_start);
 
     } else if (!strcmp(mode_str, "gpu-buf") || !strcmp(mode_str, "gpu-img")) {

@@ -88,13 +88,13 @@ void cone_weight_cpu(float *proj, const CBpara *p)
     float px  = (float)p->pixelSize;
 
     for (int ip = 0; ip < p->num_projs; ip++) {
-        float *slice = proj + ip * H * W;
-        for (int iw = 0; iw < W; iw++) {
-            float u = (-(float)(iw - (W-1)/2.0)) * px;   /* matches Python a */
-            for (int ih = 0; ih < H; ih++) {
-                float v = ((float)(ih - (H-1)/2.0)) * px; /* matches Python b */
+        float *slice = proj + ip * H * W;  /* [H][W] row-major per slice */
+        for (int ih = 0; ih < H; ih++) {
+            float v = ((float)(ih - (H-1)*0.5f)) * px;
+            for (int iw = 0; iw < W; iw++) {
+                float u = (-(float)(iw - (W-1)*0.5f)) * px;
                 float w = SDD / sqrtf(SDD*SDD + u*u + v*v);
-                slice[iw*H + ih] *= w;
+                slice[ih * W + iw] *= w;
             }
         }
     }
@@ -357,18 +357,11 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
     float *bp_ratio = (float *)malloc(vol_size    * sizeof(float));
     float *bp_ones  = (float *)malloc(vol_size    * sizeof(float));
 
-    /*
-     * Preprocess measured projections once:
-     * flip H-axis + transpose [np,H,W]->[np,W,H] + divide by voxelSize.
-     * Stored in proj_p — used as the target each epoch.
-     */
-    float *proj_p = (float *)malloc(proj_size_t * sizeof(float));
-    prep_proj_for_bp(proj_measured, proj_p, np, W, H, (float)p->voxelSize);
-
-    /* Precompute bp(ones) using prep'd all-ones projections */
+    /* Precompute bp(ones): cone_weight ones then preprocess — matches Python bp_f(ones) */
     float *ones_raw = (float *)malloc(proj_size * sizeof(float));
     float *ones_p   = (float *)malloc(proj_size_t * sizeof(float));
     for (size_t i = 0; i < proj_size; i++) ones_raw[i] = 1.f;
+    cone_weight_cpu(ones_raw, p);
     prep_proj_for_bp(ones_raw, ones_p, np, W, H, (float)p->voxelSize);
     bp_cpu(ones_p, bp_ones, p);
     free(ones_raw); free(ones_p);
@@ -382,6 +375,9 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
 
         for (size_t i = 0; i < proj_size; i++)
             ratio[i] = (b[i] != 0.f) ? proj_measured[i] / b[i] : 0.f;
+
+        /* cone-weight ratio before bp — matches Python bp_f which applies it internally */
+        cone_weight_cpu(ratio, p);
 
         prep_proj_for_bp(ratio, ratio_bp, np, W, H, (float)p->voxelSize);
         double t2 = get_time_sec();
@@ -397,5 +393,5 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
                epoch+1, epochs, get_time_sec()-t_ep, t1-t0, t3-t2);
     }
 
-    free(b); free(ratio); free(ratio_bp); free(bp_ratio); free(bp_ones); free(proj_p);
+    free(b); free(ratio); free(ratio_bp); free(bp_ratio); free(bp_ones);
 }
