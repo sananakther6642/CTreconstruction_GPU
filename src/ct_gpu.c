@@ -512,6 +512,20 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     int proj_n = np * H * W;
     int vol_n  = Nxz * Nxz * Ny;
 
+    /* DEBUG: check d_proj_meas after cone weight */
+    if (epochs > 0) {
+        float *dbg = (float*)malloc(proj_bytes);
+        clEnqueueReadBuffer(cl->queue, d_proj_meas, CL_TRUE, 0, proj_bytes, dbg, 0,NULL,NULL);
+        float mn=dbg[0],mx=dbg[0]; int nnan=0,ninf=0;
+        for (size_t i=0;i<(size_t)np*H*W;i++){
+            if (isnan(dbg[i])) nnan++;
+            else if (isinf(dbg[i])) ninf++;
+            else { if(dbg[i]<mn)mn=dbg[i]; if(dbg[i]>mx)mx=dbg[i]; }
+        }
+        printf("  [DBG] d_proj_meas after coneweight: min=%.4f max=%.4f nan=%d inf=%d\n",mn,mx,nnan,ninf);
+        free(dbg);
+    }
+
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
 
@@ -528,6 +542,20 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             run_fp_image(cl, p, vol_img, d_angles, d_proj_b);
         }
         clFinish(cl->queue);
+
+        /* DEBUG epoch 1 */
+        if (epoch == 0) {
+            float *dbg = (float*)malloc(proj_bytes);
+            clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0, proj_bytes, dbg, 0,NULL,NULL);
+            float mn=dbg[0],mx=dbg[0]; int nnan=0,ninf=0;
+            for (size_t i=0;i<(size_t)np*H*W;i++){
+                if(isnan(dbg[i]))nnan++;
+                else if(isinf(dbg[i]))ninf++;
+                else{if(dbg[i]<mn)mn=dbg[i];if(dbg[i]>mx)mx=dbg[i];}
+            }
+            printf("  [DBG] d_proj_b (fp output) ep1: min=%.4f max=%.4f nan=%d inf=%d\n",mn,mx,nnan,ninf);
+            free(dbg);
+        }
 
         /* ratio = p0 / b  (both in raw [np,H,W] layout) */
         {
