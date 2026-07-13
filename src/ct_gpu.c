@@ -592,6 +592,26 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         }
         clFinish(cl->queue);
 
+        /* DEBUG epoch 1: inspect bp_ones, bp_ratio, vol after update */
+        if (epoch == 0) {
+            float *dbg = (float*)malloc(vol_bytes);
+            /* bp_ones */
+            clEnqueueReadBuffer(cl->queue,d_bp_ones,CL_TRUE,0,vol_bytes,dbg,0,NULL,NULL);
+            float mn=dbg[0],mx=dbg[0]; int nz=0;
+            for(int i=0;i<vol_n;i++){if(dbg[i]<mn)mn=dbg[i];if(dbg[i]>mx)mx=dbg[i];if(dbg[i]<1e-10f)nz++;}
+            printf("  [DBG] bp_ones: min=%.4f max=%.4f zeros=%d\n",mn,mx,nz);
+            /* bp_ratio */
+            clEnqueueReadBuffer(cl->queue,d_bp_ratio,CL_TRUE,0,vol_bytes,dbg,0,NULL,NULL);
+            mn=dbg[0];mx=dbg[0];int nnan=0,ninf=0;
+            for(int i=0;i<vol_n;i++){
+                if(isnan(dbg[i]))nnan++;
+                else if(isinf(dbg[i]))ninf++;
+                else{if(dbg[i]<mn)mn=dbg[i];if(dbg[i]>mx)mx=dbg[i];}
+            }
+            printf("  [DBG] bp_ratio: min=%.4f max=%.4f nan=%d inf=%d\n",mn,mx,nnan,ninf);
+            free(dbg);
+        }
+
         /* v0 *= bp_ratio / bp_ones */
         {
             cl_kernel k = cl->k_update;
@@ -604,6 +624,20 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             CL_CHECK(err,"vol_update");
         }
         clFinish(cl->queue);
+
+        if (epoch == 0) {
+            float *dbg = (float*)malloc(vol_bytes);
+            clEnqueueReadBuffer(cl->queue,d_vol,CL_TRUE,0,vol_bytes,dbg,0,NULL,NULL);
+            float mn=dbg[0],mx=dbg[0]; int nnan=0,ninf=0;
+            for(int i=0;i<vol_n;i++){
+                if(isnan(dbg[i]))nnan++;
+                else if(isinf(dbg[i]))ninf++;
+                else{if(dbg[i]<mn)mn=dbg[i];if(dbg[i]>mx)mx=dbg[i];}
+            }
+            printf("  [DBG] vol after ep1 update: min=%.4f max=%.4f nan=%d inf=%d\n",mn,mx,nnan,ninf);
+            free(dbg);
+        }
+
         printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
     }
 
