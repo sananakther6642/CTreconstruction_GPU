@@ -1,13 +1,15 @@
 CC      = gcc
 CFLAGS  = -O3 -march=native -fopenmp -Wall -Iinclude -DCL_TARGET_OPENCL_VERSION=120
-LDFLAGS = -lm -lhdf5
-
-# Detect OS for OpenCL linking
+# Detect OS for OpenCL + HDF5 linking
 UNAME := $(shell uname)
 ifeq ($(UNAME), Darwin)
-    LDFLAGS += -framework OpenCL
+    LDFLAGS = -lm -lhdf5 -framework OpenCL
 else
-    LDFLAGS += -lOpenCL
+    # Ubuntu/Debian installs HDF5 as hdf5_serial; fall back to hdf5 if not found
+    HDF5_LIB := $(shell ldconfig -p 2>/dev/null | grep -q libhdf5_serial && echo hdf5_serial || echo hdf5)
+    HDF5_INC := $(shell test -d /usr/include/hdf5/serial && echo /usr/include/hdf5/serial || echo /usr/include)
+    CFLAGS  += -I$(HDF5_INC)
+    LDFLAGS  = -lm -l$(HDF5_LIB) -lOpenCL
 endif
 
 SRC_DIR    = src
