@@ -136,17 +136,7 @@ void bp_cpu(const float *proj, float *volume, const CBpara *p)
     float b_min =  (0.f - (H-1)*0.5f) * px;
     float db    =  px;
 
-    /* Per-thread accumulation buffers to avoid false-sharing */
-    int nthreads;
-    #pragma omp parallel
-    { nthreads = omp_get_num_threads(); }
-
-    float **tbuf = (float **)malloc(nthreads * sizeof(float *));
-    for (int t = 0; t < nthreads; t++) {
-        tbuf[t] = (float *)calloc(vol_n, sizeof(float));
-    }
-
-    /* Precompute cos/sin LUT */
+    /* Precompute cos/sin LUT once — avoids trig per voxel */
     float *ca_lut = (float *)malloc(np * sizeof(float));
     float *sa_lut = (float *)malloc(np * sizeof(float));
     for (int ip = 0; ip < np; ip++) {
@@ -154,31 +144,38 @@ void bp_cpu(const float *proj, float *volume, const CBpara *p)
         sa_lut[ip] = sinf((float)p->angles[ip]);
     }
 
-    #pragma omp parallel for schedule(dynamic,1)
-    for (int ip = 0; ip < np; ip++) {
-        int tid    = omp_get_thread_num();
-        float *buf = tbuf[tid];
-        float  ca  = ca_lut[ip], sa = sa_lut[ip];
-        const float *slice = proj + ip * W * H;
+    float scale = (float)M_PI / (float)np;
+    memset(volume, 0, vol_n * sizeof(float));
 
-        for (int ix = 0; ix < Nxz; ix++) {
-            float xpr   = ((float)ix - radius) * vs;
-            float x_sin = xpr * sa;
-            float x_cos = xpr * ca;
+    /*
+     * Parallelize over (ix, iy) voxel pairs.
+     * Each (ix,iy) pair writes to a unique strip of the output volume
+     * → no race conditions, no per-thread buffers, no reduction step.
+     * Inner angle loop reads projection slices sequentially → cache friendly.
+     */
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int ix = 0; ix < Nxz; ix++) {
+        for (int iy = 0; iy < Nxz; iy++) {
+            float xpr = ((float)ix - radius) * vs;
+            float ypr = ((float)iy - radius) * vs;
 
-            for (int iy = 0; iy < Nxz; iy++) {
-                float ypr = ((float)iy - radius) * vs;
-                float t   = ypr * ca - x_sin;
-                float U   = SOD + ypr * sa + x_cos;
+            /* Accumulate contribution from all angles into a local array */
+            float *strip = volume + VOL_IDX(Nxz-1-ix, Nxz-1-iy, 0, Nxz, Ny);
+
+            for (int ip = 0; ip < np; ip++) {
+                float ca   = ca_lut[ip], sa = sa_lut[ip];
+                float t    = ypr*ca - xpr*sa;
+                float U    = SOD + ypr*sa + xpr*ca;
                 float Uinv = 1.f / U;
-                float ai  = SDD * t * Uinv;
-                float w   = sod2 * Uinv * Uinv;
-                float zf  = SDD * Uinv;
+                float ai   = SDD * t * Uinv;
+                float w    = sod2 * Uinv * Uinv;
+                float zf   = SDD * Uinv;
 
-                /* Convert ai to image index */
                 float uf = (ai - a_min) / da;
                 if (uf < 0.f || uf >= (float)(W-1)) continue;
                 int u0 = (int)uf; float du = uf - u0;
+
+                const float *slice = proj + ip * W * H;
 
                 for (int iz = 0; iz < Ny; iz++) {
                     float zpr = ((float)iz - radius_z) * vs;
@@ -187,25 +184,20 @@ void bp_cpu(const float *proj, float *volume, const CBpara *p)
                     if (vf < 0.f || vf >= (float)(H-1)) continue;
                     int v0 = (int)vf; float dv = vf - v0;
 
-                    float val = (slice[u0*H+v0]    * (1-du) + slice[(u0+1)*H+v0]    * du) * (1-dv)
-                              + (slice[u0*H+v0+1]  * (1-du) + slice[(u0+1)*H+v0+1]  * du) * dv;
+                    float val = (slice[u0*H+v0]   *(1-du) + slice[(u0+1)*H+v0]   *du)*(1-dv)
+                              + (slice[u0*H+v0+1] *(1-du) + slice[(u0+1)*H+v0+1] *du)*dv;
 
-                    /* flip output indices to match Python [::-1,::-1,:] */
-                    buf[VOL_IDX(Nxz-1-ix, Nxz-1-iy, iz, Nxz, Ny)] += val * w;
+                    strip[iz] += val * w;
                 }
             }
+
+            /* Scale strip in-place */
+            for (int iz = 0; iz < Ny; iz++)
+                strip[iz] *= scale;
         }
     }
 
-    /* Reduce thread buffers */
-    float scale = (float)M_PI / (float)np;
-    memset(volume, 0, vol_n * sizeof(float));
-    for (int t = 0; t < nthreads; t++) {
-        for (size_t i = 0; i < vol_n; i++)
-            volume[i] += tbuf[t][i] * scale;
-        free(tbuf[t]);
-    }
-    free(tbuf); free(ca_lut); free(sa_lut);
+    free(ca_lut); free(sa_lut);
 }
 
 /* ── forward projection ────────────────────────────────────────────────── */
