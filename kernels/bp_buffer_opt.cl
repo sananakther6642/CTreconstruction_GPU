@@ -17,26 +17,32 @@
  *     angle loop (already trivial, but avoids repeated mul in inner loop).
  */
 
-/* Bilinear interpolation — same bounds logic as base kernel */
+/* Bilinear from __local memory */
 static float bilinear_opt(__local const float *tile,
-                           int tile_W, int tile_H,
-                           float uf, float vf,
-                           int global_W, int global_H)
+                           int W, int H, float uf, float vf)
 {
-    float u = uf + (global_W - 1) * 0.5f;
-    float v = vf + (global_H - 1) * 0.5f;
-    int u0 = (int)floor(u), u1 = u0+1;
-    int v0 = (int)floor(v), v1 = v0+1;
-    float du = u-u0, dv = v-v0;
+    float u = uf + (W-1)*0.5f, v = vf + (H-1)*0.5f;
+    int u0=(int)floor(u), u1=u0+1, v0=(int)floor(v), v1=v0+1;
+    float du=u-u0, dv=v-v0;
+    float c00=(u0>=0&&u0<W&&v0>=0&&v0<H)?tile[u0*H+v0]:0.f;
+    float c10=(u1>=0&&u1<W&&v0>=0&&v0<H)?tile[u1*H+v0]:0.f;
+    float c01=(u0>=0&&u0<W&&v1>=0&&v1<H)?tile[u0*H+v1]:0.f;
+    float c11=(u1>=0&&u1<W&&v1>=0&&v1<H)?tile[u1*H+v1]:0.f;
+    return c00*(1-du)*(1-dv)+c10*du*(1-dv)+c01*(1-du)*dv+c11*du*dv;
+}
 
-    /* tile covers [tile_u0 .. tile_u0+tile_W) in global coords */
-    /* For the cached-slice path the tile IS the full slice, so tile_W==global_W */
-    float c00 = (u0>=0&&u0<global_W&&v0>=0&&v0<global_H) ? tile[u0*tile_H+v0] : 0.f;
-    float c10 = (u1>=0&&u1<global_W&&v0>=0&&v0<global_H) ? tile[u1*tile_H+v0] : 0.f;
-    float c01 = (u0>=0&&u0<global_W&&v1>=0&&v1<global_H) ? tile[u0*tile_H+v1] : 0.f;
-    float c11 = (u1>=0&&u1<global_W&&v1>=0&&v1<global_H) ? tile[u1*tile_H+v1] : 0.f;
-
-    return c00*(1-du)*(1-dv) + c10*du*(1-dv) + c01*(1-du)*dv + c11*du*dv;
+/* Bilinear from __global memory — fallback when local too small */
+static float bilinear_opt_g(__global const float *tile,
+                             int W, int H, float uf, float vf)
+{
+    float u = uf + (W-1)*0.5f, v = vf + (H-1)*0.5f;
+    int u0=(int)floor(u), u1=u0+1, v0=(int)floor(v), v1=v0+1;
+    float du=u-u0, dv=v-v0;
+    float c00=(u0>=0&&u0<W&&v0>=0&&v0<H)?tile[u0*H+v0]:0.f;
+    float c10=(u1>=0&&u1<W&&v0>=0&&v0<H)?tile[u1*H+v0]:0.f;
+    float c01=(u0>=0&&u0<W&&v1>=0&&v1<H)?tile[u0*H+v1]:0.f;
+    float c11=(u1>=0&&u1<W&&v1>=0&&v1<H)?tile[u1*H+v1]:0.f;
+    return c00*(1-du)*(1-dv)+c10*du*(1-dv)+c01*(1-du)*dv+c11*du*dv;
 }
 
 /*
@@ -127,9 +133,9 @@ __kernel void bp_opt(
 
             float val;
             if (can_use_local)
-                val = bilinear_opt(lmem,    W, H, ai/pixelSize, bi/pixelSize, W, H);
+                val = bilinear_opt(lmem,   W, H, ai/pixelSize, bi/pixelSize);
             else
-                val = bilinear_opt(gslice,  W, H, ai/pixelSize, bi/pixelSize, W, H);
+                val = bilinear_opt_g(gslice, W, H, ai/pixelSize, bi/pixelSize);
             sum += val * (SOD*SOD) / (U*U);
         }
 
