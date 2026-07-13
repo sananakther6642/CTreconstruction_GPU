@@ -344,23 +344,25 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
 
-        /* fp outputs [np][H][W] — same layout as measured projections */
+        double t0 = get_time_sec();
         fp_cpu(volume, b, p);
+        double t1 = get_time_sec();
 
-        /* ratio = proj_measured / b, stored as [np][H][W] */
         for (size_t i = 0; i < proj_size; i++)
             ratio[i] = (b[i] != 0.f) ? proj_measured[i] / b[i] : 0.f;
 
-        /* preprocess ratio before bp */
         prep_proj_for_bp(ratio, ratio_bp, np, W, H, (float)p->voxelSize);
+        double t2 = get_time_sec();
         bp_cpu(ratio_bp, bp_ratio, p);
+        double t3 = get_time_sec();
 
         for (size_t i = 0; i < vol_size; i++) {
             float denom = bp_ones[i];
             if (denom > 1e-10f)
                 volume[i] *= bp_ratio[i] / denom;
         }
-        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
+        printf("  epoch %3d/%d  total=%.2fs  fp=%.2fs  bp=%.2fs\n",
+               epoch+1, epochs, get_time_sec()-t_ep, t1-t0, t3-t2);
     }
 
     free(b); free(ratio); free(ratio_bp); free(bp_ratio); free(bp_ones); free(proj_p);
