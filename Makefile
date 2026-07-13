@@ -1,5 +1,5 @@
 CC      = gcc
-CFLAGS  = -O3 -march=native -fopenmp -Wall -Iinclude
+CFLAGS  = -O3 -march=native -fopenmp -Wall -Iinclude -DCL_TARGET_OPENCL_VERSION=120
 LDFLAGS = -lm -lhdf5
 
 # Detect OS for OpenCL linking
