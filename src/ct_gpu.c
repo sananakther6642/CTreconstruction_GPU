@@ -113,8 +113,10 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "proj_divide");
         cl->k_update  = clCreateKernel(cl->prog_buffer, "vol_update", &err);
         CL_CHECK(err, "vol_update");
-        cl->k_preproc = clCreateKernel(cl->prog_buffer, "preprocess_proj", &err);
+        cl->k_preproc  = clCreateKernel(cl->prog_buffer, "preprocess_proj", &err);
         CL_CHECK(err, "preprocess_proj");
+        cl->k_cone_hw  = clCreateKernel(cl->prog_buffer, "cone_weight_hw", &err);
+        CL_CHECK(err, "cone_weight_hw");
     }
 
     /* ── Image-mode program (also used by OPT for fp_image) ── */
@@ -153,8 +155,10 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "cone_weight (opt)");
         cl->k_divide = clCreateKernel(cl->prog_opt, "proj_divide", &err);
         CL_CHECK(err, "proj_divide (opt)");
-        cl->k_update = clCreateKernel(cl->prog_opt, "vol_update", &err);
+        cl->k_update  = clCreateKernel(cl->prog_opt, "vol_update", &err);
         CL_CHECK(err, "vol_update (opt)");
+        cl->k_cone_hw = clCreateKernel(cl->prog_opt, "cone_weight_hw", &err);
+        CL_CHECK(err, "cone_weight_hw (opt)");
     }
 
     return 0;
@@ -374,7 +378,8 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     for (int i=0;i<np;i++) ang_f[i] = (float)p->angles[i];
 
     /* ── Allocate device buffers ── */
-    cl_mem d_proj_meas = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR,
+    /* READ_WRITE so we can apply cone weight in-place before iterating */
+    cl_mem d_proj_meas = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
                                          proj_bytes, (void*)proj_measured, &err);
     CL_CHECK(err, "d_proj_meas");
 
@@ -400,31 +405,31 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     cl_mem d_bp_ones   = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes,  NULL, &err);
     CL_CHECK(err, "d_bp_ones");
 
-    /*
-     * Preprocess measured projections once:
-     *   flip H-axis + transpose [np,H,W]→[np,W,H] + /voxelSize
-     * Result in d_proj_prep — used as bp target each epoch.
-     * d_proj_meas kept raw for the divide step (ratio = p0/b).
-     */
-    run_preprocess(cl, p, d_proj_meas, d_proj_prep);
-    clFinish(cl->queue);
-
-    /* Apply cone-weight to d_proj_prep in-place */
+    /* Apply cone weight to raw [np][H][W] measured projections once */
     {
-        cl_kernel k = cl->k_cone;
+        cl_kernel k = cl->k_cone_hw;
         float SDD=(float)p->SDD, px=(float)p->pixelSize;
-        clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_prep);
+        clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
         clSetKernelArg(k,1,sizeof(int),&W);
         clSetKernelArg(k,2,sizeof(int),&H);
         clSetKernelArg(k,3,sizeof(float),&SDD);
         clSetKernelArg(k,4,sizeof(float),&px);
         size_t gws[3]={(size_t)W,(size_t)H,(size_t)np};
         size_t lws[3]={16,16,1};
-        for (int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
+        for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
         err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
-        CL_CHECK(err,"cone_weight enqueue");
+        CL_CHECK(err,"cone_weight_hw");
         clFinish(cl->queue);
     }
+
+    /*
+     * Preprocess measured projections once:
+     *   flip H-axis + transpose [np,H,W]→[np,W,H] + /voxelSize
+     * Result in d_proj_prep — used as bp target each epoch.
+     * d_proj_meas now holds cone-weighted raw data for ratio = p0/b.
+     */
+    run_preprocess(cl, p, d_proj_meas, d_proj_prep);
+    clFinish(cl->queue);
 
     /* ── Precompute bp(ones) ── */
     {
@@ -651,21 +656,17 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     cl_mem d_bp_ones   = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
     CL_CHECK(err, "d_bp_ones opt");
 
-    /* Preprocess measured projections once: flip+transpose+scale → d_proj_prep */
-    run_preprocess(cl, p, d_proj_meas, d_proj_prep);
-    clFinish(cl->queue);
-
     /* lmem unused in new bp_opt (image sampler replaces local cache) */
     size_t lmem_bytes = 16;
 
     /* image format for proj image array */
     cl_image_format img_fmt = {CL_R, CL_FLOAT};
 
-    /* Apply cone-weight to d_proj_prep in-place */
+    /* Apply cone weight to raw [np][H][W] measured projections once */
     {
-        cl_kernel k = cl->k_cone;
+        cl_kernel k = cl->k_cone_hw;
         float SDD=(float)p->SDD, px=(float)p->pixelSize;
-        clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_prep);
+        clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
         clSetKernelArg(k,1,sizeof(int),&W);
         clSetKernelArg(k,2,sizeof(int),&H);
         clSetKernelArg(k,3,sizeof(float),&SDD);
@@ -674,9 +675,13 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         size_t lws[3]={16,16,1};
         for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
         err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
-        CL_CHECK(err,"cone_weight opt");
+        CL_CHECK(err,"cone_weight_hw opt");
         clFinish(cl->queue);
     }
+
+    /* Preprocess measured projections once: flip+transpose+scale → d_proj_prep */
+    run_preprocess(cl, p, d_proj_meas, d_proj_prep);
+    clFinish(cl->queue);
 
     /* ── bp_ones: create image of all-ones, run bp_opt ── */
     {
