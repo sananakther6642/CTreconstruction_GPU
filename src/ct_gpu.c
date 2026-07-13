@@ -712,7 +712,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         clSetKernelArg(k,11,sizeof(float),&vs);
         clSetKernelArg(k,12,sizeof(float),&px);
         size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
-        size_t lws[3]={8,8,8};
+        size_t lws[3]={8,8,4};
         for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
         err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
         CL_CHECK(err,"bp_opt ones");
@@ -804,7 +804,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,11,sizeof(float),&vs);
             clSetKernelArg(k,12,sizeof(float),&px);
             size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
-            size_t lws[3]={8,8,8};  /* 512 threads = 8 wavefronts — hide texture latency */
+            size_t lws[3]={8,8,4};  /* 512 threads = 8 wavefronts — hide texture latency */
             for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ratio");
