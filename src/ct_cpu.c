@@ -249,7 +249,7 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
     float SOD = (float)p->SOD;
     float SDD = (float)p->SDD;
     float vs  = (float)p->voxelSize;
-    float px  = (float)p->pixelSize;
+    float pxsz = (float)p->pixelSize;
     int   np  = p->num_projs;
 
     float sVoxel_xz = Nxz * vs;
@@ -257,52 +257,84 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
     float dist_max  = sVoxel_xz * 1.42f;
     float near_t    = fmaxf(0.f, SOD - dist_max);
     float far_t     = fminf(SOD * 2.f, SOD + dist_max);
-    int   n_samples = (int)ceilf(Nxz * 2.f);  /* sample_ratio=2 */
+    int   n_samples = (int)ceilf(Nxz * 2.f);
+    float dt        = (far_t - near_t) / (float)(n_samples - 1);
+
+    /* constants for world→voxel mapping */
+    float inv_sv_xz = (float)Nxz / sVoxel_xz;
+    float inv_sv_y  = (float)Ny  / sVoxel_y;
+    float shift_xz  = 0.5f * Nxz - 0.5f;
+    float shift_y   = 0.5f * Ny  - 0.5f;
+
+    /* precompute pose for all angles outside parallel region */
+    float (*R_all)[3][3] = (float (*)[3][3])malloc(np * 9 * sizeof(float));
+    float (*T_all)[3]    = (float (*)[3])   malloc(np * 3 * sizeof(float));
+    for (int ip = 0; ip < np; ip++)
+        angle2pose(SOD, (float)p->angles[ip], R_all[ip], T_all[ip]);
 
     memset(proj, 0, (size_t)np * H * W * sizeof(float));
 
-    #pragma omp parallel for schedule(dynamic,1)
+    /* collapse(2): ip × iu gives 360×512 = 184k independent work items */
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int ip = 0; ip < np; ip++) {
-        float angle = (float)p->angles[ip];
-        float R[3][3], T[3];
-        angle2pose(SOD, angle, R, T);
-
-        float *slice = proj + ip * H * W;
-
         for (int iu = 0; iu < W; iu++) {
-            for (int iv = 0; iv < H; iv++) {
-                float uu = ((float)iu + 0.5f - W*0.5f) * px;
-                float vv = ((float)iv + 0.5f - H*0.5f) * px;
+            float uu = ((float)iu + 0.5f - W * 0.5f) * pxsz;
+            float d0 = uu / SDD, d2 = 1.f;
+            /* precompute rd components for this column (iv only changes vv) */
+            float (*R)[3] = R_all[ip];
+            float *T      = T_all[ip];
 
-                /* ray direction in world space */
-                float dirs[3] = {uu/SDD, vv/SDD, 1.f};
-                float rd[3];
-                for (int k=0;k<3;k++) {
-                    rd[k] = R[k][0]*dirs[0] + R[k][1]*dirs[1] + R[k][2]*dirs[2];
-                }
-                float rd_norm = sqrtf(rd[0]*rd[0]+rd[1]*rd[1]+rd[2]*rd[2]);
+            for (int iv = 0; iv < H; iv++) {
+                float vv = ((float)iv + 0.5f - H * 0.5f) * pxsz;
+                float d1 = vv / SDD;
+
+                float rdx = R[0][0]*d0 + R[0][1]*d1 + R[0][2]*d2;
+                float rdy = R[1][0]*d0 + R[1][1]*d1 + R[1][2]*d2;
+                float rdz = R[2][0]*d0 + R[2][1]*d1 + R[2][2]*d2;
+
+                float rd_norm  = sqrtf(rdx*rdx + rdy*rdy + rdz*rdz);
+                float step_val = dt * rd_norm;   /* accumulated outside sample loop */
+
+                /* ray start in world space at near_t */
+                float ox = T[0] + rdx * near_t;
+                float oy = T[1] + rdy * near_t;
+                float oz = T[2] + rdz * near_t;
+                /* incremental step — avoids multiply per sample */
+                float dox = rdx * dt, doy = rdy * dt, doz = rdz * dt;
 
                 float val = 0.f;
-                float dt  = (far_t - near_t) / (float)(n_samples - 1);
+                float wx = ox, wy = oy, wz = oz;
 
                 for (int s = 0; s < n_samples; s++) {
-                    float t = near_t + s * dt;
-                    float pt[3];
-                    for (int k=0;k<3;k++) pt[k] = T[k] + rd[k] * t;
+                    float xi = wx * inv_sv_xz + shift_xz;
+                    float yi = wy * inv_sv_y  + shift_y;
+                    float zi = wz * inv_sv_xz + shift_xz;
 
-                    /* map to voxel indices (same as Python) */
-                    float xi = (pt[0] + sVoxel_xz*0.5f) / sVoxel_xz * Nxz - 0.5f;
-                    float yi = (pt[1] + sVoxel_y *0.5f) / sVoxel_y  * Ny  - 0.5f;
-                    float zi = (pt[2] + sVoxel_xz*0.5f) / sVoxel_xz * Nxz - 0.5f;
-
-                    float density = trilinear(volume, Nxz, Ny, xi, yi, zi);
-                    val += density * dt * rd_norm;
+                    int x0 = (int)xi, y0 = (int)yi, z0 = (int)zi;
+                    /* single bounds check — no branch inside interpolation */
+                    if ((unsigned)x0 < (unsigned)(Nxz-1) &&
+                        (unsigned)y0 < (unsigned)(Ny -1) &&
+                        (unsigned)z0 < (unsigned)(Nxz-1)) {
+                        float dx = xi-x0, dy = yi-y0, dz = zi-z0;
+                        float nx = 1.f-dx, ny_ = 1.f-dy, nz_ = 1.f-dz;
+                        int base = x0*(Nxz*Ny) + y0*Ny + z0;
+                        int sNy  = Nxz*Ny;
+                        val += volume[base]         * nx * ny_ * nz_
+                             + volume[base+sNy]     * dx * ny_ * nz_
+                             + volume[base+Ny]      * nx * dy  * nz_
+                             + volume[base+sNy+Ny]  * dx * dy  * nz_
+                             + volume[base+1]       * nx * ny_ * dz
+                             + volume[base+sNy+1]   * dx * ny_ * dz
+                             + volume[base+Ny+1]    * nx * dy  * dz
+                             + volume[base+sNy+Ny+1]* dx * dy  * dz;
+                    }
+                    wx += dox; wy += doy; wz += doz;
                 }
-                /* proj stored as [H][W] to match Python proj[i][j] */
-                slice[iv*W + iu] = val;
+                proj[ip*H*W + iv*W + iu] = val * step_val;
             }
         }
     }
+    free(R_all); free(T_all);
 }
 
 /* ── iterative reconstruction loop ────────────────────────────────────── */
