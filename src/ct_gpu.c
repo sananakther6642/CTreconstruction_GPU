@@ -642,17 +642,11 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     run_preprocess(cl, p, d_proj_meas, d_proj_prep);
     clFinish(cl->queue);
 
-    /* Local memory size: W*H floats — queried against device limit */
-    size_t lmem_bytes = (size_t)W * H * sizeof(float);
-    size_t dev_lmem   = 0;
-    clGetDeviceInfo(cl->device, CL_DEVICE_LOCAL_MEM_SIZE,
-                    sizeof(dev_lmem), &dev_lmem, NULL);
-    int use_local = (lmem_bytes <= dev_lmem / 2);
-    if (!use_local) {
-        printf("  [opt] W*H=%d too large for __local (%zu B). "
-               "Falling back to global mem in bp_opt.\n", W*H, dev_lmem);
-        lmem_bytes = 16; /* minimal valid size — kernel will read from global instead */
-    }
+    /* lmem unused in new bp_opt (image sampler replaces local cache) */
+    size_t lmem_bytes = 16;
+
+    /* image format for proj image array */
+    cl_image_format img_fmt = {CL_R, CL_FLOAT};
 
     /* Apply cone-weight to d_proj_prep in-place */
     {
@@ -671,23 +665,27 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         clFinish(cl->queue);
     }
 
-    /* ── bp_ones ── */
+    /* ── bp_ones: create image of all-ones, run bp_opt ── */
     {
-        float zero=0.f, one=1.f;
+        float zero=0.f;
         clEnqueueFillBuffer(cl->queue,d_bp_ones,&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
-        cl_mem d_ones_raw = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
-        cl_mem d_ones_p   = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
-        CL_CHECK(err,"d_ones_p");
-        clEnqueueFillBuffer(cl->queue,d_ones_raw,&one,sizeof(float),0,proj_bytes,0,NULL,NULL);
-        clFinish(cl->queue);
-        run_preprocess(cl, p, d_ones_raw, d_ones_p);
-        clReleaseMemObject(d_ones_raw);
         clFinish(cl->queue);
 
+        float *ones_h = (float*)malloc(proj_bytes);
+        for (size_t i = 0; i < (size_t)np*H*W; i++) ones_h[i] = 1.f;
+        cl_image_desc idesc={0};
+        idesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
+        idesc.image_width=(size_t)W; idesc.image_height=(size_t)H;
+        idesc.image_array_size=(size_t)np;
+        cl_mem ones_img = clCreateImage(cl->ctx,
+            CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR, &img_fmt, &idesc, ones_h, &err);
+        CL_CHECK(err,"ones_img opt");
+        free(ones_h);
+
         cl_kernel k = cl->k_bp_opt;
-        int ns=p->num_projs; float SOD=(float)p->SOD,SDD=(float)p->SDD;
+        int ns=np; float SOD=(float)p->SOD,SDD=(float)p->SDD;
         float vs=(float)p->voxelSize,px=(float)p->pixelSize;
-        clSetKernelArg(k,0,sizeof(cl_mem),&d_ones_p);
+        clSetKernelArg(k,0,sizeof(cl_mem),&ones_img);
         clSetKernelArg(k,1,sizeof(cl_mem),&d_ang_cs);
         clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
         clSetKernelArg(k,3,lmem_bytes,NULL);
@@ -706,7 +704,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
         CL_CHECK(err,"bp_opt ones");
         clFinish(cl->queue);
-        clReleaseMemObject(d_ones_p);
+        clReleaseMemObject(ones_img);
         printf("  bp_opt(ones) computed.\n");
     }
 
@@ -760,12 +758,26 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         run_preprocess(cl, p, d_ratio, d_ratio_prep);
         clFinish(cl->queue);
 
-        /* ── bp_opt(ratio_prep) ── */
+        /* ── bp_opt(ratio_prep): upload ratio buffer as image, run kernel ── */
         {
             float zero=0.f;
             clEnqueueFillBuffer(cl->queue,d_bp_ratio,&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
+            clFinish(cl->queue);
+
+            /* read ratio_prep back to host, create image */
+            float *ratio_h = (float*)malloc(proj_bytes);
+            clEnqueueReadBuffer(cl->queue,d_ratio_prep,CL_TRUE,0,proj_bytes,ratio_h,0,NULL,NULL);
+            cl_image_desc rdesc={0};
+            rdesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
+            rdesc.image_width=(size_t)W; rdesc.image_height=(size_t)H;
+            rdesc.image_array_size=(size_t)np;
+            cl_mem ratio_img = clCreateImage(cl->ctx,
+                CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR, &img_fmt, &rdesc, ratio_h, &err);
+            CL_CHECK(err,"ratio_img opt");
+            free(ratio_h);
+
             cl_kernel k = cl->k_bp_opt;
-            clSetKernelArg(k,0,sizeof(cl_mem),&d_ratio_prep);
+            clSetKernelArg(k,0,sizeof(cl_mem),&ratio_img);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_ang_cs);
             clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ratio);
             clSetKernelArg(k,3,lmem_bytes,NULL);
@@ -783,8 +795,9 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ratio");
+            clFinish(cl->queue);
+            clReleaseMemObject(ratio_img);
         }
-        clFinish(cl->queue);
 
         /* ── update ── */
         {
