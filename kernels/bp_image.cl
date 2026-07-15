@@ -58,11 +58,20 @@ __kernel void bp_image(
          *         b =  (ih - (H-1)/2)*pixelSize  →  ih =  (b/pixelSize) + (H-1)/2
          * Image2D uses (col, row) = (iw, ih), offset +0.5 for center-of-texel.
          */
-        float texel_u = -(ai / pixelSize) + (W - 1) * 0.5f + 0.5f;
-        float texel_v =  (bi / pixelSize) + (H - 1) * 0.5f + 0.5f;
+        float uf = -(ai / pixelSize) + (W - 1) * 0.5f;
+        float vf =  (bi / pixelSize) + (H - 1) * 0.5f;
 
-        float4 val = read_imagef(proj_images, samp, (float4)(texel_u, texel_v, (float)ip, 0.f));
-        sum += val.x * (SOD*SOD) / (U*U);
+        /*
+         * Match CPU/buffer behavior: skip samples outside detector support.
+         * Without this, CLAMP_TO_EDGE would replicate edge texels and cause bias.
+         */
+        if (uf >= 0.f && uf < (float)(W - 1) &&
+            vf >= 0.f && vf < (float)(H - 1)) {
+            float texel_u = uf + 0.5f;
+            float texel_v = vf + 0.5f;
+            float4 val = read_imagef(proj_images, samp, (float4)(texel_u, texel_v, (float)ip, 0.f));
+            sum += val.x * (SOD*SOD) / (U*U);
+        }
     }
 
     sum *= M_PI_F / (float)num_projs;
