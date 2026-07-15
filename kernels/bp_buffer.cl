@@ -69,8 +69,8 @@ __kernel void bp_buffer(
         float ai = SDD * t / U;
         float bi = zpr * SDD / U;
 
-        /* ai/bi are in mm; convert to pixel coords */
-        float uf = ai / pixelSize;
+        /* ai/bi are in mm; match CPU/Python detector-u sign convention */
+        float uf = -ai / pixelSize;
         float vf = bi / pixelSize;
 
         __global const float *slice = proj + ip * W * H;
