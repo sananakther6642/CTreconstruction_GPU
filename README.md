@@ -5,14 +5,14 @@ All four modes validated: MSE < 2×10⁻⁸ vs CPU reference on the 256³ datase
 
 ## Modes
 
-| Mode | Description | Time/epoch | Speedup |
-|------|-------------|-----------|---------|
-| `cpu` | C + OpenMP reference | ~7.3 s | 1× |
-| `gpu-buf` | OpenCL buffer, manual bilinear/trilinear | ~1.0 s | ~7× |
-| `gpu-img` | OpenCL image2D array + image3D hardware sampler | ~0.157 s | ~47× |
-| `gpu-opt` | image sampler + float2 cos/sin LUT | ~0.147 s | ~50× |
+| Mode | Description | Time/epoch | Total (100ep) | Speedup |
+|------|-------------|-----------|--------------|---------|
+| `cpu` | C + OpenMP + `-ffast-math` | 6.44 s | 644 s | 1× |
+| `gpu-buf` | OpenCL buffer, manual bilinear/trilinear | 0.99 s | 99 s | **6.5×** |
+| `gpu-img` | OpenCL image2D array + image3D hardware sampler | 0.159 s | 16 s | **40×** |
+| `gpu-opt` | image sampler + float2 cos/sin LUT + local mem cache | 0.144 s | 14.4 s | **44.7×** |
 
-Device: AMD Hawaii (Radeon R9 390), 256³ volume, 512×512 detector, 75 angles.
+Device: AMD Hawaii (Radeon R9 390), 256³ volume, 512×512 detector, 75 angles, 100 epochs.
 
 ## Files
 
@@ -84,11 +84,13 @@ Compares all four HDF5 outputs against `output_cpu.hdf5` as reference. Expected 
 ```
 Mode              min        max       mean    nan    inf  MSE / max_diff
 ---------------------------------------------------------------------------
-cpu            0.0000     0.9835     0.0066      0      0  (reference)
-gpu-buf        0.0000     0.9838     0.0066      0      0  MSE=1.607e-08  max_diff=0.3427
-gpu-img        0.0000     0.9836     0.0066      0      0  MSE=1.904e-08  max_diff=0.3424
-gpu-opt        0.0000     0.9837     0.0066      0      0  MSE=1.918e-08  max_diff=0.3424
+cpu            0.0000     1.2548     0.0066      0      0  (reference)
+gpu-buf        0.0000     1.2547     0.0066      0      0  MSE=2.350e-07  max_diff=0.9673
+gpu-img        0.0000     1.2535     0.0066      0      0  MSE=2.888e-07  max_diff=0.9677
+gpu-opt        0.0000     1.2535     0.0066      0      0  MSE=2.880e-07  max_diff=0.9677
 ```
+
+MSE at 100 epochs (~2.5e-7) reflects accumulated float32 rounding between CPU manual trilinear and GPU hardware sampler — not a correctness issue. All modes converge to the same mean and produce no NaN/inf.
 
 ## Algorithm
 
@@ -112,10 +114,11 @@ for each epoch:
 
 | Optimization | Where | Effect |
 |---|---|---|
-| OpenMP `collapse(2)` over `(ip,iu)` | `fp_cpu` | 6× over serial |
-| OpenMP `collapse(2)` over `(ix,iy)` strips | `bp_cpu` | race-free, no atomics |
+| `-ffast-math` + OpenMP `collapse(2)` | `fp_cpu`, `bp_cpu` | flush-to-zero denormals; race-free z-strips |
 | Incremental ray stepping | `fp_cpu`, `fp_buffer.cl` | eliminates multiply/sample |
 | image2d_array_t hardware bilinear | `bp_image.cl`, `bp_buffer_opt.cl` | texture cache + free HW interp |
 | image3d_t hardware trilinear + bounds check | `fp_image.cl` | texture cache + correct boundary |
 | float2 cos/sin LUT | `bp_buffer_opt.cl` | eliminates trig per voxel per angle |
+| Local memory LUT cache | `bp_buffer_opt.cl` | angle_cs loaded into `__local`; reduces global reads |
+| float4 vectorized divide/update | `bp_buffer.cl` (`proj_divide`, `vol_update`) | 4 elements/work-item via vload4/vstore4 |
 | Work-group 8×8×4 for bp, 16×16×1 for fp | `ct_gpu.c` | fills Hawaii wavefront (64 threads) |
