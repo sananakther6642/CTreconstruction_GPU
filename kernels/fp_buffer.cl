@@ -106,24 +106,35 @@ __kernel void fp_buffer(
 
     float rd_norm = sqrt(rd[0]*rd[0] + rd[1]*rd[1] + rd[2]*rd[2]);
 
+    /* Incremental stepping: compute start in voxel space, step by delta each sample.
+     * Eliminates one multiply per sample vs recomputing from t each iteration. */
+    float inv_sv_xz = (float)Nxz / sVoxel_xz;
+    float inv_sv_y  = (float)Ny  / sVoxel_y;
+    float shift_xz  = 0.5f * Nxz - 0.5f;
+    float shift_y   = 0.5f * Ny  - 0.5f;
+
+    float ox = T[0] + rd[0] * near_t;
+    float oy = T[1] + rd[1] * near_t;
+    float oz = T[2] + rd[2] * near_t;
+    float dox = rd[0] * dt, doy = rd[1] * dt, doz = rd[2] * dt;
+
+    float step_val = dt * rd_norm;
     float val = 0.f;
+    float wx = ox, wy = oy, wz = oz;
+
     for (int s = 0; s < n_samples; s++) {
-        float t = near_t + s * dt;
-        float pt0 = T[0] + rd[0]*t;
-        float pt1 = T[1] + rd[1]*t;
-        float pt2 = T[2] + rd[2]*t;
+        float xi = wx * inv_sv_xz + shift_xz;
+        float yi = wy * inv_sv_y  + shift_y;
+        float zi = wz * inv_sv_xz + shift_xz;
 
-        float xi = (pt0 + sVoxel_xz*0.5f) / sVoxel_xz * Nxz - 0.5f;
-        float yi = (pt1 + sVoxel_y *0.5f) / sVoxel_y  * Ny  - 0.5f;
-        float zi = (pt2 + sVoxel_xz*0.5f) / sVoxel_xz * Nxz - 0.5f;
-
-        /* Match CPU: only sample when all 8 trilinear neighbors are in-volume. */
         if (xi >= 0.f && xi < (float)(Nxz - 1) &&
             yi >= 0.f && yi < (float)(Ny  - 1) &&
             zi >= 0.f && zi < (float)(Nxz - 1)) {
-            val += trilinear_buf(volume, Nxz, Ny, xi, yi, zi) * dt * rd_norm;
+            val += trilinear_buf(volume, Nxz, Ny, xi, yi, zi);
         }
+        wx += dox; wy += doy; wz += doz;
     }
+    val *= step_val;
 
     /* proj stored [ip][iv][iu] matching Python proj[i][j] */
     proj[ip * H * W + iv * W + iu] = val;

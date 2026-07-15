@@ -17,7 +17,7 @@ __kernel void bp_opt(
     __read_only  image2d_array_t proj_images, /* [num_projs][W][H] */
     __global const float2       *angle_cs,    /* [num_projs] (.x=cos, .y=sin) */
     __global       float        *volume,      /* [Nxz * Nxz * Ny] */
-    __local        float        *lmem,        /* unused — kept for ABI compat */
+    __local        float2       *lcs,         /* local cache: num_projs float2 (caller allocates) */
     int   Nxz,
     int   Ny,
     int   W,
@@ -29,6 +29,17 @@ __kernel void bp_opt(
     float pixelSize
 )
 {
+    /* Cooperatively load angle_cs into local memory.
+     * Each work-item loads one or more angles; barrier before use.
+     * Reduces global reads from num_projs per work-item to num_projs/lsize. */
+    int lid   = get_local_id(0)
+              + get_local_id(1) * get_local_size(0)
+              + get_local_id(2) * get_local_size(0) * get_local_size(1);
+    int lsize = get_local_size(0) * get_local_size(1) * get_local_size(2);
+    for (int i = lid; i < num_projs; i += lsize)
+        lcs[i] = angle_cs[i];
+    barrier(CLK_LOCAL_MEM_FENCE);
+
     int ix = get_global_id(0);
     int iy = get_global_id(1);
     int iz = get_global_id(2);
@@ -45,7 +56,7 @@ __kernel void bp_opt(
     float sum = 0.f;
 
     for (int ip = 0; ip < num_projs; ip++) {
-        float2 cs = angle_cs[ip];
+        float2 cs = lcs[ip];   /* local memory read — no global traffic after barrier */
         float ca = cs.x, sa = cs.y;
 
         float U  = SOD + ypr*sa + xpr*ca;
