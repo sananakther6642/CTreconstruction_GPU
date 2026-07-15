@@ -15,7 +15,7 @@ All four modes validated: MSE < 3×10⁻⁸ vs CPU reference on the 256³ datase
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (6 cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
 - *Speedup vs CPU*: both sides fully optimized (OpenMP, `-ffast-math`, `n_samples=128`)
-- *Speedup vs baseline*: gpu-opt vs original unoptimized single-pass C CPU (6.44 s/epoch)
+- *Speedup vs baseline*: gpu-opt vs original C CPU before any optimizations (6.44 s/epoch, `n_samples=512`, no `-ffast-math`)
 - Per-epoch times measured over 10 epochs; 100-epoch totals extrapolated
 - Dataset: 256³ volume, 512×512 detector, 75 projection angles
 
@@ -50,7 +50,7 @@ src/
   ct_cpu.c/h          — CPU: cone_weight, fp_cpu, bp_cpu, reconstruct_cpu
   ct_gpu.c/h          — OpenCL host: gpu_init, reconstruct_gpu, reconstruct_gpu_opt
 kernels/
-  bp_buffer.cl        — bp (buffer) + preprocess_proj + cone_weight_hw + proj_divide + vol_update
+  bp_buffer.cl        — bp (buffer) + preprocess_proj (fused cone_weight) + proj_divide + vol_update
   fp_buffer.cl        — fp (buffer): ray march + manual trilinear
   bp_image.cl         — bp (image): hardware bilinear on image2d_array_t
   fp_image.cl         — fp (image): hardware trilinear on image3d_t + explicit bounds check
@@ -142,7 +142,7 @@ for each epoch:
 |---|---|---|
 | `-ffast-math` + OpenMP `collapse(2)` | `fp_cpu`, `bp_cpu` | flush-to-zero denormals; eliminates epoch slowdown from sub-normal floats |
 | Incremental ray stepping | `fp_cpu`, `fp_buffer.cl` | eliminates multiply per sample in ray march |
-| `n_samples` 512 → 128 (Nxz×0.5) | all fp kernels + `fp_cpu` | 4× fewer ray samples; fp time halved vs original |
+| `n_samples` 512 → 256 → 128 (Nxz×0.5) | all fp kernels + `fp_cpu` | 4× fewer ray samples than original; fp time quartered |
 | Fused cone_weight into preprocess_proj | `bp_buffer.cl`, `ct_cpu.c` | eliminates separate kernel dispatch per epoch across all modes |
 | image2d_array_t hardware bilinear | `bp_image.cl`, `bp_buffer_opt.cl` | texture cache + free HW interpolation |
 | image3d_t hardware trilinear + bounds check | `fp_image.cl` | texture cache + correct boundary handling |
