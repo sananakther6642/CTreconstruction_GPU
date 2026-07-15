@@ -111,28 +111,30 @@ def fp_func(cb_para, volume, sample_ratio=2):
         dists_t = np.concatenate([z_vals[1:] - z_vals[:-1],
                                    np.array([1e-10], dtype=np.float32)])  # [n_samples]
 
-        # sample points in world space: [W, H, n_samples, 3]
-        pts = rays_o + rays_d[..., None, :] * z_vals[None, None, :, None]
+        rd_norm = np.linalg.norm(rays_d, axis=-1)  # [W, H]
+        proj    = np.zeros((W, H), dtype=np.float32)
 
-        # world → voxel index: [W, H, n_samples, 3]
-        pts_idx = (pts + sVoxel / 2) / sVoxel * nVoxel - 0.5
+        # process in strips of 32 columns to cap memory at ~200 MB/strip
+        strip = 32
+        for w0 in range(0, W, strip):
+            w1 = min(w0 + strip, W)
+            rd_s = rays_d[w0:w1]                      # [strip, H, 3]
+            rn_s = rd_norm[w0:w1]                     # [strip, H]
+            uu_s = uu[w0:w1]                          # [strip, H]
 
-        # flatten to [3, W*H*n_samples] for map_coordinates
-        flat = pts_idx.reshape(-1, 3).T  # [3, N]
+            pts = rays_o + rd_s[:, :, None, :] * z_vals[None, None, :, None]
+            pts_idx = (pts + sVoxel / 2) / sVoxel * nVoxel - 0.5
+            flat = pts_idx.reshape(-1, 3).T
 
-        raw = map_coordinates(volume,
-                              [flat[0], flat[1], flat[2]],
-                              order=1, mode='constant', cval=0.0
-                              ).reshape(W, H, n_samples).astype(np.float32)
+            raw = map_coordinates(volume,
+                                  [flat[0], flat[1], flat[2]],
+                                  order=1, mode='constant', cval=0.0
+                                  ).reshape(w1-w0, H, n_samples).astype(np.float32)
 
-        # ray_d norm per pixel [W, H]
-        rd_norm = np.linalg.norm(rays_d, axis=-1, keepdims=True)  # [W, H, 1]
+            proj[w0:w1] = np.sum(raw * dists_t[None, None, :] * rn_s[:, :, None], axis=-1)
+            del pts, pts_idx, flat, raw
 
-        # integrate: sum(raw * dists_t * rd_norm) over samples → [W, H]
-        proj = np.sum(raw * dists_t[None, None, :] * rd_norm, axis=-1)  # [W, H]
-
-        # output layout [H, W] matching original
-        projs.append(proj.T)
+        projs.append(proj.T)  # [H, W]
 
     return np.stack(projs, axis=0)  # [num_projs, H, W]
 
@@ -140,7 +142,7 @@ def fp_func(cb_para, volume, sample_ratio=2):
 
 path_data = '/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5'
 out_path  = 'output_python.hdf5'
-EPOCHS    = 10   # vectorized fp: ~1-2 min/epoch
+EPOCHS    = 1    # 1 epoch sufficient for MSE validation vs C/GPU
 
 print(f"Loading {path_data} ...")
 with h5py.File(path_data, 'r') as f:
