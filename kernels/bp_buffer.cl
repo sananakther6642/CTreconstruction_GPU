@@ -100,7 +100,9 @@ __kernel void preprocess_proj(
     __global       float *dst,
     int   W,
     int   H,
-    float voxelSize
+    float voxelSize,
+    float SDD,
+    float pixelSize
 )
 {
     int iw = get_global_id(0);
@@ -108,8 +110,13 @@ __kernel void preprocess_proj(
     int ip = get_global_id(2);
     if (iw >= W || ih >= H) return;
 
-    /* flip H-axis: src row = H-1-ih; src is [H][W] per slice */
-    float val = src[ip * H * W + (H - 1 - ih) * W + iw] / voxelSize;
+    /* cone weight in src [H][W] space: u along W, v along H */
+    float u = (-(float)(iw - (W-1)*0.5f)) * pixelSize;
+    float v = (  (float)(ih - (H-1)*0.5f)) * pixelSize;
+    float cw = SDD / sqrt(SDD*SDD + u*u + v*v);
+
+    /* flip H-axis + divide by voxelSize + fused cone weight */
+    float val = src[ip * H * W + (H - 1 - ih) * W + iw] / voxelSize * cw;
     /* transpose: dst is [W][H] per slice */
     dst[ip * W * H + iw * H + ih] = val;
 }
