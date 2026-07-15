@@ -62,6 +62,9 @@ def angle2pose(SOD, angle):
     return T
 
 def fp_func(cb_para, volume, sample_ratio=2):
+    """Vectorized fp_func — same math as reference but no Python inner loops.
+    Processes all pixels for one angle at once via batched map_coordinates.
+    Memory: ~2 GB peak for 256^3 volume, 512x512 detector, 512 samples."""
     angles    = cb_para['angles']
     H, W      = cb_para['detector_height'], cb_para['detector_width']
     SDD, SOD  = cb_para['SDD'], cb_para['SOD']
@@ -71,58 +74,73 @@ def fp_func(cb_para, volume, sample_ratio=2):
     nVoxel_y  = cb_para['Volumen_num_y']
     sVoxel_xz = nVoxel_xz * voxelSize
     sVoxel_y  = nVoxel_y  * voxelSize
-    nVoxel = np.array([nVoxel_xz, nVoxel_y, nVoxel_xz])
-    sVoxel = np.array([sVoxel_xz, sVoxel_y, sVoxel_xz])
-    rays = []
-    for angle in angles:
-        pose = np.array(angle2pose(SOD, angle), dtype=np.float32)
-        i, j = np.meshgrid(np.linspace(0,W-1,W), np.linspace(0,H-1,H), indexing='ij')
-        uu = (i.T + 0.5 - W/2) * pixelSize
-        vv = (j.T + 0.5 - H/2) * pixelSize
-        dirs   = np.stack([uu/SDD, vv/SDD, np.ones_like(uu)], axis=-1)
-        rays_d = np.sum(np.matmul(pose[:3,:3], dirs[...,None]), axis=-1)
-        rays_o = np.broadcast_to(pose[:3,-1], rays_d.shape)
-        rays.append(np.concatenate([rays_o, rays_d], axis=-1))
-    rays     = np.stack(rays, axis=0)
-    dist_max = sVoxel_xz * 1.42
-    near     = max(0, SOD - dist_max)
-    far      = min(SOD * 2, SOD + dist_max)
+    nVoxel = np.array([nVoxel_xz, nVoxel_y, nVoxel_xz], dtype=np.float32)
+    sVoxel = np.array([sVoxel_xz, sVoxel_y, sVoxel_xz], dtype=np.float32)
+
+    dist_max  = sVoxel_xz * 1.42
+    near      = max(0.0, SOD - dist_max)
+    far       = min(SOD * 2.0, SOD + dist_max)
     n_samples = math.ceil(nVoxel_xz * sample_ratio)
+
+    # detector pixel grid [W, H]
+    ii, jj = np.meshgrid(np.arange(W, dtype=np.float32),
+                         np.arange(H, dtype=np.float32), indexing='ij')
+    uu = (ii + 0.5 - W / 2) * pixelSize   # [W, H]
+    vv = (jj + 0.5 - H / 2) * pixelSize
+
     projs = []
-    for index_proj in range(rays.shape[0]):
-        rays_per_proj = rays[index_proj]
-        rays_o, rays_d = rays_per_proj[...,:3], rays_per_proj[...,3:6]
-        t_vals = np.linspace(0., 1., n_samples)
+    for angle in angles:
+        pose  = np.array(angle2pose(SOD, angle), dtype=np.float32)
+        R     = pose[:3, :3]   # [3,3]
+        trans = pose[:3, -1]   # [3]
+
+        # ray directions: [W, H, 3]
+        dirs   = np.stack([uu / SDD, vv / SDD, np.ones_like(uu)], axis=-1)
+        rays_d = (R @ dirs.reshape(-1, 3).T).T.reshape(W, H, 3).astype(np.float32)
+        rays_o = trans  # broadcast [3]
+
+        # sample t values with jitter [n_samples]
+        t_vals = np.linspace(0., 1., n_samples, dtype=np.float32)
         z_vals = near * (1. - t_vals) + far * t_vals
-        mids   = .5 * (z_vals[...,1:] + z_vals[...,:-1])
-        upper  = np.concatenate([mids, z_vals[...,-1:]], axis=-1)
-        lower  = np.concatenate([z_vals[...,:1], mids],  axis=-1)
-        t_rand = np.random.rand(*z_vals.shape)
-        z_vals = lower + (upper - lower) * t_rand
-        pts    = rays_o[...,None,:] + rays_d[...,None,:] * z_vals[...,:,None]
-        pts    = (pts + sVoxel / 2) / sVoxel * nVoxel - 0.5
-        proj   = np.zeros([H, W])
-        for i in range(pts.shape[0]):
-            for j in range(pts.shape[1]):
-                pts_per_ray = pts[i][j]
-                ray_d       = rays_d[i][j]
-                raw = map_coordinates(volume,
-                    [pts_per_ray[...,0].ravel(),
-                     pts_per_ray[...,1].ravel(),
-                     pts_per_ray[...,2].ravel()],
-                    order=1, mode='constant', cval=0.0)
-                dists = z_vals[1:] - z_vals[:-1]
-                dists = np.concatenate([dists, np.ones([1])*1e-10], axis=-1)
-                dists = dists * np.linalg.norm(ray_d, axis=-1)
-                proj[i][j] = np.sum(raw * dists, axis=-1)
-        projs.append(proj)
-    return np.stack(projs, axis=0)
+        mids   = 0.5 * (z_vals[1:] + z_vals[:-1])
+        upper  = np.concatenate([mids, z_vals[-1:]])
+        lower  = np.concatenate([z_vals[:1], mids])
+        z_vals = lower + (upper - lower) * np.random.rand(n_samples).astype(np.float32)
+
+        # dists [n_samples]: same for all pixels (rays_d norm varies but applied below)
+        dists_t = np.concatenate([z_vals[1:] - z_vals[:-1],
+                                   np.array([1e-10], dtype=np.float32)])  # [n_samples]
+
+        # sample points in world space: [W, H, n_samples, 3]
+        pts = rays_o + rays_d[..., None, :] * z_vals[None, None, :, None]
+
+        # world → voxel index: [W, H, n_samples, 3]
+        pts_idx = (pts + sVoxel / 2) / sVoxel * nVoxel - 0.5
+
+        # flatten to [3, W*H*n_samples] for map_coordinates
+        flat = pts_idx.reshape(-1, 3).T  # [3, N]
+
+        raw = map_coordinates(volume,
+                              [flat[0], flat[1], flat[2]],
+                              order=1, mode='constant', cval=0.0
+                              ).reshape(W, H, n_samples).astype(np.float32)
+
+        # ray_d norm per pixel [W, H]
+        rd_norm = np.linalg.norm(rays_d, axis=-1, keepdims=True)  # [W, H, 1]
+
+        # integrate: sum(raw * dists_t * rd_norm) over samples → [W, H]
+        proj = np.sum(raw * dists_t[None, None, :] * rd_norm, axis=-1)  # [W, H]
+
+        # output layout [H, W] matching original
+        projs.append(proj.T)
+
+    return np.stack(projs, axis=0)  # [num_projs, H, W]
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
 path_data = '/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5'
 out_path  = 'output_python.hdf5'
-EPOCHS    = 10   # Python fp_func is very slow; 10 epochs takes ~30-60 min
+EPOCHS    = 10   # vectorized fp: ~1-2 min/epoch
 
 print(f"Loading {path_data} ...")
 with h5py.File(path_data, 'r') as f:
