@@ -16,17 +16,6 @@ static void print_usage(const char *prog)
         prog);
 }
 
-/* Compute MSE between two float arrays of length n */
-static double mse(const float *a, const float *b, size_t n)
-{
-    double s = 0.0;
-    for (size_t i = 0; i < n; i++) {
-        double d = (double)a[i] - (double)b[i];
-        s += d * d;
-    }
-    return s / (double)n;
-}
-
 int main(int argc, char **argv)
 {
     const char *data_path    = NULL;

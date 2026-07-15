@@ -87,13 +87,12 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
     /* Build paths */
     char path_bp_buf[512], path_fp_buf[512];
     char path_bp_img[512], path_fp_img[512];
-    char path_bp_opt[512], path_fp_opt[512];
+    char path_bp_opt[512];
     snprintf(path_bp_buf, sizeof(path_bp_buf), "%s/bp_buffer.cl",     kernel_dir);
     snprintf(path_fp_buf, sizeof(path_fp_buf), "%s/fp_buffer.cl",     kernel_dir);
     snprintf(path_bp_img, sizeof(path_bp_img), "%s/bp_image.cl",      kernel_dir);
     snprintf(path_fp_img, sizeof(path_fp_img), "%s/fp_image.cl",      kernel_dir);
     snprintf(path_bp_opt, sizeof(path_bp_opt), "%s/bp_buffer_opt.cl", kernel_dir);
-    snprintf(path_fp_opt, sizeof(path_fp_opt), "%s/fp_buffer_opt.cl", kernel_dir);
 
     /* ── Buffer-mode program (bp + fp + utilities all in one) ── */
     {
@@ -136,20 +135,16 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
     /* ── Optimized program ── */
     if (mode == GPU_MODE_OPT) {
         char *src_bp   = load_source(path_bp_opt);
-        char *src_fp   = load_source(path_fp_opt);
         /* also need utility kernels (cone_weight, proj_divide, vol_update) */
         char *src_util = load_source(path_bp_buf);
-        char *tmp      = concat_src(src_bp, src_fp);
-        char *combined = concat_src(tmp, src_util);
+        char *combined = concat_src(src_bp, src_util);
         cl->prog_opt = build_program(cl->ctx, cl->device, combined);
-        free(src_bp); free(src_fp); free(src_util); free(tmp); free(combined);
+        free(src_bp); free(src_util); free(combined);
 
         cl->k_bp_opt = clCreateKernel(cl->prog_opt, "bp_opt", &err);
         CL_CHECK(err, "bp_opt");
         cl->k_bp_ang = clCreateKernel(cl->prog_opt, "bp_angle_parallel", &err);
         CL_CHECK(err, "bp_angle_parallel");
-        cl->k_fp_opt = clCreateKernel(cl->prog_opt, "fp_opt", &err);
-        CL_CHECK(err, "fp_opt");
         /* reuse utility kernels from buffer prog */
         cl->k_cone   = clCreateKernel(cl->prog_opt, "cone_weight", &err);
         CL_CHECK(err, "cone_weight (opt)");
@@ -178,7 +173,7 @@ void gpu_cleanup(CLState *cl)
     }
     if (cl->mode == GPU_MODE_OPT) {
         clReleaseKernel(cl->k_bp_opt); clReleaseKernel(cl->k_bp_ang);
-        clReleaseKernel(cl->k_fp_opt); clReleaseKernel(cl->k_cone);
+        clReleaseKernel(cl->k_cone);
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
         clReleaseKernel(cl->k_fp_img); clReleaseKernel(cl->k_bp_img);
         clReleaseProgram(cl->prog_opt);
@@ -616,12 +611,12 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * reconstruct_gpu_opt — uses optimized kernels (bp_opt + fp_opt)
+ * reconstruct_gpu_opt — uses optimized bp kernel (bp_opt)
  *
  * Key differences from reconstruct_gpu:
  *  - Passes float2 angle_cs (cos/sin LUT) instead of raw angle array
  *  - Passes __local scratch buffer sized W*H floats to bp_opt
- *  - Uses k_bp_opt / k_fp_opt
+ *  - Uses k_bp_opt for backprojection and fp_image for forward projection
  * ═══════════════════════════════════════════════════════════════════════════ */
 void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          const float *proj_measured, float *volume,

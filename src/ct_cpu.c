@@ -9,51 +9,6 @@
 #define PROJ_IDX(p, h, w, H, W)  ((p)*(H)*(W) + (h)*(W) + (w))
 #define VOL_IDX(x, y, z, Nxz, Ny) ((x)*(Nxz)*(Ny) + (y)*(Ny) + (z))
 
-/* ── bilinear interpolation on a W×H image stored as [W][H] (col-major)
-   matching Python's indexing='ij' meshgrid ─────────────────────────────── */
-static float bilinear(const float *img, int W, int H, float u, float v)
-{
-    /* img stored [W rows][H cols] → img[iw*H + ih] */
-    float uf = u + (W - 1) * 0.5f;
-    float vf = v + (H - 1) * 0.5f;
-
-    int u0 = (int)floorf(uf);
-    int v0 = (int)floorf(vf);
-    float du = uf - u0;
-    float dv = vf - v0;
-
-    int u1 = u0 + 1, v1 = v0 + 1;
-
-    float c00 = (u0 >= 0 && u0 < W && v0 >= 0 && v0 < H) ? img[u0*H + v0] : 0.f;
-    float c10 = (u1 >= 0 && u1 < W && v0 >= 0 && v0 < H) ? img[u1*H + v0] : 0.f;
-    float c01 = (u0 >= 0 && u0 < W && v1 >= 0 && v1 < H) ? img[u0*H + v1] : 0.f;
-    float c11 = (u1 >= 0 && u1 < W && v1 >= 0 && v1 < H) ? img[u1*H + v1] : 0.f;
-
-    return c00*(1-du)*(1-dv) + c10*du*(1-dv) + c01*(1-du)*dv + c11*du*dv;
-}
-
-/* trilinear interpolation in volume [Nxz][Nxz][Ny] */
-static float trilinear(const float *vol, int Nxz, int Ny,
-                        float xi, float yi, float zi)
-{
-    int x0 = (int)floorf(xi), x1 = x0+1;
-    int y0 = (int)floorf(yi), y1 = y0+1;
-    int z0 = (int)floorf(zi), z1 = z0+1;
-    float dx = xi-x0, dy = yi-y0, dz = zi-z0;
-
-#define VGET(x,y,z) ( ((x)>=0&&(x)<Nxz&&(y)>=0&&(y)<Nxz&&(z)>=0&&(z)<Ny) \
-                      ? vol[VOL_IDX((x),(y),(z),Nxz,Ny)] : 0.f )
-    float c000=VGET(x0,y0,z0), c100=VGET(x1,y0,z0);
-    float c010=VGET(x0,y1,z0), c110=VGET(x1,y1,z0);
-    float c001=VGET(x0,y0,z1), c101=VGET(x1,y0,z1);
-    float c011=VGET(x0,y1,z1), c111=VGET(x1,y1,z1);
-#undef VGET
-    return c000*(1-dx)*(1-dy)*(1-dz) + c100*dx*(1-dy)*(1-dz)
-         + c010*(1-dx)*dy*(1-dz)     + c110*dx*dy*(1-dz)
-         + c001*(1-dx)*(1-dy)*dz     + c101*dx*(1-dy)*dz
-         + c011*(1-dx)*dy*dz         + c111*dx*dy*dz;
-}
-
 /*
  * prep_proj_for_bp: apply Python's pre-processing done at start of bp_func:
  *   proj[:, ::-1, :].transpose(0,2,1)  →  flip H-axis, then swap W↔H axes
