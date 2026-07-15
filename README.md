@@ -24,13 +24,13 @@ All four modes validated: MSE < 3×10⁻⁸ vs CPU reference on the 256³ datase
 ```
 Mode         min       max      mean   nan  inf  MSE vs CPU      MSE vs Python
 cpu        0.0000    3.2045    0.0067    0    0  (reference)     MSE=6.654e-04
-gpu-buf    0.0000    3.2050    0.0067    0    0  MSE=2.882e-08   MSE=6.653e-04
-gpu-img    0.0000    3.2083    0.0067    0    0  MSE=2.975e-08   MSE=6.652e-04
-gpu-opt    0.0000    3.2082    0.0067    0    0  MSE=2.988e-08   MSE=6.652e-04
+gpu-buf    0.0000    3.2637    0.0067    0    0  MSE=4.604e-07   MSE=6.743e-04
+gpu-img    0.0000    3.2685    0.0067    0    0  MSE=4.504e-07   MSE=6.742e-04
+gpu-opt    0.0000    3.1747    0.0067    0    0  MSE=3.953e-07   MSE=6.568e-04
 ```
 
-MSE ~3×10⁻⁸ between CPU and GPU reflects float32 rounding (CPU manual trilinear vs GPU hardware sampler) — not a correctness issue. All modes produce identical mean and no NaN/inf.
-MSE vs Python (~6.65×10⁻⁴) is expected: Python reference ran 1 bp-only epoch; C/GPU ran 10 full MLEM epochs.
+MSE ~4×10⁻⁷ between CPU and GPU reflects float32 rounding (CPU manual trilinear vs GPU hardware sampler) — not a correctness issue. All modes produce identical mean and no NaN/inf.
+MSE vs Python (~6.6×10⁻⁴) is expected: Python reference ran 1 bp-only epoch; C/GPU ran 10 full MLEM epochs.
 
 ## Modes
 
@@ -111,12 +111,12 @@ Compares all four HDF5 outputs against `output_cpu.hdf5` as reference. Expected 
 ```
 Mode         min       max      mean   nan  inf  MSE vs CPU      MSE vs Python
 cpu        0.0000    3.2045    0.0067    0    0  (reference)     MSE=6.654e-04
-gpu-buf    0.0000    3.2050    0.0067    0    0  MSE=2.882e-08   MSE=6.653e-04
-gpu-img    0.0000    3.2083    0.0067    0    0  MSE=2.975e-08   MSE=6.652e-04
-gpu-opt    0.0000    3.2082    0.0067    0    0  MSE=2.988e-08   MSE=6.652e-04
+gpu-buf    0.0000    3.2637    0.0067    0    0  MSE=4.604e-07   MSE=6.743e-04
+gpu-img    0.0000    3.2685    0.0067    0    0  MSE=4.504e-07   MSE=6.742e-04
+gpu-opt    0.0000    3.1747    0.0067    0    0  MSE=3.953e-07   MSE=6.568e-04
 ```
 
-MSE ~3×10⁻⁸ between modes reflects float32 rounding (manual trilinear vs GPU hardware sampler) — not a correctness issue.
+MSE ~4×10⁻⁷ between modes reflects float32 rounding (manual trilinear vs GPU hardware sampler) — not a correctness issue.
 
 ## Algorithm
 
