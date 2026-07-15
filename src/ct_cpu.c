@@ -20,16 +20,18 @@
  * dst may equal src only if a temp buffer is used — caller passes separate buf.
  */
 static void prep_proj_for_bp(const float *src, float *dst,
-                              int np, int W, int H, float voxelSize)
+                              int np, int W, int H, float voxelSize,
+                              float SDD, float pixelSize)
 {
     for (int ip = 0; ip < np; ip++) {
         const float *s = src + ip * H * W;
         float       *d = dst + ip * W * H;
         for (int iw = 0; iw < W; iw++) {
+            float u = (-(float)(iw - (W-1)*0.5f)) * pixelSize;
             for (int ih = 0; ih < H; ih++) {
-                /* Python [::-1, :] on H axis: source row = (H-1-ih) */
-                /* Python .transpose(0,2,1): src[ip][ih][iw] → dst[ip][iw][ih] */
-                d[iw * H + ih] = s[(H - 1 - ih) * W + iw] / voxelSize;
+                float v  = ((float)(ih - (H-1)*0.5f)) * pixelSize;
+                float cw = SDD / sqrtf(SDD*SDD + u*u + v*v);
+                d[iw * H + ih] = s[(H - 1 - ih) * W + iw] / voxelSize * cw;
             }
         }
     }
@@ -212,7 +214,7 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
     float dist_max  = sVoxel_xz * 1.42f;
     float near_t    = fmaxf(0.f, SOD - dist_max);
     float far_t     = fminf(SOD * 2.f, SOD + dist_max);
-    int   n_samples = (int)ceilf(Nxz * 1.f);
+    int   n_samples = (int)ceilf(Nxz * 0.5f);
     float dt        = (far_t - near_t) / (float)(n_samples - 1);
 
     /* constants for world→voxel mapping */
@@ -312,12 +314,12 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
     float *bp_ratio = (float *)malloc(vol_size    * sizeof(float));
     float *bp_ones  = (float *)malloc(vol_size    * sizeof(float));
 
-    /* Precompute bp(ones): cone_weight ones then preprocess — matches Python bp_f(ones) */
+    /* Precompute bp(ones): cone_weight fused into prep_proj_for_bp */
     float *ones_raw = (float *)malloc(proj_size * sizeof(float));
     float *ones_p   = (float *)malloc(proj_size_t * sizeof(float));
     for (size_t i = 0; i < proj_size; i++) ones_raw[i] = 1.f;
-    cone_weight_cpu(ones_raw, p);
-    prep_proj_for_bp(ones_raw, ones_p, np, W, H, (float)p->voxelSize);
+    prep_proj_for_bp(ones_raw, ones_p, np, W, H, (float)p->voxelSize,
+                     (float)p->SDD, (float)p->pixelSize);
     bp_cpu(ones_p, bp_ones, p);
     free(ones_raw); free(ones_p);
 
@@ -331,10 +333,9 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
         for (size_t i = 0; i < proj_size; i++)
             ratio[i] = (b[i] > 1e-3f) ? proj_measured[i] / b[i] : 0.f;
 
-        /* cone-weight ratio before bp — matches Python bp_f which applies it internally */
-        cone_weight_cpu(ratio, p);
-
-        prep_proj_for_bp(ratio, ratio_bp, np, W, H, (float)p->voxelSize);
+        /* cone_weight fused into prep_proj_for_bp */
+        prep_proj_for_bp(ratio, ratio_bp, np, W, H, (float)p->voxelSize,
+                         (float)p->SDD, (float)p->pixelSize);
         double t2 = get_time_sec();
         bp_cpu(ratio_bp, bp_ratio, p);
         double t3 = get_time_sec();

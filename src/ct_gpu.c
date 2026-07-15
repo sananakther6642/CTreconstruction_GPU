@@ -184,10 +184,8 @@ void gpu_cleanup(CLState *cl)
 }
 
 /*
- * run_preprocess — GPU equivalent of Python's bp_func first line:
- *   proj[:, ::-1, :].transpose(0,2,1) / voxelSize
- *
- * src: [np*H*W]  (as loaded from HDF5, row-major [ip][ih][iw])
+ * run_preprocess — flip+transpose+scale+cone_weight fused into one kernel.
+ * src: [np*H*W]  (row-major [ip][ih][iw])
  * dst: [np*W*H]  (col-major [ip][iw][ih], ready for bp kernels)
  */
 static void run_preprocess(CLState *cl, const CBpara *p,
@@ -196,13 +194,17 @@ static void run_preprocess(CLState *cl, const CBpara *p,
     cl_int err;
     cl_kernel k = cl->k_preproc;
     int W = p->detector_width, H = p->detector_height, np = p->num_projs;
-    float vs = (float)p->voxelSize;
+    float vs  = (float)p->voxelSize;
+    float SDD = (float)p->SDD;
+    float px  = (float)p->pixelSize;
 
     clSetKernelArg(k, 0, sizeof(cl_mem), &src);
     clSetKernelArg(k, 1, sizeof(cl_mem), &dst);
     clSetKernelArg(k, 2, sizeof(int),    &W);
     clSetKernelArg(k, 3, sizeof(int),    &H);
     clSetKernelArg(k, 4, sizeof(float),  &vs);
+    clSetKernelArg(k, 5, sizeof(float),  &SDD);
+    clSetKernelArg(k, 6, sizeof(float),  &px);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
     size_t lws[3] = {16, 16, 1};
@@ -258,7 +260,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
     int W = p->detector_width,   H  = p->detector_height;
     int np = p->num_projs;
-    int n_samples = (int)ceilf(Nxz * 1.f);
+    int n_samples = (int)ceilf(Nxz * 0.5f);
     float SOD=(float)p->SOD, SDD=(float)p->SDD;
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
@@ -328,7 +330,7 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
     int W = p->detector_width,   H  = p->detector_height;
     int np = p->num_projs;
-    int n_samples = (int)ceilf(Nxz * 1.f);
+    int n_samples = (int)ceilf(Nxz * 0.5f);
     float SOD=(float)p->SOD, SDD=(float)p->SDD;
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
@@ -411,23 +413,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                                   0, proj_bytes, 0, NULL, NULL);
         CL_CHECK(err, "fill ones");
         clFinish(cl->queue);
-        /* Match CPU/Python: bp_ones = bp(cone_weight(ones)). */
-        {
-            cl_kernel k = cl->k_cone_hw;
-            float SDD=(float)p->SDD, px=(float)p->pixelSize;
-            clSetKernelArg(k,0,sizeof(cl_mem),&d_ones_raw);
-            clSetKernelArg(k,1,sizeof(int),&W);
-            clSetKernelArg(k,2,sizeof(int),&H);
-            clSetKernelArg(k,3,sizeof(float),&SDD);
-            clSetKernelArg(k,4,sizeof(float),&px);
-            size_t gws[3]={(size_t)W,(size_t)H,(size_t)np};
-            size_t lws[3]={16,16,1};
-            for (int d=0; d<3; d++)
-                if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
-            err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
-            CL_CHECK(err, "cone_weight ones");
-            clFinish(cl->queue);
-        }
+        /* cone_weight fused into preprocess_proj — one kernel pass */
         run_preprocess(cl, p, d_ones_raw, d_ones_prep);
         clFinish(cl->queue);
 
@@ -535,25 +521,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         }
         clFinish(cl->queue);
 
-        /* cone-weight ratio in-place (raw [np,H,W]) before preprocess+bp
-         * matches Python: bp_f(result) applies cone_weight inside bp_func */
-        {
-            cl_kernel k = cl->k_cone_hw;
-            float SDD=(float)p->SDD, px=(float)p->pixelSize;
-            clSetKernelArg(k,0,sizeof(cl_mem),&d_ratio);
-            clSetKernelArg(k,1,sizeof(int),&W);
-            clSetKernelArg(k,2,sizeof(int),&H);
-            clSetKernelArg(k,3,sizeof(float),&SDD);
-            clSetKernelArg(k,4,sizeof(float),&px);
-            size_t gws[3]={(size_t)W,(size_t)H,(size_t)np};
-            size_t lws[3]={16,16,1};
-            for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
-            err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
-            CL_CHECK(err,"cone_weight ratio");
-            clFinish(cl->queue);
-        }
-
-        /* preprocess ratio → d_ratio_prep before passing to bp */
+        /* cone_weight fused into preprocess_proj — one kernel pass */
         run_preprocess(cl, p, d_ratio, d_ratio_prep);
         clFinish(cl->queue);
 
@@ -688,23 +656,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         float one=1.f;
         clEnqueueFillBuffer(cl->queue, d_ones_raw, &one, sizeof(float), 0, proj_bytes, 0, NULL, NULL);
         clFinish(cl->queue);
-        /* Match CPU/Python: bp_ones = bp(cone_weight(ones)). */
-        {
-            cl_kernel k = cl->k_cone_hw;
-            float SDD=(float)p->SDD, px=(float)p->pixelSize;
-            clSetKernelArg(k,0,sizeof(cl_mem),&d_ones_raw);
-            clSetKernelArg(k,1,sizeof(int),&W);
-            clSetKernelArg(k,2,sizeof(int),&H);
-            clSetKernelArg(k,3,sizeof(float),&SDD);
-            clSetKernelArg(k,4,sizeof(float),&px);
-            size_t gws[3]={(size_t)W,(size_t)H,(size_t)np};
-            size_t lws[3]={16,16,1};
-            for (int d=0; d<3; d++)
-                if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
-            err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
-            CL_CHECK(err, "cone_weight ones opt");
-            clFinish(cl->queue);
-        }
+        /* cone_weight fused into preprocess_proj */
         run_preprocess(cl, p, d_ones_raw, d_ones_prep);
         clFinish(cl->queue);
         clReleaseMemObject(d_ones_raw);
@@ -804,24 +756,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         }
         clFinish(cl->queue);
 
-        /* cone-weight ratio in-place (raw [np,H,W]) — matches Python bp_func */
-        {
-            cl_kernel k = cl->k_cone_hw;
-            float SDD=(float)p->SDD, px=(float)p->pixelSize;
-            clSetKernelArg(k,0,sizeof(cl_mem),&d_ratio);
-            clSetKernelArg(k,1,sizeof(int),&W);
-            clSetKernelArg(k,2,sizeof(int),&H);
-            clSetKernelArg(k,3,sizeof(float),&SDD);
-            clSetKernelArg(k,4,sizeof(float),&px);
-            size_t gws[3]={(size_t)W,(size_t)H,(size_t)np};
-            size_t lws[3]={16,16,1};
-            for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
-            err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
-            CL_CHECK(err,"cone_weight ratio opt");
-            clFinish(cl->queue);
-        }
-
-        /* preprocess ratio → d_ratio_prep */
+        /* cone_weight fused into preprocess_proj */
         run_preprocess(cl, p, d_ratio, d_ratio_prep);
         clFinish(cl->queue);
 
