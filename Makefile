@@ -1,5 +1,5 @@
 CC      = gcc
-CFLAGS  = -O3 -march=native -fopenmp -Wall -Iinclude -DCL_TARGET_OPENCL_VERSION=120
+CFLAGS  = -O3 -march=native -fopenmp -ffast-math -Wall -Iinclude -DCL_TARGET_OPENCL_VERSION=120
 # Detect OS for OpenCL + HDF5 linking
 UNAME := $(shell uname)
 ifeq ($(UNAME), Darwin)
