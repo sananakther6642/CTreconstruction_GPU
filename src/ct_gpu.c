@@ -449,13 +449,14 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             cl_image_format fmt = {CL_R, CL_FLOAT};
             cl_image_desc desc = {0};
             desc.image_type       = CL_MEM_OBJECT_IMAGE2D_ARRAY;
-            desc.image_width      = (size_t)W;
-            desc.image_height     = (size_t)H;
+            /* d_ones_prep is [np][W][H] col-major; use width=H,height=W. */
+            desc.image_width      = (size_t)H;
+            desc.image_height     = (size_t)W;
             desc.image_array_size = (size_t)np;
             cl_mem ones_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &fmt, &desc, NULL, &err);
             CL_CHECK(err,"ones_img");
             size_t oorigin[3]={0,0,0};
-            size_t oregion[3]={(size_t)W,(size_t)H,(size_t)np};
+            size_t oregion[3]={(size_t)H,(size_t)W,(size_t)np};
             err = clEnqueueCopyBufferToImage(cl->queue, d_ones_prep, ones_img,
                                              0, oorigin, oregion, 0, NULL, NULL);
             CL_CHECK(err,"CopyBufferToImage ones_prep");
@@ -499,7 +500,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     if (cl->mode == GPU_MODE_IMAGE) {
         cl_image_desc rdesc={0};
         rdesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
-        rdesc.image_width=(size_t)W; rdesc.image_height=(size_t)H;
+        rdesc.image_width=(size_t)H; rdesc.image_height=(size_t)W;
         rdesc.image_array_size=(size_t)np;
         ratio_img_buf = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &img_fmt, &rdesc, NULL, &err);
         CL_CHECK(err,"ratio_img_buf persistent");
@@ -569,7 +570,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                 run_bp_buffer(cl, p, d_ratio_prep, d_angles, d_bp_ratio);
             } else {
                 size_t rorigin[3]={0,0,0};
-                size_t rregion[3]={(size_t)W,(size_t)H,(size_t)np};
+                size_t rregion[3]={(size_t)H,(size_t)W,(size_t)np};
                 err=clEnqueueCopyBufferToImage(cl->queue, d_ratio_prep, ratio_img_buf,
                                                0, rorigin, rregion, 0,NULL,NULL);
                 CL_CHECK(err,"CopyBufferToImage ratio img");
@@ -719,12 +720,12 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
 
         cl_image_desc idesc={0};
         idesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
-        idesc.image_width=(size_t)W; idesc.image_height=(size_t)H;
+        idesc.image_width=(size_t)H; idesc.image_height=(size_t)W;
         idesc.image_array_size=(size_t)np;
         cl_mem ones_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &img_fmt, &idesc, NULL, &err);
         CL_CHECK(err,"ones_img opt");
         size_t oorigin[3]={0,0,0};
-        size_t oregion[3]={(size_t)W,(size_t)H,(size_t)np};
+        size_t oregion[3]={(size_t)H,(size_t)W,(size_t)np};
         err = clEnqueueCopyBufferToImage(cl->queue, d_ones_prep, ones_img,
                                          0, oorigin, oregion, 0, NULL, NULL);
         CL_CHECK(err,"CopyBufferToImage ones_prep opt");
@@ -765,7 +766,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     /* Persistent image2d_array for ratio — reused every epoch via CopyBufferToImage */
     cl_image_desc rdesc={0};
     rdesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
-    rdesc.image_width=(size_t)W; rdesc.image_height=(size_t)H;
+    rdesc.image_width=(size_t)H; rdesc.image_height=(size_t)W;
     rdesc.image_array_size=(size_t)np;
     cl_mem ratio_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &img_fmt, &rdesc, NULL, &err);
     CL_CHECK(err,"ratio_img persistent");
@@ -830,7 +831,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         /* ── copy d_ratio_prep buffer → ratio_img (no host roundtrip) ── */
         {
             size_t origin[3]={0,0,0};
-            size_t region[3]={(size_t)W,(size_t)H,(size_t)np};
+            size_t region[3]={(size_t)H,(size_t)W,(size_t)np};
             err=clEnqueueCopyBufferToImage(cl->queue, d_ratio_prep, ratio_img,
                                            0, origin, region, 0, NULL, NULL);
             CL_CHECK(err,"CopyBufferToImage ratio");
