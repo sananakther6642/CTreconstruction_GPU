@@ -258,7 +258,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
     int W = p->detector_width,   H  = p->detector_height;
     int np = p->num_projs;
-    int n_samples = (int)ceilf(Nxz * 2.f);
+    int n_samples = (int)ceilf(Nxz * 1.f);
     float SOD=(float)p->SOD, SDD=(float)p->SDD;
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
@@ -328,7 +328,7 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
     int W = p->detector_width,   H  = p->detector_height;
     int np = p->num_projs;
-    int n_samples = (int)ceilf(Nxz * 2.f);
+    int n_samples = (int)ceilf(Nxz * 1.f);
     float SOD=(float)p->SOD, SDD=(float)p->SDD;
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
@@ -727,27 +727,28 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         clFinish(cl->queue);
         clReleaseMemObject(d_ones_prep);
 
-        cl_kernel k = cl->k_bp_opt;
-        int ns=np; float SOD=(float)p->SOD,SDD=(float)p->SDD;
+        cl_kernel k = cl->k_bp_ang;
+        float SOD=(float)p->SOD,SDD=(float)p->SDD;
         float vs=(float)p->voxelSize,px=(float)p->pixelSize;
+        float scale=(float)M_PI/(float)np;
         clSetKernelArg(k,0,sizeof(cl_mem),&ones_img);
         clSetKernelArg(k,1,sizeof(cl_mem),&d_ang_cs);
         clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
-        clSetKernelArg(k,3,lmem_bytes,NULL);
-        clSetKernelArg(k,4,sizeof(int),&Nxz);
-        clSetKernelArg(k,5,sizeof(int),&Ny);
-        clSetKernelArg(k,6,sizeof(int),&W);
-        clSetKernelArg(k,7,sizeof(int),&H);
-        clSetKernelArg(k,8,sizeof(int),&ns);
-        clSetKernelArg(k,9,sizeof(float),&SOD);
-        clSetKernelArg(k,10,sizeof(float),&SDD);
-        clSetKernelArg(k,11,sizeof(float),&vs);
-        clSetKernelArg(k,12,sizeof(float),&px);
-        size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
+        clSetKernelArg(k,3,sizeof(int),&Nxz);
+        clSetKernelArg(k,4,sizeof(int),&Ny);
+        clSetKernelArg(k,5,sizeof(int),&W);
+        clSetKernelArg(k,6,sizeof(int),&H);
+        clSetKernelArg(k,7,sizeof(int),&np);
+        clSetKernelArg(k,8,sizeof(float),&SOD);
+        clSetKernelArg(k,9,sizeof(float),&SDD);
+        clSetKernelArg(k,10,sizeof(float),&vs);
+        clSetKernelArg(k,11,sizeof(float),&px);
+        clSetKernelArg(k,12,sizeof(float),&scale);
+        size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)(Ny*np)};
         size_t lws[3]={8,8,4};
         for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
         err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
-        CL_CHECK(err,"bp_opt ones");
+        CL_CHECK(err,"bp_angle_parallel ones");
         clFinish(cl->queue);
         clReleaseMemObject(ones_img);
         printf("  bp_opt(ones) computed.\n");
@@ -833,29 +834,32 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         }
         clFinish(cl->queue);
 
-        /* ── bp_opt(ratio_img) ── */
+        /* ── bp_angle_parallel(ratio_img): 4D dispatch Nxz×Nxz×(Ny*np) ── */
         {
             float zero=0.f;
             clEnqueueFillBuffer(cl->queue,d_bp_ratio,&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
-            cl_kernel k = cl->k_bp_opt;
+            cl_kernel k = cl->k_bp_ang;
+            /* scale = pi/np already baked per-contribution */
+            float scale = (float)M_PI / (float)np;
             clSetKernelArg(k,0,sizeof(cl_mem),&ratio_img);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_ang_cs);
             clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ratio);
-            clSetKernelArg(k,3,lmem_bytes,NULL);
-            clSetKernelArg(k,4,sizeof(int),&Nxz);
-            clSetKernelArg(k,5,sizeof(int),&Ny);
-            clSetKernelArg(k,6,sizeof(int),&W);
-            clSetKernelArg(k,7,sizeof(int),&H);
-            clSetKernelArg(k,8,sizeof(int),&np);
-            clSetKernelArg(k,9,sizeof(float),&SOD);
-            clSetKernelArg(k,10,sizeof(float),&SDD);
-            clSetKernelArg(k,11,sizeof(float),&vs);
-            clSetKernelArg(k,12,sizeof(float),&px);
-            size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
-            size_t lws[3]={8,8,4};  /* 512 threads = 8 wavefronts — hide texture latency */
+            clSetKernelArg(k,3,sizeof(int),&Nxz);
+            clSetKernelArg(k,4,sizeof(int),&Ny);
+            clSetKernelArg(k,5,sizeof(int),&W);
+            clSetKernelArg(k,6,sizeof(int),&H);
+            clSetKernelArg(k,7,sizeof(int),&np);
+            clSetKernelArg(k,8,sizeof(float),&SOD);
+            clSetKernelArg(k,9,sizeof(float),&SDD);
+            clSetKernelArg(k,10,sizeof(float),&vs);
+            clSetKernelArg(k,11,sizeof(float),&px);
+            clSetKernelArg(k,12,sizeof(float),&scale);
+            /* z-dim encodes iz + ip*Ny — kernel unpacks with % and / */
+            size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)(Ny*np)};
+            size_t lws[3]={8,8,4};
             for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
-            CL_CHECK(err,"bp_opt ratio");
+            CL_CHECK(err,"bp_angle_parallel ratio");
         }
         clFinish(cl->queue);
 
