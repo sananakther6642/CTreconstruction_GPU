@@ -100,9 +100,13 @@ __kernel void fp_image(
          * image3d texel space: width=Ny(z), height=Nxz(y), depth=Nxz(x)
          * coord = (zi+0.5, yi+0.5, xi+0.5)
          */
-        float4 coord = (float4)(zi + 0.5f, yi + 0.5f, xi + 0.5f, 0.f);
-        float density = read_imagef(volume_img, vol_samp, coord).x;
-        val += density * dt * rd_norm;
+        if (xi > -0.5f && xi < (float)Nxz - 0.5f &&
+            yi > -0.5f && yi < (float)Ny   - 0.5f &&
+            zi > -0.5f && zi < (float)Nxz - 0.5f) {
+            float4 coord = (float4)(zi + 0.5f, yi + 0.5f, xi + 0.5f, 0.f);
+            float density = read_imagef(volume_img, vol_samp, coord).x;
+            val += density * dt * rd_norm;
+        }
     }
 
     proj[ip * H * W + iv * W + iu] = val;
