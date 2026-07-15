@@ -8,9 +8,9 @@ All four modes validated: MSE < 3×10⁻⁸ vs CPU reference on the 256³ datase
 | Mode | Time/epoch | Total (100ep) | Speedup vs CPU | Speedup vs baseline |
 |------|-----------|--------------|----------------|---------------------|
 | `cpu` | 2.45 s | 245 s | 1× | 2.6× |
-| `gpu-buf` | 0.54 s | 54 s | **4.5×** | 11.9× |
+| `gpu-buf` | 0.545 s | 54.5 s | **4.5×** | 11.8× |
 | `gpu-img` | 0.083 s | 8.3 s | **29.5×** | 77.6× |
-| `gpu-opt` | **0.070 s** | **7.0 s** | **35×** | **92×** |
+| `gpu-opt` | **0.069 s** | **6.9 s** | **35.5×** | **93×** |
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (6 cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
