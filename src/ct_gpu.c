@@ -416,6 +416,23 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                                   0, proj_bytes, 0, NULL, NULL);
         CL_CHECK(err, "fill ones");
         clFinish(cl->queue);
+        /* Match CPU/Python: bp_ones = bp(cone_weight(ones)). */
+        {
+            cl_kernel k = cl->k_cone_hw;
+            float SDD=(float)p->SDD, px=(float)p->pixelSize;
+            clSetKernelArg(k,0,sizeof(cl_mem),&d_ones_raw);
+            clSetKernelArg(k,1,sizeof(int),&W);
+            clSetKernelArg(k,2,sizeof(int),&H);
+            clSetKernelArg(k,3,sizeof(float),&SDD);
+            clSetKernelArg(k,4,sizeof(float),&px);
+            size_t gws[3]={(size_t)W,(size_t)H,(size_t)np};
+            size_t lws[3]={16,16,1};
+            for (int d=0; d<3; d++)
+                if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
+            err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
+            CL_CHECK(err, "cone_weight ones");
+            clFinish(cl->queue);
+        }
         run_preprocess(cl, p, d_ones_raw, d_ones_prep);
         clFinish(cl->queue);
 
@@ -675,6 +692,23 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         float one=1.f;
         clEnqueueFillBuffer(cl->queue, d_ones_raw, &one, sizeof(float), 0, proj_bytes, 0, NULL, NULL);
         clFinish(cl->queue);
+        /* Match CPU/Python: bp_ones = bp(cone_weight(ones)). */
+        {
+            cl_kernel k = cl->k_cone_hw;
+            float SDD=(float)p->SDD, px=(float)p->pixelSize;
+            clSetKernelArg(k,0,sizeof(cl_mem),&d_ones_raw);
+            clSetKernelArg(k,1,sizeof(int),&W);
+            clSetKernelArg(k,2,sizeof(int),&H);
+            clSetKernelArg(k,3,sizeof(float),&SDD);
+            clSetKernelArg(k,4,sizeof(float),&px);
+            size_t gws[3]={(size_t)W,(size_t)H,(size_t)np};
+            size_t lws[3]={16,16,1};
+            for (int d=0; d<3; d++)
+                if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
+            err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
+            CL_CHECK(err, "cone_weight ones opt");
+            clFinish(cl->queue);
+        }
         run_preprocess(cl, p, d_ones_raw, d_ones_prep);
         clFinish(cl->queue);
         clReleaseMemObject(d_ones_raw);

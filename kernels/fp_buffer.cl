@@ -117,7 +117,12 @@ __kernel void fp_buffer(
         float yi = (pt1 + sVoxel_y *0.5f) / sVoxel_y  * Ny  - 0.5f;
         float zi = (pt2 + sVoxel_xz*0.5f) / sVoxel_xz * Nxz - 0.5f;
 
-        val += trilinear_buf(volume, Nxz, Ny, xi, yi, zi) * dt * rd_norm;
+        /* Match CPU: only sample when all 8 trilinear neighbors are in-volume. */
+        if (xi >= 0.f && xi < (float)(Nxz - 1) &&
+            yi >= 0.f && yi < (float)(Ny  - 1) &&
+            zi >= 0.f && zi < (float)(Nxz - 1)) {
+            val += trilinear_buf(volume, Nxz, Ny, xi, yi, zi) * dt * rd_norm;
+        }
     }
 
     /* proj stored [ip][iv][iu] matching Python proj[i][j] */
