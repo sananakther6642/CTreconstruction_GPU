@@ -143,7 +143,6 @@ for each epoch:
 | `-ffast-math` + OpenMP `collapse(2)` | `fp_cpu`, `bp_cpu` | flush-to-zero denormals; eliminates epoch slowdown from sub-normal floats |
 | Incremental ray stepping | `fp_cpu`, `fp_buffer.cl` | eliminates multiply per sample in ray march |
 | `n_samples` 512 → 256 → 128 (Nxz×0.5) | all fp kernels + `fp_cpu` | 4× fewer ray samples than original; fp time quartered |
-| Fused cone_weight into preprocess_proj | `bp_buffer.cl`, `ct_cpu.c` | eliminates separate kernel dispatch per epoch across all modes |
 | image2d_array_t hardware bilinear | `bp_image.cl`, `bp_buffer_opt.cl` | texture cache + free HW interpolation |
 | image3d_t hardware trilinear + bounds check | `fp_image.cl` | texture cache + correct boundary handling |
 | float2 cos/sin LUT | `bp_buffer_opt.cl` | eliminates transcendental per voxel per angle |

@@ -20,18 +20,14 @@
  * dst may equal src only if a temp buffer is used — caller passes separate buf.
  */
 static void prep_proj_for_bp(const float *src, float *dst,
-                              int np, int W, int H, float voxelSize,
-                              float SDD, float pixelSize)
+                              int np, int W, int H, float voxelSize)
 {
     for (int ip = 0; ip < np; ip++) {
         const float *s = src + ip * H * W;
         float       *d = dst + ip * W * H;
         for (int iw = 0; iw < W; iw++) {
-            float u = (-(float)(iw - (W-1)*0.5f)) * pixelSize;
             for (int ih = 0; ih < H; ih++) {
-                float v  = ((float)(ih - (H-1)*0.5f)) * pixelSize;
-                float cw = SDD / sqrtf(SDD*SDD + u*u + v*v);
-                d[iw * H + ih] = s[(H - 1 - ih) * W + iw] / voxelSize * cw;
+                d[iw * H + ih] = s[(H - 1 - ih) * W + iw] / voxelSize;
             }
         }
     }
@@ -314,12 +310,11 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
     float *bp_ratio = (float *)malloc(vol_size    * sizeof(float));
     float *bp_ones  = (float *)malloc(vol_size    * sizeof(float));
 
-    /* Precompute bp(ones): cone_weight fused into prep_proj_for_bp */
     float *ones_raw = (float *)malloc(proj_size * sizeof(float));
     float *ones_p   = (float *)malloc(proj_size_t * sizeof(float));
     for (size_t i = 0; i < proj_size; i++) ones_raw[i] = 1.f;
-    prep_proj_for_bp(ones_raw, ones_p, np, W, H, (float)p->voxelSize,
-                     (float)p->SDD, (float)p->pixelSize);
+    cone_weight_cpu(ones_raw, p);
+    prep_proj_for_bp(ones_raw, ones_p, np, W, H, (float)p->voxelSize);
     bp_cpu(ones_p, bp_ones, p);
     free(ones_raw); free(ones_p);
 
@@ -333,9 +328,8 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
         for (size_t i = 0; i < proj_size; i++)
             ratio[i] = (b[i] > 1e-3f) ? proj_measured[i] / b[i] : 0.f;
 
-        /* cone_weight fused into prep_proj_for_bp */
-        prep_proj_for_bp(ratio, ratio_bp, np, W, H, (float)p->voxelSize,
-                         (float)p->SDD, (float)p->pixelSize);
+        cone_weight_cpu(ratio, p);
+        prep_proj_for_bp(ratio, ratio_bp, np, W, H, (float)p->voxelSize);
         double t2 = get_time_sec();
         bp_cpu(ratio_bp, bp_ratio, p);
         double t3 = get_time_sec();

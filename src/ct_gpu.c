@@ -106,12 +106,14 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "bp_buffer");
         cl->k_fp_buf = clCreateKernel(cl->prog_buffer, "fp_buffer", &err);
         CL_CHECK(err, "fp_buffer");
-        cl->k_divide  = clCreateKernel(cl->prog_buffer, "proj_divide", &err);
+        cl->k_divide   = clCreateKernel(cl->prog_buffer, "proj_divide", &err);
         CL_CHECK(err, "proj_divide");
-        cl->k_update  = clCreateKernel(cl->prog_buffer, "vol_update", &err);
+        cl->k_update   = clCreateKernel(cl->prog_buffer, "vol_update", &err);
         CL_CHECK(err, "vol_update");
-        cl->k_preproc = clCreateKernel(cl->prog_buffer, "preprocess_proj", &err);
+        cl->k_preproc  = clCreateKernel(cl->prog_buffer, "preprocess_proj", &err);
         CL_CHECK(err, "preprocess_proj");
+        cl->k_cone_hw  = clCreateKernel(cl->prog_buffer, "cone_weight_hw", &err);
+        CL_CHECK(err, "cone_weight_hw");
     }
 
     /* ── Image-mode program (also used by OPT for fp_image) ── */
@@ -137,14 +139,16 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         cl->prog_opt = build_program(cl->ctx, cl->device, combined);
         free(src_bp); free(src_util); free(combined);
 
-        cl->k_bp_opt  = clCreateKernel(cl->prog_opt, "bp_opt", &err);
+        cl->k_bp_opt   = clCreateKernel(cl->prog_opt, "bp_opt", &err);
         CL_CHECK(err, "bp_opt");
-        cl->k_divide  = clCreateKernel(cl->prog_opt, "proj_divide", &err);
+        cl->k_divide   = clCreateKernel(cl->prog_opt, "proj_divide", &err);
         CL_CHECK(err, "proj_divide (opt)");
-        cl->k_update  = clCreateKernel(cl->prog_opt, "vol_update", &err);
+        cl->k_update   = clCreateKernel(cl->prog_opt, "vol_update", &err);
         CL_CHECK(err, "vol_update (opt)");
-        cl->k_preproc = clCreateKernel(cl->prog_opt, "preprocess_proj", &err);
+        cl->k_preproc  = clCreateKernel(cl->prog_opt, "preprocess_proj", &err);
         CL_CHECK(err, "preprocess_proj (opt)");
+        cl->k_cone_hw  = clCreateKernel(cl->prog_opt, "cone_weight_hw", &err);
+        CL_CHECK(err, "cone_weight_hw (opt)");
     }
 
     return 0;
@@ -155,7 +159,7 @@ void gpu_cleanup(CLState *cl)
     if (cl->mode != GPU_MODE_OPT) {
         clReleaseKernel(cl->k_bp_buf); clReleaseKernel(cl->k_fp_buf);
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
-        clReleaseKernel(cl->k_preproc);
+        clReleaseKernel(cl->k_preproc); clReleaseKernel(cl->k_cone_hw);
         clReleaseProgram(cl->prog_buffer);
     }
     if (cl->mode == GPU_MODE_IMAGE) {
@@ -165,7 +169,7 @@ void gpu_cleanup(CLState *cl)
     if (cl->mode == GPU_MODE_OPT) {
         clReleaseKernel(cl->k_bp_opt);
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
-        clReleaseKernel(cl->k_preproc);
+        clReleaseKernel(cl->k_preproc); clReleaseKernel(cl->k_cone_hw);
         clReleaseKernel(cl->k_fp_img); clReleaseKernel(cl->k_bp_img);
         clReleaseProgram(cl->prog_opt);
         clReleaseProgram(cl->prog_image);
@@ -175,7 +179,7 @@ void gpu_cleanup(CLState *cl)
 }
 
 /*
- * run_preprocess — flip+transpose+scale+cone_weight fused into one kernel.
+ * run_preprocess — flip+transpose+/voxelSize (cone_weight applied separately before).
  * src: [np*H*W]  (row-major [ip][ih][iw])
  * dst: [np*W*H]  (col-major [ip][iw][ih], ready for bp kernels)
  */
@@ -185,17 +189,13 @@ static void run_preprocess(CLState *cl, const CBpara *p,
     cl_int err;
     cl_kernel k = cl->k_preproc;
     int W = p->detector_width, H = p->detector_height, np = p->num_projs;
-    float vs  = (float)p->voxelSize;
-    float SDD = (float)p->SDD;
-    float px  = (float)p->pixelSize;
+    float vs = (float)p->voxelSize;
 
     clSetKernelArg(k, 0, sizeof(cl_mem), &src);
     clSetKernelArg(k, 1, sizeof(cl_mem), &dst);
     clSetKernelArg(k, 2, sizeof(int),    &W);
     clSetKernelArg(k, 3, sizeof(int),    &H);
     clSetKernelArg(k, 4, sizeof(float),  &vs);
-    clSetKernelArg(k, 5, sizeof(float),  &SDD);
-    clSetKernelArg(k, 6, sizeof(float),  &px);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
     size_t lws[3] = {16, 16, 1};
@@ -203,6 +203,25 @@ static void run_preprocess(CLState *cl, const CBpara *p,
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
     CL_CHECK(err, "preprocess_proj enqueue");
+}
+
+static void run_cone_weight_hw(CLState *cl, const CBpara *p, cl_mem d_proj)
+{
+    cl_int err;
+    cl_kernel k = cl->k_cone_hw;
+    int W = p->detector_width, H = p->detector_height, np = p->num_projs;
+    float SDD = (float)p->SDD, px = (float)p->pixelSize;
+    clSetKernelArg(k, 0, sizeof(cl_mem), &d_proj);
+    clSetKernelArg(k, 1, sizeof(int),    &W);
+    clSetKernelArg(k, 2, sizeof(int),    &H);
+    clSetKernelArg(k, 3, sizeof(float),  &SDD);
+    clSetKernelArg(k, 4, sizeof(float),  &px);
+    size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
+    size_t lws[3] = {16, 16, 1};
+    for (int d = 0; d < 3; d++)
+        if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
+    err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
+    CL_CHECK(err, "cone_weight_hw enqueue");
 }
 
 /* ── Internal: run backprojection on GPU (buffer mode) ─────────────────── */
@@ -404,7 +423,8 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                                   0, proj_bytes, 0, NULL, NULL);
         CL_CHECK(err, "fill ones");
         clFinish(cl->queue);
-        /* cone_weight fused into preprocess_proj — one kernel pass */
+        run_cone_weight_hw(cl, p, d_ones_raw);
+        clFinish(cl->queue);
         run_preprocess(cl, p, d_ones_raw, d_ones_prep);
         clFinish(cl->queue);
 
@@ -747,7 +767,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         }
         clFinish(cl->queue);
 
-        /* cone_weight fused into preprocess_proj */
+        run_cone_weight_hw(cl, p, d_ratio);
+        clFinish(cl->queue);
         run_preprocess(cl, p, d_ratio, d_ratio_prep);
         clFinish(cl->queue);
 
