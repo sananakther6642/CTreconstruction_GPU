@@ -161,7 +161,7 @@ __kernel void cone_weight_hw(
     proj[ip * H * W + ih * W + iw] *= w;
 }
 
-/* ── Divide projections element-wise: ratio = p0 / b ──────────────────── */
+/* ── Divide projections element-wise: ratio = p0 / b (float4 vectorized) ─ */
 __kernel void proj_divide(
     __global const float *p0,
     __global const float *b,
@@ -169,12 +169,25 @@ __kernel void proj_divide(
     int n
 )
 {
-    int i = get_global_id(0);
-    if (i >= n) return;
-    ratio[i] = (b[i] > 1e-3f) ? p0[i] / b[i] : 0.f;
+    int i4 = get_global_id(0);
+    int base = i4 * 4;
+    if (base + 3 < n) {
+        float4 p = vload4(i4, p0);
+        float4 d = vload4(i4, b);
+        float4 r;
+        r.x = (d.x > 1e-3f) ? p.x / d.x : 0.f;
+        r.y = (d.y > 1e-3f) ? p.y / d.y : 0.f;
+        r.z = (d.z > 1e-3f) ? p.z / d.z : 0.f;
+        r.w = (d.w > 1e-3f) ? p.w / d.w : 0.f;
+        vstore4(r, i4, ratio);
+    } else {
+        /* tail: handle remaining 0-3 elements */
+        for (int j = base; j < n; j++)
+            ratio[j] = (b[j] > 1e-3f) ? p0[j] / b[j] : 0.f;
+    }
 }
 
-/* ── Update volume: v0 *= bp_ratio / bp_ones ──────────────────────────── */
+/* ── Update volume: v0 *= bp_ratio / bp_ones (float4 vectorized) ─────── */
 __kernel void vol_update(
     __global       float *volume,
     __global const float *bp_ratio,
@@ -182,9 +195,23 @@ __kernel void vol_update(
     int n
 )
 {
-    int i = get_global_id(0);
-    if (i >= n) return;
-    float denom = bp_ones[i];
-    if (denom > 1e-10f)
-        volume[i] *= bp_ratio[i] / denom;
+    int i4 = get_global_id(0);
+    int base = i4 * 4;
+    if (base + 3 < n) {
+        float4 v  = vload4(i4, volume);
+        float4 br = vload4(i4, bp_ratio);
+        float4 bo = vload4(i4, bp_ones);
+        float4 out;
+        out.x = (bo.x > 1e-10f) ? v.x * br.x / bo.x : v.x;
+        out.y = (bo.y > 1e-10f) ? v.y * br.y / bo.y : v.y;
+        out.z = (bo.z > 1e-10f) ? v.z * br.z / bo.z : v.z;
+        out.w = (bo.w > 1e-10f) ? v.w * br.w / bo.w : v.w;
+        vstore4(out, i4, volume);
+    } else {
+        for (int j = base; j < n; j++) {
+            float denom = bp_ones[j];
+            if (denom > 1e-10f)
+                volume[j] *= bp_ratio[j] / denom;
+        }
+    }
 }

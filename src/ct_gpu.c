@@ -522,14 +522,14 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         }
         clFinish(cl->queue);
 
-        /* ratio = p0 / b  (both in raw [np,H,W] layout) */
+        /* ratio = p0 / b  (float4 vectorized: dispatch ceil(proj_n/4) items) */
         {
             cl_kernel k = cl->k_divide;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_proj_b);
             clSetKernelArg(k,2,sizeof(cl_mem),&d_ratio);
             clSetKernelArg(k,3,sizeof(int),   &proj_n);
-            size_t gws=(size_t)proj_n;
+            size_t gws=((size_t)proj_n + 3) / 4;
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"proj_divide");
         }
@@ -575,14 +575,14 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         }
         clFinish(cl->queue);
 
-        /* v0 *= bp_ratio / bp_ones */
+        /* v0 *= bp_ratio / bp_ones (float4 vectorized: dispatch ceil(vol_n/4) items) */
         {
             cl_kernel k = cl->k_update;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
             clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
             clSetKernelArg(k,3,sizeof(int),   &vol_n);
-            size_t gws=(size_t)vol_n;
+            size_t gws=((size_t)vol_n + 3) / 4;
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"vol_update");
         }
@@ -668,8 +668,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     cl_mem d_bp_ones   = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
     CL_CHECK(err, "d_bp_ones opt");
 
-    /* lmem unused in new bp_opt (image sampler replaces local cache) */
-    size_t lmem_bytes = 16;
+    /* local mem for angle_cs LUT cache in bp_opt */
+    size_t lmem_bytes = (size_t)np * sizeof(cl_float2);
 
     /* image format for proj image array */
     cl_image_format img_fmt = {CL_R, CL_FLOAT};
@@ -796,7 +796,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,1,sizeof(cl_mem),&d_proj_b);
             clSetKernelArg(k,2,sizeof(cl_mem),&d_ratio);
             clSetKernelArg(k,3,sizeof(int),&proj_n);
-            size_t gws=(size_t)proj_n;
+            size_t gws=((size_t)proj_n + 3) / 4;
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"divide opt");
         }
@@ -859,14 +859,14 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         }
         clFinish(cl->queue);
 
-        /* ── update ── */
+        /* ── update (float4 vectorized) ── */
         {
             cl_kernel k = cl->k_update;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
             clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
             clSetKernelArg(k,3,sizeof(int),&vol_n);
-            size_t gws=(size_t)vol_n;
+            size_t gws=((size_t)vol_n + 3) / 4;
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"update opt");
         }
