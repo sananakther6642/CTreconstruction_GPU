@@ -10,10 +10,10 @@ build/
 # macOS
 .DS_Store
 
-# Reports / presentation (not source code)
+# Presentations
 *.pptx
-*.pdf
-*.tex
+
+# LaTeX build artifacts only (not source/output)
 *.log
 *.aux
 *.toc
