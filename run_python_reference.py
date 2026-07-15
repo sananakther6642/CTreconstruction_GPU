@@ -167,15 +167,19 @@ cb_para = {
 
 v0 = np.ones((Volumen_num_xz, Volumen_num_xz, Volumen_num_xz), dtype=np.float32)
 
-print(f"Running {EPOCHS} epochs (Python reference — slow, ~minutes/epoch) ...")
+print("Running bp_func only (1 call on all-ones) to validate bp_func vs C bp_cpu ...")
+t0 = time.time()
 bp_ones = bp_func(np.ones_like(projection_0), cb_para)
+print(f"  bp(ones) done in {time.time()-t0:.1f}s  min={bp_ones.min():.4f} max={bp_ones.max():.4f}")
 
-for i in range(EPOCHS):
-    t0 = time.time()
-    b      = fp_func(cb_para, v0, sample_ratio=2)
-    result = np.divide(projection_0, b, out=np.zeros_like(projection_0), where=(b != 0))
-    v0    *= bp_func(result, cb_para) / bp_ones
-    print(f"  epoch {i+1}/{EPOCHS}  {time.time()-t0:.1f}s  min={v0.min():.4f} max={v0.max():.4f}")
+print("Running bp_func on measured projections (1 call) ...")
+t0 = time.time()
+bp_meas = bp_func(projection_0.copy(), cb_para)
+print(f"  bp(p0)  done in {time.time()-t0:.1f}s  min={bp_meas.min():.4f} max={bp_meas.max():.4f}")
+
+# one MLEM step without fp: v0 *= bp(p0) / bp(ones)  — tests bp correctness
+v0 *= bp_meas / np.where(bp_ones > 1e-10, bp_ones, 1.0)
+print(f"  v0 after 1 bp-only update: min={v0.min():.4f} max={v0.max():.4f}")
 
 print(f"Saving to {out_path} ...")
 with h5py.File(out_path, 'w') as f:
