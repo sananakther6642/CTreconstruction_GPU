@@ -106,16 +106,12 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "bp_buffer");
         cl->k_fp_buf = clCreateKernel(cl->prog_buffer, "fp_buffer", &err);
         CL_CHECK(err, "fp_buffer");
-        cl->k_cone   = clCreateKernel(cl->prog_buffer, "cone_weight", &err);
-        CL_CHECK(err, "cone_weight");
-        cl->k_divide = clCreateKernel(cl->prog_buffer, "proj_divide", &err);
+        cl->k_divide  = clCreateKernel(cl->prog_buffer, "proj_divide", &err);
         CL_CHECK(err, "proj_divide");
         cl->k_update  = clCreateKernel(cl->prog_buffer, "vol_update", &err);
         CL_CHECK(err, "vol_update");
-        cl->k_preproc  = clCreateKernel(cl->prog_buffer, "preprocess_proj", &err);
+        cl->k_preproc = clCreateKernel(cl->prog_buffer, "preprocess_proj", &err);
         CL_CHECK(err, "preprocess_proj");
-        cl->k_cone_hw  = clCreateKernel(cl->prog_buffer, "cone_weight_hw", &err);
-        CL_CHECK(err, "cone_weight_hw");
     }
 
     /* ── Image-mode program (also used by OPT for fp_image) ── */
@@ -141,19 +137,14 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         cl->prog_opt = build_program(cl->ctx, cl->device, combined);
         free(src_bp); free(src_util); free(combined);
 
-        cl->k_bp_opt = clCreateKernel(cl->prog_opt, "bp_opt", &err);
+        cl->k_bp_opt  = clCreateKernel(cl->prog_opt, "bp_opt", &err);
         CL_CHECK(err, "bp_opt");
-        cl->k_bp_ang = clCreateKernel(cl->prog_opt, "bp_angle_parallel", &err);
-        CL_CHECK(err, "bp_angle_parallel");
-        /* reuse utility kernels from buffer prog */
-        cl->k_cone   = clCreateKernel(cl->prog_opt, "cone_weight", &err);
-        CL_CHECK(err, "cone_weight (opt)");
-        cl->k_divide = clCreateKernel(cl->prog_opt, "proj_divide", &err);
+        cl->k_divide  = clCreateKernel(cl->prog_opt, "proj_divide", &err);
         CL_CHECK(err, "proj_divide (opt)");
         cl->k_update  = clCreateKernel(cl->prog_opt, "vol_update", &err);
         CL_CHECK(err, "vol_update (opt)");
-        cl->k_cone_hw = clCreateKernel(cl->prog_opt, "cone_weight_hw", &err);
-        CL_CHECK(err, "cone_weight_hw (opt)");
+        cl->k_preproc = clCreateKernel(cl->prog_opt, "preprocess_proj", &err);
+        CL_CHECK(err, "preprocess_proj (opt)");
     }
 
     return 0;
@@ -163,8 +154,8 @@ void gpu_cleanup(CLState *cl)
 {
     if (cl->mode != GPU_MODE_OPT) {
         clReleaseKernel(cl->k_bp_buf); clReleaseKernel(cl->k_fp_buf);
-        clReleaseKernel(cl->k_cone);   clReleaseKernel(cl->k_divide);
-        clReleaseKernel(cl->k_update);
+        clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
+        clReleaseKernel(cl->k_preproc);
         clReleaseProgram(cl->prog_buffer);
     }
     if (cl->mode == GPU_MODE_IMAGE) {
@@ -172,9 +163,9 @@ void gpu_cleanup(CLState *cl)
         clReleaseProgram(cl->prog_image);
     }
     if (cl->mode == GPU_MODE_OPT) {
-        clReleaseKernel(cl->k_bp_opt); clReleaseKernel(cl->k_bp_ang);
-        clReleaseKernel(cl->k_cone);
+        clReleaseKernel(cl->k_bp_opt);
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
+        clReleaseKernel(cl->k_preproc);
         clReleaseKernel(cl->k_fp_img); clReleaseKernel(cl->k_bp_img);
         clReleaseProgram(cl->prog_opt);
         clReleaseProgram(cl->prog_image);
@@ -770,10 +761,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         }
         clFinish(cl->queue);
 
-        /* ── bp_opt(ratio_img) ── */
+        /* ── bp_opt(ratio_img): plain = write per voxel, no zero-fill needed ── */
         {
-            float zero=0.f;
-            clEnqueueFillBuffer(cl->queue,d_bp_ratio,&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
             cl_kernel k = cl->k_bp_opt;
             clSetKernelArg(k,0,sizeof(cl_mem),&ratio_img);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_ang_cs);
