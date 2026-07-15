@@ -422,26 +422,19 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         err = clEnqueueFillBuffer(cl->queue, d_ones_raw, &one, sizeof(float),
                                   0, proj_bytes, 0, NULL, NULL);
         CL_CHECK(err, "fill ones");
-        clFinish(cl->queue);
         run_cone_weight_hw(cl, p, d_ones_raw);
-        clFinish(cl->queue);
         run_preprocess(cl, p, d_ones_raw, d_ones_prep);
-        clFinish(cl->queue);
 
         float zero = 0.f;
         clEnqueueFillBuffer(cl->queue, d_bp_ones, &zero, sizeof(float),
                             0, vol_bytes, 0, NULL, NULL);
-        clFinish(cl->queue);
 
         if (cl->mode == GPU_MODE_BUFFER) {
             run_bp_buffer(cl, p, d_ones_prep, d_angles, d_bp_ones);
         } else {
-            /* ones_prep is already [np][W][H] with /voxelSize applied —
-             * same scale as ratio_prep, so bp_ones/bp_ratio cancel correctly */
             cl_image_format fmt = {CL_R, CL_FLOAT};
             cl_image_desc desc = {0};
             desc.image_type       = CL_MEM_OBJECT_IMAGE2D_ARRAY;
-            /* d_ones_prep is [np][W][H] col-major; use width=H,height=W. */
             desc.image_width      = (size_t)H;
             desc.image_height     = (size_t)W;
             desc.image_array_size = (size_t)np;
@@ -452,11 +445,10 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             err = clEnqueueCopyBufferToImage(cl->queue, d_ones_prep, ones_img,
                                              0, oorigin, oregion, 0, NULL, NULL);
             CL_CHECK(err,"CopyBufferToImage ones_prep");
-            clFinish(cl->queue);
             run_bp_image(cl, p, ones_img, d_angles, d_bp_ones);
             clReleaseMemObject(ones_img);
         }
-        clFinish(cl->queue);
+        clFinish(cl->queue);  /* wait for bp_ones before epoch loop */
         clReleaseMemObject(d_ones_raw);
         clReleaseMemObject(d_ones_prep);
         printf("  bp(ones) computed.\n");
@@ -509,7 +501,6 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         if (cl->mode == GPU_MODE_BUFFER) {
             run_fp_buffer(cl, p, d_vol, d_angles, d_proj_b);
         } else {
-            /* GPU-side copy: d_vol buffer → vol_img (no PCIe roundtrip) */
             size_t vorigin[3]={0,0,0};
             size_t vregion[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
             err=clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img,
@@ -517,9 +508,8 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             CL_CHECK(err,"CopyBufferToImage vol img");
             run_fp_image(cl, p, vol_img, d_angles, d_proj_b);
         }
-        clFinish(cl->queue);
 
-        /* ratio = p0 / b  (float4 vectorized: dispatch ceil(proj_n/4) items) */
+        /* ratio = p0 / b */
         {
             cl_kernel k = cl->k_divide;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
@@ -530,11 +520,9 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"proj_divide");
         }
-        clFinish(cl->queue);
 
-        /* cone_weight fused into preprocess_proj — one kernel pass */
+        run_cone_weight_hw(cl, p, d_ratio);
         run_preprocess(cl, p, d_ratio, d_ratio_prep);
-        clFinish(cl->queue);
 
         /* bp_ratio = bp(ratio_prep) */
         {
@@ -548,13 +536,11 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                 err=clEnqueueCopyBufferToImage(cl->queue, d_ratio_prep, ratio_img_buf,
                                                0, rorigin, rregion, 0,NULL,NULL);
                 CL_CHECK(err,"CopyBufferToImage ratio img");
-                clFinish(cl->queue);
                 run_bp_image(cl, p, ratio_img_buf, d_angles, d_bp_ratio);
             }
         }
-        clFinish(cl->queue);
 
-        /* v0 *= bp_ratio / bp_ones (float4 vectorized: dispatch ceil(vol_n/4) items) */
+        /* v0 *= bp_ratio / bp_ones */
         {
             cl_kernel k = cl->k_update;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
@@ -565,8 +551,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"vol_update");
         }
-        clFinish(cl->queue);
-
+        clFinish(cl->queue);  /* single sync per epoch — for timing */
         printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
     }
 
@@ -654,27 +639,21 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     cl_image_format img_fmt = {CL_R, CL_FLOAT};
 
     /* d_proj_meas stays raw — cone weight applied to ratio after divide, matching Python */
-    clFinish(cl->queue);
 
     /* ── bp_ones: preprocess all-ones → image, run bp_opt ── */
     {
-        /* Build ones_prep: ones raw → preprocess (flip+transpose+/voxelSize)
-         * Must match ratio_prep scale so bp_ones/bp_ratio cancel correctly */
         cl_mem d_ones_raw  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
         CL_CHECK(err,"d_ones_raw opt");
         cl_mem d_ones_prep = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
         CL_CHECK(err,"d_ones_prep opt");
         float one=1.f;
         clEnqueueFillBuffer(cl->queue, d_ones_raw, &one, sizeof(float), 0, proj_bytes, 0, NULL, NULL);
-        clFinish(cl->queue);
-        /* cone_weight fused into preprocess_proj */
+        run_cone_weight_hw(cl, p, d_ones_raw);
         run_preprocess(cl, p, d_ones_raw, d_ones_prep);
-        clFinish(cl->queue);
         clReleaseMemObject(d_ones_raw);
 
         float zero=0.f;
         clEnqueueFillBuffer(cl->queue,d_bp_ones,&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
-        clFinish(cl->queue);
 
         cl_image_desc idesc={0};
         idesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
@@ -687,7 +666,6 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         err = clEnqueueCopyBufferToImage(cl->queue, d_ones_prep, ones_img,
                                          0, oorigin, oregion, 0, NULL, NULL);
         CL_CHECK(err,"CopyBufferToImage ones_prep opt");
-        clFinish(cl->queue);
         clReleaseMemObject(d_ones_prep);
 
         {
@@ -713,7 +691,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ones");
         }
-        clFinish(cl->queue);
+        clFinish(cl->queue);  /* wait for bp_opt(ones) before epoch loop */
         clReleaseMemObject(ones_img);
         printf("  bp_opt(ones) computed.\n");
     }
@@ -752,7 +730,6 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             CL_CHECK(err,"CopyBufferToImage vol");
         }
         run_fp_image(cl, p, vol_img, d_angles, d_proj_b);
-        clFinish(cl->queue);
 
         /* ── ratio = p0/b ── */
         {
@@ -765,12 +742,9 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"divide opt");
         }
-        clFinish(cl->queue);
 
         run_cone_weight_hw(cl, p, d_ratio);
-        clFinish(cl->queue);
         run_preprocess(cl, p, d_ratio, d_ratio_prep);
-        clFinish(cl->queue);
 
         /* ── copy d_ratio_prep buffer → ratio_img (no host roundtrip) ── */
         {
@@ -780,7 +754,6 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                                            0, origin, region, 0, NULL, NULL);
             CL_CHECK(err,"CopyBufferToImage ratio");
         }
-        clFinish(cl->queue);
 
         /* ── bp_opt(ratio_img): plain = write per voxel, no zero-fill needed ── */
         {
@@ -804,7 +777,6 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ratio");
         }
-        clFinish(cl->queue);
 
         /* ── update (float4 vectorized) ── */
         {
@@ -817,7 +789,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"update opt");
         }
-        clFinish(cl->queue);
+        clFinish(cl->queue);  /* single sync per epoch — for timing */
         printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
     }
     clReleaseMemObject(vol_img);
