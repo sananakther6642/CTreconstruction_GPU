@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate GPU reconstruction outputs against CPU reference."""
+"""Validate GPU reconstruction outputs against CPU and Python reference."""
 import sys
 import numpy as np
 
@@ -9,6 +9,7 @@ except ImportError:
     sys.exit("h5py not found: pip install h5py")
 
 FILES = {
+    'python':  'output_python.hdf5',
     'cpu':     'output_cpu.hdf5',
     'gpu-buf': 'output_gpu_buf.hdf5',
     'gpu-img': 'output_gpu_img.hdf5',
@@ -28,25 +29,45 @@ def stats(v):
 
 volumes = {k: load(p) for k, p in FILES.items()}
 
+# Primary reference: cpu. Secondary: python (if available).
 ref = volumes.get('cpu')
 if ref is None:
     sys.exit("output_cpu.hdf5 not found — run cpu mode first")
 
-print(f"{'Mode':<10} {'min':>10} {'max':>10} {'mean':>10} {'nan':>6} {'inf':>6}  MSE / max_diff")
-print("-" * 75)
+py_ref = volumes.get('python')
+
+print(f"\n{'Mode':<10} {'min':>10} {'max':>10} {'mean':>10} {'nan':>6} {'inf':>6}  MSE vs CPU     MSE vs Python")
+print("-" * 95)
 
 for name, v in volumes.items():
     if v is None:
+        if name == 'python':
+            continue  # python ref optional — skip silently
         print(f"{name:<10}  [file not found]")
         continue
+
     mn, mx, me, nan_c, inf_c = stats(v)
+
     if name == 'cpu':
-        print(f"{name:<10} {mn:>10.4f} {mx:>10.4f} {me:>10.4f} {nan_c:>6} {inf_c:>6}  (reference)")
+        py_mse = ""
+        if py_ref is not None:
+            m = np.mean((v.astype(np.float64) - py_ref.astype(np.float64))**2)
+            py_mse = f"MSE={m:.3e}"
+        print(f"{name:<10} {mn:>10.4f} {mx:>10.4f} {me:>10.4f} {nan_c:>6} {inf_c:>6}  (reference)    {py_mse}")
+    elif name == 'python':
+        print(f"{name:<10} {mn:>10.4f} {mx:>10.4f} {me:>10.4f} {nan_c:>6} {inf_c:>6}  (python ref)   -")
     elif nan_c or inf_c:
         print(f"{name:<10} {mn:>10} {mx:>10} {me:>10} {nan_c:>6} {inf_c:>6}  DIVERGED")
     else:
         ref64 = ref.astype(np.float64)
         v64   = v.astype(np.float64)
-        mse   = np.mean((v64 - ref64) ** 2)
+        mse   = np.mean((v64 - ref64)**2)
         maxd  = np.max(np.abs(v64 - ref64))
-        print(f"{name:<10} {mn:>10.4f} {mx:>10.4f} {me:>10.4f} {nan_c:>6} {inf_c:>6}  MSE={mse:.3e}  max_diff={maxd:.4f}")
+        cpu_str = f"MSE={mse:.3e}  max={maxd:.4f}"
+        py_str = ""
+        if py_ref is not None:
+            m = np.mean((v64 - py_ref.astype(np.float64))**2)
+            py_str = f"MSE={m:.3e}"
+        print(f"{name:<10} {mn:>10.4f} {mx:>10.4f} {me:>10.4f} {nan_c:>6} {inf_c:>6}  {cpu_str:<20} {py_str}")
+
+print()
