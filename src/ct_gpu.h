@@ -41,7 +41,6 @@ typedef struct {
     cl_program prog_opt;
     cl_kernel  k_bp_opt;
     cl_kernel  k_bp_ang;  /* angle-parallel bp with atomics */
-    cl_kernel  k_fp_opt;
 
     GPUMode mode;
 } CLState;
