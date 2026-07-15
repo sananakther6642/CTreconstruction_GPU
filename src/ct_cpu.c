@@ -212,7 +212,7 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
     float dist_max  = sVoxel_xz * 1.42f;
     float near_t    = fmaxf(0.f, SOD - dist_max);
     float far_t     = fminf(SOD * 2.f, SOD + dist_max);
-    int   n_samples = (int)ceilf(Nxz * 2.f);
+    int   n_samples = (int)ceilf(Nxz * 1.f);
     float dt        = (far_t - near_t) / (float)(n_samples - 1);
 
     /* constants for world→voxel mapping */
