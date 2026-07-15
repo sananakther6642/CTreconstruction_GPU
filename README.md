@@ -12,7 +12,9 @@ All four modes validated: MSE < 2×10⁻⁸ vs CPU reference on the 256³ datase
 | `gpu-img` | OpenCL image2D array + image3D hardware sampler | 0.159 s | 16 s | **40×** |
 | `gpu-opt` | image sampler + float2 cos/sin LUT + local mem cache | 0.144 s | 14.4 s | **44.7×** |
 
-Device: AMD Hawaii (Radeon R9 390), 256³ volume, 512×512 detector, 75 angles, 100 epochs.
+**Hardware:** Intel Core i7-5820K @ 3.30GHz · AMD Hawaii PRO (Radeon R9 290/390) · `pool15-01.cis.iti.uni-stuttgart.de`
+
+Benchmark: 256³ volume, 512×512 detector, 75 angles, 100 epochs.
 
 ## Files
 
