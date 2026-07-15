@@ -7,14 +7,15 @@ All four modes validated: MSE < 2×10⁻⁸ vs CPU reference on the 256³ datase
 
 | Mode | Description | Time/epoch | Total (100ep) | Speedup |
 |------|-------------|-----------|--------------|---------|
-| `cpu` | C + OpenMP + `-ffast-math` | 3.77 s | 377 s | 1× |
-| `gpu-buf` | OpenCL buffer, manual bilinear/trilinear | 0.670 s | 67 s | **5.6×** |
-| `gpu-img` | OpenCL image2D array + image3D hardware sampler | 0.115 s | 11.5 s | **32.8×** |
-| `gpu-opt` | image sampler + float2 cos/sin LUT + local mem cache + n_samples×0.5 | 0.102 s | 10.2 s | **37×** |
+| `cpu` | C + OpenMP + `-ffast-math` + n_samples×0.5 | 2.45 s | 245 s | 1× |
+| `gpu-buf` | OpenCL buffer, manual bilinear/trilinear | 0.54 s | 54 s | **4.5×** |
+| `gpu-img` | OpenCL image2D array + image3D hardware sampler | 0.083 s | 8.3 s | **29.5×** |
+| `gpu-opt` | image sampler + float2 cos/sin LUT + local mem cache + n_samples×0.5 + fused cone_weight | 0.070 s | 7.0 s | **35×** |
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz · AMD Hawaii PRO (Radeon R9 290/390) · `pool15-01.cis.iti.uni-stuttgart.de`
 
 Benchmark: 256³ volume, 512×512 detector, 75 angles. Per-epoch times measured over 10 epochs; 100-epoch totals extrapolated.
+vs original unoptimized CPU baseline (6.44 s/epoch): gpu-opt achieves **92×** speedup.
 
 ## Files
 
