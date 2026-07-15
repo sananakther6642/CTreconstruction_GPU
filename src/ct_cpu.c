@@ -329,7 +329,7 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
         double t1 = get_time_sec();
 
         for (size_t i = 0; i < proj_size; i++)
-            ratio[i] = (b[i] != 0.f) ? proj_measured[i] / b[i] : 0.f;
+            ratio[i] = (b[i] > 1e-3f) ? proj_measured[i] / b[i] : 0.f;
 
         /* cone-weight ratio before bp — matches Python bp_f which applies it internally */
         cone_weight_cpu(ratio, p);
