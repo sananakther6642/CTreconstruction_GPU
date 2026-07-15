@@ -82,32 +82,36 @@ __kernel void fp_image(
     for (int k=0;k<3;k++)
         rd[k] = R[k][0]*dirs[0] + R[k][1]*dirs[1] + R[k][2]*dirs[2];
 
-    float rd_norm = sqrt(rd[0]*rd[0] + rd[1]*rd[1] + rd[2]*rd[2]);
+    float rd_norm  = sqrt(rd[0]*rd[0] + rd[1]*rd[1] + rd[2]*rd[2]);
+    float step_val = dt * rd_norm;
+
+    float inv_sv_xz = (float)Nxz / sVoxel_xz;
+    float inv_sv_y  = (float)Ny  / sVoxel_y;
+    float shift_xz  = 0.5f * Nxz - 0.5f;
+    float shift_y   = 0.5f * Ny  - 0.5f;
+
+    /* Incremental stepping: start + step each sample, eliminates multiply/sample */
+    float ox = T[0] + rd[0] * near_t;
+    float oy = T[1] + rd[1] * near_t;
+    float oz = T[2] + rd[2] * near_t;
+    float dox = rd[0] * dt, doy = rd[1] * dt, doz = rd[2] * dt;
+    float wx = ox, wy = oy, wz = oz;
 
     float val = 0.f;
     for (int s = 0; s < n_samples; s++) {
-        float t = near_t + s * dt;
-        float pt0 = T[0] + rd[0]*t;
-        float pt1 = T[1] + rd[1]*t;
-        float pt2 = T[2] + rd[2]*t;
+        float xi = wx * inv_sv_xz + shift_xz;
+        float yi = wy * inv_sv_y  + shift_y;
+        float zi = wz * inv_sv_xz + shift_xz;
 
-        /* voxel-space fractional indices */
-        float xi = (pt0 + sVoxel_xz*0.5f) / sVoxel_xz * Nxz - 0.5f;
-        float yi = (pt1 + sVoxel_y *0.5f) / sVoxel_y  * Ny  - 0.5f;
-        float zi = (pt2 + sVoxel_xz*0.5f) / sVoxel_xz * Nxz - 0.5f;
-
-        /*
-         * image3d texel space: width=Ny(z), height=Nxz(y), depth=Nxz(x)
-         * coord = (zi+0.5, yi+0.5, xi+0.5)
-         */
         if (xi >= 0.f && xi < (float)(Nxz - 1) &&
             yi >= 0.f && yi < (float)(Ny  - 1) &&
             zi >= 0.f && zi < (float)(Nxz - 1)) {
             float4 coord = (float4)(zi + 0.5f, yi + 0.5f, xi + 0.5f, 0.f);
-            float density = read_imagef(volume_img, vol_samp, coord).x;
-            val += density * dt * rd_norm;
+            val += read_imagef(volume_img, vol_samp, coord).x;
         }
+        wx += dox; wy += doy; wz += doz;
     }
+    val *= step_val;
 
     proj[ip * H * W + iv * W + iu] = val;
 }

@@ -26,11 +26,9 @@ typedef struct {
     cl_program prog_buffer;
     cl_kernel  k_bp_buf;
     cl_kernel  k_fp_buf;
-    cl_kernel  k_cone;
     cl_kernel  k_divide;
     cl_kernel  k_update;
-    cl_kernel  k_preproc;  /* flip+transpose+scale proj before bp */
-    cl_kernel  k_cone_hw;  /* cone weight for raw [np][H][W] layout */
+    cl_kernel  k_preproc;
 
     /* image-mode kernels */
     cl_program prog_image;
@@ -40,7 +38,6 @@ typedef struct {
     /* optimized kernels */
     cl_program prog_opt;
     cl_kernel  k_bp_opt;
-    cl_kernel  k_bp_ang;  /* angle-parallel bp with atomics */
 
     GPUMode mode;
 } CLState;
