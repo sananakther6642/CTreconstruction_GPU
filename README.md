@@ -7,10 +7,10 @@ All four modes validated: MSE < 2×10⁻⁸ vs CPU reference on the 256³ datase
 
 | Mode | Description | Time/epoch | Total (100ep) | Speedup |
 |------|-------------|-----------|--------------|---------|
-| `cpu` | C + OpenMP + `-ffast-math` | 6.44 s | 644 s | 1× |
+| `cpu` | C + OpenMP + `-ffast-math` | 3.77 s | 377 s | 1× |
 | `gpu-buf` | OpenCL buffer, manual bilinear/trilinear | 0.99 s | 99 s | **6.5×** |
 | `gpu-img` | OpenCL image2D array + image3D hardware sampler | 0.159 s | 16 s | **40×** |
-| `gpu-opt` | image sampler + float2 cos/sin LUT + local mem cache | 0.144 s | 14.4 s | **44.7×** |
+| `gpu-opt` | image sampler + float2 cos/sin LUT + local mem cache + n_samples×0.5 | 0.102 s | 10.2 s | **37×** |
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz · AMD Hawaii PRO (Radeon R9 290/390) · `pool15-01.cis.iti.uni-stuttgart.de`
 
