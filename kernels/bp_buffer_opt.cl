@@ -40,9 +40,9 @@ __kernel void bp_opt(
         lcs[i] = angle_cs[i];
     barrier(CLK_LOCAL_MEM_FENCE);
 
-    int ix = get_global_id(0);
+    int iz = get_global_id(0);  /* fast dim: consecutive iz → coalesced writes */
     int iy = get_global_id(1);
-    int iz = get_global_id(2);
+    int ix = get_global_id(2);
 
     if (ix >= Nxz || iy >= Nxz || iz >= Ny) return;
 
