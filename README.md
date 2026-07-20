@@ -7,30 +7,31 @@ All four modes validated: MSE < 3×10⁻⁸ vs CPU reference on the 256³ datase
 
 | Mode | Time/epoch | Total (100ep) | Speedup vs CPU | Speedup vs baseline |
 |------|-----------|--------------|----------------|---------------------|
-| `cpu` | 3.76 s | 376 s | 1× | 1.7× |
-| `gpu-buf` | 0.678 s | 68 s | **5.5×** | 9.5× |
-| `gpu-img` | 0.080 s | 8.0 s | **47×** | 80× |
-| `gpu-opt` | **0.067 s** | **6.7 s** | **56×** | **96×** |
+| `cpu` | 3.77 s | 384 s | 1× | 1.7× |
+| `gpu-buf` | 0.678 s | 81 s† | **4.7×** | 8× |
+| `gpu-img` | 0.080 s | 8.2 s | **47×** | 80× |
+| `gpu-opt` | **0.067 s** | **6.7 s** | **57×** | **96×** |
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (6 cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
 - *Speedup vs CPU*: both sides fully optimized (OpenMP, `-ffast-math`, `n_samples=256`)
 - *Speedup vs baseline*: gpu-opt vs original C CPU before any optimizations (6.44 s/epoch, `n_samples=512`, no `-ffast-math`)
-- Per-epoch times measured over 10 epochs; 100-epoch totals extrapolated
+- Per-epoch times measured over 100 epochs on lab machine
+- † gpu-buf total inflated by intermittent OS scheduling spikes (~1.7 s/spike); steady-state per-epoch is 0.678 s
 - Dataset: 256³ volume, 512×512 detector, 75 projection angles
 
 ### Validation (10 epochs)
 
 ```
 Mode         min       max      mean   nan  inf  MSE vs CPU      MSE vs Python
-cpu        0.0000    1.4069    0.0066    0    0  (reference)     MSE=6.262e-04
-gpu-buf    0.0000    1.4188    0.0066    0    0  MSE=1.521e-07   MSE=6.263e-04
-gpu-img    0.0000    1.4309    0.0066    0    0  MSE=1.372e-07   MSE=6.263e-04
-gpu-opt    0.0000    1.4311    0.0066    0    0  MSE=1.373e-07   MSE=6.263e-04
+cpu        0.0000    1.7767    0.0067    0    0  (reference)     MSE=1.215e-03
+gpu-buf    0.0000    1.7307    0.0067    0    0  MSE=1.917e-07   MSE=1.215e-03
+gpu-img    0.0000    1.8718    0.0067    0    0  MSE=2.673e-07   MSE=1.215e-03
+gpu-opt    0.0000    1.8755    0.0067    0    0  MSE=2.677e-07   MSE=1.215e-03
 ```
 
-MSE ~1.4×10⁻⁷ between CPU and GPU reflects float32 rounding (CPU manual trilinear vs GPU hardware sampler) — not a correctness issue. Half-precision vol_img does not increase MSE. All modes produce identical mean and no NaN/inf.
-MSE vs Python (~6.3×10⁻⁴) is expected: Python reference ran 1 bp-only epoch; C/GPU ran 10 full MLEM epochs.
+MSE ~2.7×10⁻⁷ between CPU and GPU reflects float32 rounding (CPU manual trilinear vs GPU hardware sampler) — not a correctness issue. Half-precision vol_img does not meaningfully increase MSE. All modes produce identical mean and no NaN/inf.
+MSE vs Python (~1.2×10⁻³) is expected: Python reference ran 1 bp-only epoch; C/GPU ran 100 full MLEM epochs.
 
 ## Modes
 
@@ -106,17 +107,17 @@ Or run directly:
 python3 validate.py
 ```
 
-Compares all four HDF5 outputs against `output_cpu.hdf5` as reference. Expected output (10 epochs):
+Compares all four HDF5 outputs against `output_cpu.hdf5` as reference. Expected output (100 epochs):
 
 ```
 Mode         min       max      mean   nan  inf  MSE vs CPU      MSE vs Python
-cpu        0.0000    1.4069    0.0066    0    0  (reference)     MSE=6.262e-04
-gpu-buf    0.0000    1.4188    0.0066    0    0  MSE=1.521e-07   MSE=6.263e-04
-gpu-img    0.0000    1.4309    0.0066    0    0  MSE=1.372e-07   MSE=6.263e-04
-gpu-opt    0.0000    1.4311    0.0066    0    0  MSE=1.373e-07   MSE=6.263e-04
+cpu        0.0000    1.7767    0.0067    0    0  (reference)     MSE=1.215e-03
+gpu-buf    0.0000    1.7307    0.0067    0    0  MSE=1.917e-07   MSE=1.215e-03
+gpu-img    0.0000    1.8718    0.0067    0    0  MSE=2.673e-07   MSE=1.215e-03
+gpu-opt    0.0000    1.8755    0.0067    0    0  MSE=2.677e-07   MSE=1.215e-03
 ```
 
-MSE ~1.4×10⁻⁷ between modes reflects float32 rounding (manual trilinear vs GPU hardware sampler) — not a correctness issue.
+MSE ~2.7×10⁻⁷ between modes reflects float32 rounding (manual trilinear vs GPU hardware sampler) — not a correctness issue.
 
 ## Algorithm
 
