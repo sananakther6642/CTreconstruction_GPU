@@ -10,7 +10,7 @@ All four modes validated: MSE < 3×10⁻⁸ vs CPU reference on the 256³ datase
 | `cpu` | 3.76 s | 376 s | 1× | 1.7× |
 | `gpu-buf` | 0.678 s | 68 s | **5.5×** | 9.5× |
 | `gpu-img` | 0.112 s | 11.2 s | **33.6×** | 57× |
-| `gpu-opt` | **0.098 s** | **9.8 s** | **38×** | **66×** |
+| `gpu-opt` | **0.066 s** | **6.6 s** | **57×** | **98×** |
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (6 cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
@@ -26,10 +26,10 @@ Mode         min       max      mean   nan  inf  MSE vs CPU      MSE vs Python
 cpu        0.0000    1.4069    0.0066    0    0  (reference)     MSE=6.262e-04
 gpu-buf    0.0000    1.4188    0.0066    0    0  MSE=1.521e-07   MSE=6.263e-04
 gpu-img    0.0000    1.4313    0.0066    0    0  MSE=1.373e-07   MSE=6.263e-04
-gpu-opt    0.0000    1.4314    0.0066    0    0  MSE=1.373e-07   MSE=6.263e-04
+gpu-opt    0.0000    1.4311    0.0066    0    0  MSE=1.373e-07   MSE=6.263e-04
 ```
 
-MSE ~1.4×10⁻⁷ between CPU and GPU reflects float32 rounding (CPU manual trilinear vs GPU hardware sampler) — not a correctness issue. All modes produce identical mean and no NaN/inf.
+MSE ~1.4×10⁻⁷ between CPU and GPU reflects float32 rounding (CPU manual trilinear vs GPU hardware sampler) — not a correctness issue. Half-precision vol_img does not increase MSE. All modes produce identical mean and no NaN/inf.
 MSE vs Python (~6.3×10⁻⁴) is expected: Python reference ran 1 bp-only epoch; C/GPU ran 10 full MLEM epochs.
 
 ## Modes
@@ -152,3 +152,4 @@ for each epoch:
 | Fused cone_weight + preprocess_proj | `bp_buffer.cl`, `ct_gpu.c` | one kernel pass instead of two over 512×512×75 proj buffer per epoch |
 | Precomputed R/T matrices | `ct_gpu.c`, `fp_image.cl` | host computes rotation/translation once; eliminates cos/sin + matmul per work-item in fp |
 | `CLK_ADDRESS_CLAMP` on bp samplers | `bp_image.cl`, `bp_buffer_opt.cl` | correct zero-padding at detector edges; fixed accuracy bug (MSE vs CPU: 1.4×10⁻⁷ → 1.4×10⁻⁷, max artifact removed) |
+| Half-precision `vol_img` (`CL_HALF_FLOAT`) | `fp_image.cl`, `ct_gpu.c` | halves texture bandwidth for volume reads in fp_image; float_to_half kernel converts d_vol each epoch; 0.098 s → 0.066 s/epoch (+33%, MSE unchanged) |
