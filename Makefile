@@ -19,12 +19,13 @@ BUILD_DIR  = build
 SRCS = $(SRC_DIR)/main.c \
        $(SRC_DIR)/utils.c \
        $(SRC_DIR)/ct_cpu.c \
-       $(SRC_DIR)/ct_gpu.c
+       $(SRC_DIR)/ct_gpu.c \
+       $(SRC_DIR)/ct_fdk.c
 
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
 TARGET = $(BUILD_DIR)/ct_recon
 
-.PHONY: all clean run-cpu run-gpu-buf run-gpu-img run-gpu-opt
+.PHONY: all clean run-cpu run-gpu-buf run-gpu-img run-gpu-opt run-fdk
 
 all: $(BUILD_DIR) $(TARGET)
 
@@ -59,6 +60,11 @@ run-gpu-img:
 OUT_OPT ?= output_gpu_opt.hdf5
 run-gpu-opt:
 	$(TARGET) --data $(DATA) --out $(OUT_OPT) --mode gpu-opt --epochs $(EPOCHS) \
+	          --kernels $(KERNEL_DIR)
+
+OUT_FDK ?= output_fdk.hdf5
+run-fdk:
+	$(TARGET) --data $(DATA) --out $(OUT_FDK) --mode fdk \
 	          --kernels $(KERNEL_DIR)
 
 clean:

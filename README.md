@@ -1,7 +1,7 @@
 # CT Volume Reconstruction — GPU Lab Project
 
-Cone-beam CT reconstruction using iterative MLEM on CPU (OpenMP) and GPU (OpenCL).
-All four modes validated: MSE < 3×10⁻⁸ vs CPU reference on the 256³ dataset.
+Cone-beam CT reconstruction using iterative MLEM on CPU (OpenMP) and GPU (OpenCL),
+plus an analytical FDK (Feldkamp-Davis-Kress) single-pass mode for fast approximate reconstruction.
 
 ## Performance Results
 
@@ -11,12 +11,14 @@ All four modes validated: MSE < 3×10⁻⁸ vs CPU reference on the 256³ datase
 | `gpu-buf` | 0.678 s | 68 s | **5.5×** | 9.5× |
 | `gpu-img` | 0.112 s | 11.2 s | **33.6×** | 57× |
 | `gpu-opt` | **0.098 s** | **9.8 s** | **38×** | **66×** |
+| `fdk` | — | **1.57 s** | **239×** (total) | single-pass |
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (6 cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
 - *Speedup vs CPU*: both sides fully optimized (OpenMP, `-ffast-math`, `n_samples=256`)
 - *Speedup vs baseline*: gpu-opt vs original C CPU before any optimizations (6.44 s/epoch, `n_samples=512`, no `-ffast-math`)
 - Per-epoch times measured over 10 epochs; 100-epoch totals extrapolated
+- FDK total includes ~1.5 s CPU filter + ~28 ms GPU backprojection (single pass, non-iterative)
 - Dataset: 256³ volume, 512×512 detector, 75 projection angles
 
 ### Validation (10 epochs)
@@ -40,15 +42,17 @@ MSE vs Python (~6.3×10⁻⁴) is expected: Python reference ran 1 bp-only epoch
 | GPU buffer | `--mode gpu-buf` | OpenCL global buffers, manual bilinear/trilinear interpolation |
 | GPU image | `--mode gpu-img` | OpenCL image2d_array + image3d hardware sampler (free HW interp) |
 | GPU opt | `--mode gpu-opt` | Hardware sampler + float2 cos/sin LUT + local mem cache + float4 vectorized update |
+| FDK | `--mode fdk` | Feldkamp-Davis-Kress filtered backprojection: CPU ramp filter (Ram-Lak + cosine weight, FFT) + single GPU bp pass; no `--epochs` |
 
 ## Files
 
 ```
 src/
-  main.c              — CLI: parse args, dispatch to cpu/gpu modes, save HDF5
+  main.c              — CLI: parse args, dispatch to cpu/gpu/fdk modes, save HDF5
   utils.c/h           — HDF5 load/save, get_time_sec()
   ct_cpu.c/h          — CPU: cone_weight, fp_cpu, bp_cpu, reconstruct_cpu
   ct_gpu.c/h          — OpenCL host: gpu_init, reconstruct_gpu, reconstruct_gpu_opt
+  ct_fdk.c/h          — FDK: CPU Cooley-Tukey FFT ramp filter + GPU bp_opt backprojection
 kernels/
   bp_buffer.cl        — bp (buffer) + preprocess_proj (fused cone_weight) + proj_divide + vol_update
   fp_buffer.cl        — fp (buffer): ray march + manual trilinear
@@ -85,6 +89,7 @@ make run-cpu     EPOCHS=100
 make run-gpu-buf EPOCHS=100
 make run-gpu-img EPOCHS=100
 make run-gpu-opt EPOCHS=100
+make run-fdk
 ```
 
 Quick correctness check (10 epochs):
@@ -120,7 +125,20 @@ MSE ~1.4×10⁻⁷ between modes reflects float32 rounding (manual trilinear vs 
 
 ## Algorithm
 
-MLEM multiplicative update:
+### FDK (fdk mode)
+
+Single-pass analytical cone-beam filtered backprojection:
+
+```
+1. Cosine weight each detector pixel: w(u,v) = SDD / sqrt(SDD² + u² + v²)
+2. Per-row 1D ramp filter (Ram-Lak) via zero-padded FFT: H(k) = |k| / (N_fft · Δu)
+3. Single GPU backprojection using bp_opt kernel (same as MLEM)
+4. Normalization: bp_opt applies π/N_angles weighting
+```
+
+FDK is ~240× faster than CPU MLEM (100 epochs) but lower quality: MSE ~5×10⁻⁴ vs CPU vs MLEM's MSE ~1.4×10⁻⁷. Suitable as a fast initial estimate or when iterative quality is not required.
+
+### MLEM multiplicative update:
 
 ```
 v = ones(Nxz, Nxz, Ny)

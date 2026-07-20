@@ -14,6 +14,7 @@ FILES = {
     'gpu-buf': 'output_gpu_buf.hdf5',
     'gpu-img': 'output_gpu_img.hdf5',
     'gpu-opt': 'output_gpu_opt.hdf5',
+    'fdk':     'output_fdk.hdf5',
 }
 
 def load(path):

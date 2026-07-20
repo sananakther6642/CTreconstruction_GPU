@@ -6,12 +6,13 @@
 #include "utils.h"
 #include "ct_cpu.h"
 #include "ct_gpu.h"
+#include "ct_fdk.h"
 
 static void print_usage(const char *prog)
 {
     fprintf(stderr,
-        "Usage: %s --data <file.hdf5> --out <out.hdf5> --mode <cpu|gpu-buf|gpu-img|gpu-opt>\n"
-        "           [--epochs N]  (default: 100)\n"
+        "Usage: %s --data <file.hdf5> --out <out.hdf5> --mode <cpu|gpu-buf|gpu-img|gpu-opt|fdk>\n"
+        "           [--epochs N]  (default: 100, ignored for fdk)\n"
         "           [--kernels <kernel_dir>]  (default: ../kernels)\n",
         prog);
 }
@@ -91,6 +92,22 @@ int main(int argc, char **argv)
         t_end = get_time_sec();
 
         printf("GPU-opt time: %.2f s\n", t_end - t_start);
+        gpu_cleanup(&cl);
+
+    } else if (!strcmp(mode_str, "fdk")) {
+        printf("\n=== FDK mode (single-pass filtered backprojection) ===\n");
+
+        /* Zero-initialize volume — bp accumulates */
+        for (size_t i = 0; i < vol_n; i++) volume[i] = 0.f;
+
+        CLState cl;
+        if (gpu_init(&cl, GPU_MODE_OPT, kernel_dir) != 0) return 1;
+
+        t_start = get_time_sec();
+        reconstruct_fdk(&cl, &para, proj_measured, volume);
+        t_end = get_time_sec();
+
+        printf("FDK time: %.2f s\n", t_end - t_start);
         gpu_cleanup(&cl);
 
     } else {
