@@ -61,29 +61,31 @@ __kernel void bp_opt(
     float half_W = (W - 1) * 0.5f;
     float half_H = (H - 1) * 0.5f;
 
-    /* Unroll by 2: hides texture latency with less register pressure than x4 */
+    /* Large volumes (>=512): unroll x2 hides texture latency with acceptable register cost.
+     * Small volumes (<512): scalar loop — occupancy more valuable than ILP. */
     int ip = 0;
-    for (; ip <= num_projs - 2; ip += 2) {
-        float2 cs0 = lcs[ip+0], cs1 = lcs[ip+1];
+    if (Nxz >= 512) {
+        for (; ip <= num_projs - 2; ip += 2) {
+            float2 cs0 = lcs[ip+0], cs1 = lcs[ip+1];
 
-        float U0 = SOD + ypr*cs0.y + xpr*cs0.x;
-        float U1 = SOD + ypr*cs1.y + xpr*cs1.x;
+            float U0 = SOD + ypr*cs0.y + xpr*cs0.x;
+            float U1 = SOD + ypr*cs1.y + xpr*cs1.x;
 
-        float inv_U0 = 1.f/U0, inv_U1 = 1.f/U1;
+            float inv_U0 = 1.f/U0, inv_U1 = 1.f/U1;
 
-        float uf0 = -(SDD*(ypr*cs0.x - xpr*cs0.y)*inv_U0)*inv_px + half_W;
-        float uf1 = -(SDD*(ypr*cs1.x - xpr*cs1.y)*inv_U1)*inv_px + half_W;
+            float uf0 = -(SDD*(ypr*cs0.x - xpr*cs0.y)*inv_U0)*inv_px + half_W;
+            float uf1 = -(SDD*(ypr*cs1.x - xpr*cs1.y)*inv_U1)*inv_px + half_W;
 
-        float vf0 = (zpr*SDD*inv_U0)*inv_px + half_H;
-        float vf1 = (zpr*SDD*inv_U1)*inv_px + half_H;
+            float vf0 = (zpr*SDD*inv_U0)*inv_px + half_H;
+            float vf1 = (zpr*SDD*inv_U1)*inv_px + half_H;
 
-        float4 v0 = read_imagef(proj_images, samp, (float4)(vf0+.5f, uf0+.5f, (float)(ip+0), 0.f));
-        float4 v1 = read_imagef(proj_images, samp, (float4)(vf1+.5f, uf1+.5f, (float)(ip+1), 0.f));
+            float4 v0 = read_imagef(proj_images, samp, (float4)(vf0+.5f, uf0+.5f, (float)(ip+0), 0.f));
+            float4 v1 = read_imagef(proj_images, samp, (float4)(vf1+.5f, uf1+.5f, (float)(ip+1), 0.f));
 
-        sum += v0.x * sod2 * inv_U0 * inv_U0;
-        sum += v1.x * sod2 * inv_U1 * inv_U1;
+            sum += v0.x * sod2 * inv_U0 * inv_U0;
+            sum += v1.x * sod2 * inv_U1 * inv_U1;
+        }
     }
-    /* tail: 75 % 2 = 1 remaining angle */
     for (; ip < num_projs; ip++) {
         float2 cs = lcs[ip];
         float U = SOD + ypr*cs.y + xpr*cs.x;
