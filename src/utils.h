@@ -15,6 +15,7 @@ typedef struct {
     int    detector_height;
     int    num_projs;
     double *angles;       /* [num_projs] */
+    int    n_samples;     /* ray samples per projection (default: Volumen_num_xz) */
 } CBpara;
 
 /* Load projections + scan parameters from HDF5 */
