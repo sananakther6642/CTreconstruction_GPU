@@ -147,27 +147,10 @@ void reconstruct_fdk(CLState *cl, const CBpara *p,
     size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
     size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
 
-    printf("  FDK: pixelSize=%.6f voxelSize=%.6f SOD=%.3f SDD=%.3f W=%d H=%d np=%d\n",
-           (float)p->pixelSize, (float)p->voxelSize, (float)p->SOD, (float)p->SDD, W, H, np);
-
     /* ── Step 1: cosine weight + ramp filter (CPU) ── */
     printf("  FDK: filtering projections (CPU)...\n");
     float *proj_filtered = (float *)malloc(proj_bytes);
     fdk_filter(p, proj_measured, proj_filtered);
-
-    /* debug: print proj_measured and proj_filtered sample */
-    {
-        float pmin=proj_measured[0], pmax=proj_measured[0];
-        float fmin=proj_filtered[0], fmax=proj_filtered[0];
-        for (int i=0; i<np*H*W; i++) {
-            if (proj_measured[i]<pmin) pmin=proj_measured[i];
-            if (proj_measured[i]>pmax) pmax=proj_measured[i];
-            if (proj_filtered[i]<fmin) fmin=proj_filtered[i];
-            if (proj_filtered[i]>fmax) fmax=proj_filtered[i];
-        }
-        printf("  proj_measured: min=%.6e max=%.6e\n", pmin, pmax);
-        printf("  proj_filtered: min=%.6e max=%.6e\n", fmin, fmax);
-    }
 
     /* ── Step 2: preprocess filtered projections (flip+transpose, no /voxelSize
      *    since FDK doesn't use the MLEM voxelSize normalization) ──
@@ -262,17 +245,6 @@ void reconstruct_fdk(CLState *cl, const CBpara *p,
 
     /* ── Step 7: read back ── */
     clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0, NULL, NULL);
-
-    /* debug: check volume magnitude */
-    {
-        float vmin=volume[0], vmax=volume[0];
-        size_t nvox = (size_t)Nxz*Nxz*Ny;
-        for (size_t i=0; i<nvox; i++) {
-            if (volume[i]<vmin) vmin=volume[i];
-            if (volume[i]>vmax) vmax=volume[i];
-        }
-        printf("  volume after bp: min=%.6e max=%.6e\n", vmin, vmax);
-    }
 
     clReleaseMemObject(proj_img);
     clReleaseMemObject(d_proj_prep);
