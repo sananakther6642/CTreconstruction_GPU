@@ -87,20 +87,19 @@ __kernel void bp_buffer(
 }
 
 /*
- * preprocess_proj — mirrors Python's bp_func first line:
- *   proj[:, ::-1, :].transpose(0,2,1)  then  /= voxelSize
+ * preprocess_proj — cone_weight fused with flip+transpose+/voxelSize.
  *
- * src: [num_projs * H * W]  (row-major: proj[ip][ih][iw])
- * dst: [num_projs * W * H]  (col-major: proj[ip][iw][ih])
- *
- * Work-item: one element (ip, iw, ih) in dst space.
+ * src: [np][H][W] row-major   dst: [np][W][H] col-major
+ * Fuses what was two kernel passes (cone_weight_hw then preprocess_proj).
  */
 __kernel void preprocess_proj(
     __global const float *src,
     __global       float *dst,
     int   W,
     int   H,
-    float voxelSize
+    float voxelSize,
+    float SDD,
+    float pixelSize
 )
 {
     int iw = get_global_id(0);
@@ -108,15 +107,20 @@ __kernel void preprocess_proj(
     int ip = get_global_id(2);
     if (iw >= W || ih >= H) return;
 
-    /* flip H-axis: src row = H-1-ih; src is [H][W] per slice */
-    float val = src[ip * H * W + (H - 1 - ih) * W + iw] / voxelSize;
-    /* transpose: dst is [W][H] per slice */
+    /* cone weight at pixel (iw, ih) */
+    float u = (-(float)(iw - (W-1)*0.5f)) * pixelSize;
+    float v = (  (float)(ih - (H-1)*0.5f)) * pixelSize;
+    float cw = SDD / sqrt(SDD*SDD + u*u + v*v);
+
+    /* flip H-axis, transpose, scale */
+    float val = src[ip * H * W + (H - 1 - ih) * W + iw] * cw / voxelSize;
     dst[ip * W * H + iw * H + ih] = val;
 }
 
 /*
- * cone_weight_hw — cone weight for raw [np][H][W] layout (row-major).
- * Applied to ratio and ones before preprocess_proj.
+ * cone_weight_hw — kept for ones_raw path where we can't fuse
+ * (ones are filled with 1.0, no src to read through preprocess in one shot
+ *  without an extra buffer — kept as in-place pass for that case).
  */
 __kernel void cone_weight_hw(
     __global float *proj,

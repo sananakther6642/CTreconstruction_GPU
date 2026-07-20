@@ -9,6 +9,10 @@
  *   height = Nxz  (y dimension)
  *   depth  = Nxz  (x dimension)
  * Texel coord = (zi+0.5, yi+0.5, xi+0.5) in texel space.
+ *
+ * R_mats: [num_projs * 9] row-major rotation matrices precomputed on host.
+ * T_vecs: [num_projs * 3] translation vectors precomputed on host.
+ * Eliminates angle2pose_img() per work-item (cos/sin + 2x matmul per pixel).
  */
 
 __constant sampler_t vol_samp =
@@ -16,35 +20,11 @@ __constant sampler_t vol_samp =
     CLK_ADDRESS_CLAMP_TO_EDGE   |
     CLK_FILTER_LINEAR;
 
-static void angle2pose_img(float SOD, float angle,
-                            float R[3][3], float T[3])
-{
-    float phi1 = -M_PI_2_F;
-    float phi2 =  M_PI_2_F;
-    float c1=cos(phi1), s1=sin(phi1);
-    float c2=cos(phi2), s2=sin(phi2);
-    float ca=cos(angle), sa=sin(angle);
-
-    float R1[3][3]={{1,0,0},{0,c1,-s1},{0,s1,c1}};
-    float R2[3][3]={{c2,-s2,0},{s2,c2,0},{0,0,1}};
-    float R3[3][3]={{ca,-sa,0},{sa,ca,0},{0,0,1}};
-
-    float tmp[3][3];
-    for (int i=0;i<3;i++) for (int j=0;j<3;j++) {
-        tmp[i][j]=0.f;
-        for (int k=0;k<3;k++) tmp[i][j]+=R3[i][k]*R2[k][j];
-    }
-    for (int i=0;i<3;i++) for (int j=0;j<3;j++) {
-        R[i][j]=0.f;
-        for (int k=0;k<3;k++) R[i][j]+=tmp[i][k]*R1[k][j];
-    }
-    T[0]=SOD*ca; T[1]=SOD*sa; T[2]=0.f;
-}
-
 __kernel void fp_image(
-    __read_only  image3d_t     volume_img,  /* [Nxz][Nxz][Ny] as 3D image */
-    __global const float      *angles,
-    __global       float      *proj,
+    __read_only  image3d_t       volume_img,   /* [Nxz][Nxz][Ny] as 3D image */
+    __constant   float          *R_mats,       /* [num_projs * 9] row-major R per angle */
+    __constant   float          *T_vecs,       /* [num_projs * 3] T per angle */
+    __global     float          *proj,
     int   Nxz,
     int   Ny,
     int   W,
@@ -70,9 +50,8 @@ __kernel void fp_image(
     float far_t     = fmin(SOD * 2.f, SOD + dist_max);
     float dt        = (far_t - near_t) / (float)(n_samples - 1);
 
-    float angle = angles[ip];
-    float R[3][3], T[3];
-    angle2pose_img(SOD, angle, R, T);
+    __constant float *R = R_mats + ip * 9;
+    __constant float *T = T_vecs + ip * 3;
 
     float uu = ((float)iu + 0.5f - W * 0.5f) * pixelSize;
     float vv = ((float)iv + 0.5f - H * 0.5f) * pixelSize;
@@ -80,7 +59,7 @@ __kernel void fp_image(
     float dirs[3] = {uu/SDD, vv/SDD, 1.f};
     float rd[3];
     for (int k=0;k<3;k++)
-        rd[k] = R[k][0]*dirs[0] + R[k][1]*dirs[1] + R[k][2]*dirs[2];
+        rd[k] = R[k*3+0]*dirs[0] + R[k*3+1]*dirs[1] + R[k*3+2]*dirs[2];
 
     float rd_norm  = sqrt(rd[0]*rd[0] + rd[1]*rd[1] + rd[2]*rd[2]);
     float step_val = dt * rd_norm;
