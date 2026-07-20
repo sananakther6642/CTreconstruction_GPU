@@ -55,11 +55,16 @@ for name, v in volumes.items():
 
     mn, mx, me, nan_c, inf_c = stats(v)
 
+    # python ref only comparable if shapes match
+    py_ok = py_ref is not None and py_ref.shape == v.shape if v is not None else False
+
     if name == 'cpu':
         py_mse = ""
-        if py_ref is not None:
+        if py_ok:
             m = np.mean((v.astype(np.float64) - py_ref.astype(np.float64))**2)
             py_mse = f"MSE={m:.3e}"
+        elif py_ref is not None:
+            py_mse = "shape mismatch"
         print(f"{name:<10} {mn:>10.4f} {mx:>10.4f} {me:>10.4f} {nan_c:>6} {inf_c:>6}  (reference)    {py_mse}")
     elif name == 'python':
         print(f"{name:<10} {mn:>10.4f} {mx:>10.4f} {me:>10.4f} {nan_c:>6} {inf_c:>6}  (python ref)   -")
@@ -72,7 +77,7 @@ for name, v in volumes.items():
         maxd  = np.max(np.abs(v64 - ref64))
         cpu_str = f"MSE={mse:.3e}  max={maxd:.4f}"
         py_str = ""
-        if py_ref is not None:
+        if py_ok:
             m = np.mean((v64 - py_ref.astype(np.float64))**2)
             py_str = f"MSE={m:.3e}"
         print(f"{name:<10} {mn:>10.4f} {mx:>10.4f} {me:>10.4f} {nan_c:>6} {inf_c:>6}  {cpu_str:<20} {py_str}")
