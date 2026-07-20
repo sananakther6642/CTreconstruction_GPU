@@ -8,7 +8,7 @@ All four modes validated: MSE < 3×10⁻⁸ vs CPU reference on the 256³ datase
 | Mode | Time/epoch | Total (100ep) | Speedup vs CPU | Speedup vs baseline |
 |------|-----------|--------------|----------------|---------------------|
 | `cpu` | 3.76 s | 376 s | 1× | 1.7× |
-| `gpu-buf` | 0.668 s | 67 s | **5.6×** | 9.6× |
+| `gpu-buf` | 0.678 s | 68 s | **5.5×** | 9.5× |
 | `gpu-img` | 0.112 s | 11.2 s | **33.6×** | 57× |
 | `gpu-opt` | **0.098 s** | **9.8 s** | **38×** | **66×** |
 
