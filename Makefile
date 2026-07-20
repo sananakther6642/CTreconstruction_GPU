@@ -44,7 +44,7 @@ DATA512 ?= /lgrp/edu-2026-1-gpulab/proj_512_75.hdf5
 DATA    ?= $(DATA256)
 EPOCHS    ?= 100
 SAMPLES   ?= 0      # 0 = auto (Nxz); override e.g. SAMPLES=384
-SAMPLES512 ?= 384   # default for 512^3: 0.75*Nxz saves ~25% fp time
+SAMPLES512 ?= 512   # full Nyquist sampling for 512^3
 
 # 256 targets (n_samples defaults to Nxz=256)
 run-cpu:
