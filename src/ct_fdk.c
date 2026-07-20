@@ -83,12 +83,14 @@ static void fdk_filter(const CBpara *p, const float *proj_in, float *proj_out)
     int Nfft = next_pow2(2 * W);
     float *row = (float *)malloc(2 * Nfft * sizeof(float));
 
-    /* Precompute Ram-Lak filter in frequency domain: |k|/Nfft, k=0..Nfft/2 */
-    /* Scale so that spatial integral gives correct CT units */
+    /* Ram-Lak ramp: H[k] = |k| * (px / (2*Nfft))
+     * Factors: 1/Nfft from IFFT normalization, 1/2 from Nyquist, px from Δu.
+     * Together gives the standard FBP filter h(u) = 1/(2*Δu²) * ramp-in-space. */
     float *ramp = (float *)malloc(Nfft * sizeof(float));
+    float ramp_scale = px / (2.f * (float)Nfft);
     ramp[0] = 0.f;
     for (int k = 1; k <= Nfft/2; k++) {
-        ramp[k]        = (float)k / (float)Nfft;
+        ramp[k]        = (float)k * ramp_scale;
         ramp[Nfft - k] = ramp[k];
     }
 
@@ -119,9 +121,9 @@ static void fdk_filter(const CBpara *p, const float *proj_in, float *proj_out)
             /* Inverse FFT */
             fft_1d(row, Nfft, 1);
 
-            /* Copy real part back (scale by pixelSize for correct units) */
+            /* Copy real part back */
             for (int iu = 0; iu < W; iu++)
-                dst[iu] = row[2*iu] * px;
+                dst[iu] = row[2*iu];
         }
     }
 
