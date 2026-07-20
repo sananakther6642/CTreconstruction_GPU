@@ -33,7 +33,7 @@ __kernel void float_to_half(__global const float *src, __global half *dst, int n
 
 __constant sampler_t vol_samp =
     CLK_NORMALIZED_COORDS_FALSE |
-    CLK_ADDRESS_CLAMP           |
+    CLK_ADDRESS_CLAMP_TO_EDGE   |
     CLK_FILTER_LINEAR;
 
 __kernel void fp_image(
@@ -92,13 +92,18 @@ __kernel void fp_image(
     float dox = rd[0] * dt, doy = rd[1] * dt, doz = rd[2] * dt;
     float wx = ox, wy = oy, wz = oz;
 
-    /* CLK_ADDRESS_CLAMP returns 0 outside image bounds — no per-sample bounds check needed */
     float val = 0.f;
     for (int s = 0; s < n_samples; s++) {
-        float4 coord = (float4)(wz * inv_sv_xz + shift_xz + 0.5f,
-                                wy * inv_sv_y  + shift_y  + 0.5f,
-                                wx * inv_sv_xz + shift_xz + 0.5f, 0.f);
-        val += read_imagef(volume_img, vol_samp, coord).x;
+        float xi = wx * inv_sv_xz + shift_xz;
+        float yi = wy * inv_sv_y  + shift_y;
+        float zi = wz * inv_sv_xz + shift_xz;
+
+        if (xi >= 0.f && xi < (float)(Nxz - 1) &&
+            yi >= 0.f && yi < (float)(Ny  - 1) &&
+            zi >= 0.f && zi < (float)(Nxz - 1)) {
+            float4 coord = (float4)(zi + 0.5f, yi + 0.5f, xi + 0.5f, 0.f);
+            val += read_imagef(volume_img, vol_samp, coord).x;
+        }
         wx += dox; wy += doy; wz += doz;
     }
     val *= step_val;
