@@ -50,7 +50,8 @@ __kernel void fp_image(
     float SOD,
     float SDD,
     float voxelSize,
-    float pixelSize
+    float pixelSize,
+    int   use_aabb   /* 1 = clip ray to volume AABB; 0 = full n_samples */
 )
 {
     int iu = get_global_id(0);
@@ -85,58 +86,52 @@ __kernel void fp_image(
     float shift_xz  = 0.5f * Nxz - 0.5f;
     float shift_y   = 0.5f * Ny  - 0.5f;
 
-    /* Fast AABB hit test: skip rays that miss the volume entirely.
-     * Slab method on world-space box [-hxz,hxz]^2 x [-hy,hy].
-     * Avoids n_samples wasted iterations on edge/corner detector pixels. */
-    float hxz = 0.5f * Nxz * voxelSize;
-    float hy  = 0.5f * Ny  * voxelSize;
-    float ox0 = T[0], oy0 = T[1], oz0 = T[2];
-    float tmin = near_t, tmax = far_t;
-    /* x slab */
-    if (fabs(rd[0]) > 1e-6f) {
-        float t1 = (-hxz - ox0) / rd[0], t2 = (hxz - ox0) / rd[0];
-        if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
-        tmin = fmax(tmin, t1); tmax = fmin(tmax, t2);
+    int s_start = 0, s_end = n_samples;
+    /* AABB ray clipping: compute tighter sample range for large detectors.
+     * Uniform branch (use_aabb same for all threads) — zero divergence cost. */
+    if (use_aabb) {
+        float hxz = 0.5f * Nxz * voxelSize;
+        float hy  = 0.5f * Ny  * voxelSize;
+        float ox0 = T[0], oy0 = T[1], oz0 = T[2];
+        float tmin = near_t, tmax = far_t;
+        if (fabs(rd[0]) > 1e-6f) {
+            float t1 = (-hxz - ox0) / rd[0], t2 = (hxz - ox0) / rd[0];
+            if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
+            tmin = fmax(tmin, t1); tmax = fmin(tmax, t2);
+        }
+        if (fabs(rd[1]) > 1e-6f) {
+            float t1 = (-hxz - oy0) / rd[1], t2 = (hxz - oy0) / rd[1];
+            if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
+            tmin = fmax(tmin, t1); tmax = fmin(tmax, t2);
+        }
+        if (fabs(rd[2]) > 1e-6f) {
+            float t1 = (-hy - oz0) / rd[2], t2 = (hy - oz0) / rd[2];
+            if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
+            tmin = fmax(tmin, t1); tmax = fmin(tmax, t2);
+        }
+        if (tmin >= tmax) { proj[ip * H * W + iv * W + iu] = 0.f; return; }
+        s_start = max(0,        (int)((tmin - near_t) / dt));
+        s_end   = min(n_samples,(int)((tmax - near_t) / dt) + 1);
     }
-    /* y slab */
-    if (fabs(rd[1]) > 1e-6f) {
-        float t1 = (-hxz - oy0) / rd[1], t2 = (hxz - oy0) / rd[1];
-        if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
-        tmin = fmax(tmin, t1); tmax = fmin(tmax, t2);
-    }
-    /* z slab */
-    if (fabs(rd[2]) > 1e-6f) {
-        float t1 = (-hy - oz0) / rd[2], t2 = (hy - oz0) / rd[2];
-        if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
-        tmin = fmax(tmin, t1); tmax = fmin(tmax, t2);
-    }
+
+    float wx = T[0] + rd[0] * (near_t + s_start * dt);
+    float wy = T[1] + rd[1] * (near_t + s_start * dt);
+    float wz = T[2] + rd[2] * (near_t + s_start * dt);
+    float dox = rd[0] * dt, doy = rd[1] * dt, doz = rd[2] * dt;
 
     float val = 0.f;
-    if (tmin < tmax) {
-        /* Clamp ray segment to AABB — skip empty samples at both ends */
-        int s_start = (int)((tmin - near_t) / dt);
-        int s_end   = (int)((tmax - near_t) / dt) + 1;
-        s_start = max(0, s_start);
-        s_end   = min(n_samples, s_end);
+    for (int s = s_start; s < s_end; s++) {
+        float xi = wx * inv_sv_xz + shift_xz;
+        float yi = wy * inv_sv_y  + shift_y;
+        float zi = wz * inv_sv_xz + shift_xz;
 
-        float wx = T[0] + rd[0] * (near_t + s_start * dt);
-        float wy = T[1] + rd[1] * (near_t + s_start * dt);
-        float wz = T[2] + rd[2] * (near_t + s_start * dt);
-        float dox = rd[0] * dt, doy = rd[1] * dt, doz = rd[2] * dt;
-
-        for (int s = s_start; s < s_end; s++) {
-            float xi = wx * inv_sv_xz + shift_xz;
-            float yi = wy * inv_sv_y  + shift_y;
-            float zi = wz * inv_sv_xz + shift_xz;
-
-            if (xi >= 0.f && xi < (float)(Nxz - 1) &&
-                yi >= 0.f && yi < (float)(Ny  - 1) &&
-                zi >= 0.f && zi < (float)(Nxz - 1)) {
-                float4 coord = (float4)(zi + 0.5f, yi + 0.5f, xi + 0.5f, 0.f);
-                val += read_imagef(volume_img, vol_samp, coord).x;
-            }
-            wx += dox; wy += doy; wz += doz;
+        if (xi >= 0.f && xi < (float)(Nxz - 1) &&
+            yi >= 0.f && yi < (float)(Ny  - 1) &&
+            zi >= 0.f && zi < (float)(Nxz - 1)) {
+            float4 coord = (float4)(zi + 0.5f, yi + 0.5f, xi + 0.5f, 0.f);
+            val += read_imagef(volume_img, vol_samp, coord).x;
         }
+        wx += dox; wy += doy; wz += doz;
     }
     val *= step_val;
 

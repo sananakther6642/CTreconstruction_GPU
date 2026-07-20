@@ -398,6 +398,10 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &SDD);
     clSetKernelArg(k,12, sizeof(float),  &vs);
     clSetKernelArg(k,13, sizeof(float),  &px);
+    /* AABB ray clipping helps on large detectors (many edge pixels miss volume);
+     * hurts on small detectors where overhead exceeds savings. */
+    int use_aabb = (W > 512) ? 1 : 0;
+    clSetKernelArg(k,14, sizeof(int), &use_aabb);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
     size_t lws[3] = {16, 16, 1};
@@ -540,7 +544,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 
     /* persistent ratio image2d_array for gpu-img mode */
     cl_mem ratio_img_buf = NULL;
-    cl_mem d_ratio_half_img = NULL;
+    (void)0; /* removed unused d_ratio_half_img */
     if (cl->mode == GPU_MODE_IMAGE) {
         cl_image_desc rdesc={0};
         rdesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
