@@ -62,7 +62,7 @@ static char *concat_src(const char *a, const char *b)
  * phi1=-pi/2, phi2=pi/2 are constants; R = R3(angle)*R2(phi2)*R1(phi1)
  * Stores result in cl->d_R_mats ([np*9]) and cl->d_T_vecs ([np*3]).
  */
-static void build_RT_buffers(CLState *cl, const CBpara *p)
+void build_RT_buffers(CLState *cl, const CBpara *p)
 {
     int np = p->num_projs;
     float *R_host = (float *)malloc(np * 9 * sizeof(float));

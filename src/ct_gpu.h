@@ -67,4 +67,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          const float *proj_measured, float *volume,
                          int epochs);
 
+/* Build precomputed R/T device buffers — used by FDK */
+void build_RT_buffers(CLState *cl, const CBpara *p);
+
 #endif /* CT_GPU_H */
