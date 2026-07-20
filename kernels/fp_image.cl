@@ -1,5 +1,21 @@
 /*
  * fp_image.cl — Forward projection using OpenCL image3D for the volume.
+ * Also contains float_to_half utility kernel for half-precision vol_img upload.
+ */
+
+#pragma OPENCL EXTENSION cl_khr_fp16 : enable
+
+/* Convert float volume buffer to half buffer for bandwidth-efficient vol_img upload.
+ * vol_img stored as CL_HALF_FLOAT → halves texture bandwidth in fp_image.
+ * read_imagef auto-converts half→float on read (no kernel change needed). */
+__kernel void float_to_half(__global const float *src, __global half *dst, int n)
+{
+    int i = get_global_id(0);
+    if (i < n) dst[i] = (half)src[i];
+}
+
+/*
+ * fp_image.cl — Forward projection using OpenCL image3D for the volume.
  *
  * Volume stored as CL_MEM_OBJECT_IMAGE3D (read-only).
  * Hardware trilinear sampler replaces manual trilinear_buf.
