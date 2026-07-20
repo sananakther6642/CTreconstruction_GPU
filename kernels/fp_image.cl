@@ -15,11 +15,9 @@
  * Eliminates angle2pose_img() per work-item (cos/sin + 2x matmul per pixel).
  */
 
-/* CLK_ADDRESS_CLAMP returns border color (0.0f) outside image bounds.
- * Lets us remove the per-sample bounds check inside the ray march loop. */
 __constant sampler_t vol_samp =
     CLK_NORMALIZED_COORDS_FALSE |
-    CLK_ADDRESS_CLAMP           |
+    CLK_ADDRESS_CLAMP_TO_EDGE   |
     CLK_FILTER_LINEAR;
 
 __kernel void fp_image(
@@ -83,8 +81,13 @@ __kernel void fp_image(
         float xi = wx * inv_sv_xz + shift_xz;
         float yi = wy * inv_sv_y  + shift_y;
         float zi = wz * inv_sv_xz + shift_xz;
-        float4 coord = (float4)(zi + 0.5f, yi + 0.5f, xi + 0.5f, 0.f);
-        val += read_imagef(volume_img, vol_samp, coord).x;
+
+        if (xi >= 0.f && xi < (float)(Nxz - 1) &&
+            yi >= 0.f && yi < (float)(Ny  - 1) &&
+            zi >= 0.f && zi < (float)(Nxz - 1)) {
+            float4 coord = (float4)(zi + 0.5f, yi + 0.5f, xi + 0.5f, 0.f);
+            val += read_imagef(volume_img, vol_samp, coord).x;
+        }
         wx += dox; wy += doy; wz += doz;
     }
     val *= step_val;
