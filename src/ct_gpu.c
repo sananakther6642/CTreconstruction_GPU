@@ -542,16 +542,12 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     cl_mem ratio_img_buf = NULL;
     cl_mem d_ratio_half_img = NULL;
     if (cl->mode == GPU_MODE_IMAGE) {
-        cl_image_format half_fmt_ratio = {CL_R, CL_HALF_FLOAT};
         cl_image_desc rdesc={0};
         rdesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
         rdesc.image_width=(size_t)H; rdesc.image_height=(size_t)W;
         rdesc.image_array_size=(size_t)np;
-        ratio_img_buf = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &half_fmt_ratio, &rdesc, NULL, &err);
-        CL_CHECK(err,"ratio_img_buf persistent half");
-        d_ratio_half_img = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE,
-                                          (size_t)np*H*W * sizeof(cl_half), NULL, &err);
-        CL_CHECK(err,"d_ratio_half_img");
+        ratio_img_buf = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &img_fmt, &rdesc, NULL, &err);
+        CL_CHECK(err,"ratio_img_buf persistent");
     }
 
     /* ── Iterative loop ─────────────────────────────────────────────────── */
@@ -605,19 +601,11 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             if (cl->mode == GPU_MODE_BUFFER) {
                 run_bp_buffer(cl, p, d_ratio_prep, d_ang_cs, d_bp_ratio);
             } else {
-                int ratio_n = np*H*W;
-                cl_kernel kf = cl->k_f2h;
-                clSetKernelArg(kf, 0, sizeof(cl_mem), &d_ratio_prep);
-                clSetKernelArg(kf, 1, sizeof(cl_mem), &d_ratio_half_img);
-                clSetKernelArg(kf, 2, sizeof(int),    &ratio_n);
-                size_t gws_f = ((size_t)ratio_n + 255) / 256 * 256;
-                size_t lws_f = 256;
-                clEnqueueNDRangeKernel(cl->queue, kf, 1, NULL, &gws_f, &lws_f, 0, NULL, NULL);
                 size_t rorigin[3]={0,0,0};
                 size_t rregion[3]={(size_t)H,(size_t)W,(size_t)np};
-                err=clEnqueueCopyBufferToImage(cl->queue, d_ratio_half_img, ratio_img_buf,
+                err=clEnqueueCopyBufferToImage(cl->queue, d_ratio_prep, ratio_img_buf,
                                                0, rorigin, rregion, 0,NULL,NULL);
-                CL_CHECK(err,"CopyBufferToImage ratio img half");
+                CL_CHECK(err,"CopyBufferToImage ratio img");
                 run_bp_image(cl, p, ratio_img_buf, d_angles, d_bp_ratio);
             }
         }
@@ -651,10 +639,9 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     clReleaseMemObject(d_bp_ratio);
     clReleaseMemObject(d_bp_ones);
     if (proj_img_array) clReleaseMemObject(proj_img_array);
-    if (vol_img)          clReleaseMemObject(vol_img);
-    if (d_vol_half_img)   clReleaseMemObject(d_vol_half_img);
-    if (ratio_img_buf)    clReleaseMemObject(ratio_img_buf);
-    if (d_ratio_half_img) clReleaseMemObject(d_ratio_half_img);
+    if (vol_img)        clReleaseMemObject(vol_img);
+    if (d_vol_half_img) clReleaseMemObject(d_vol_half_img);
+    if (ratio_img_buf)  clReleaseMemObject(ratio_img_buf);
     clReleaseMemObject(d_ang_cs);
     clReleaseMemObject(cl->d_R_mats);
     clReleaseMemObject(cl->d_T_vecs);
@@ -790,16 +777,16 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     float SOD=(float)p->SOD, SDD=(float)p->SDD;
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
-    /* Persistent image2d_array for ratio — CL_HALF_FLOAT halves bp_opt texture bandwidth */
+    /* Persistent image2d_array for ratio */
     cl_image_format half_fmt = {CL_R, CL_HALF_FLOAT};
     cl_image_desc rdesc={0};
     rdesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
     rdesc.image_width=(size_t)H; rdesc.image_height=(size_t)W;
     rdesc.image_array_size=(size_t)np;
-    cl_mem ratio_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &half_fmt, &rdesc, NULL, &err);
-    CL_CHECK(err,"ratio_img persistent half");
+    cl_mem ratio_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &img_fmt, &rdesc, NULL, &err);
+    CL_CHECK(err,"ratio_img persistent");
 
-    /* half_fmt also used below for vol_img */
+    /* half_fmt used below for vol_img */
     cl_image_desc vdesc={0};
     vdesc.image_type=CL_MEM_OBJECT_IMAGE3D;
     vdesc.image_width=(size_t)Ny;
@@ -808,20 +795,15 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     cl_mem vol_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &half_fmt, &vdesc, NULL, &err);
     CL_CHECK(err,"vol_img persistent half");
 
-    /* Half-precision staging buffers: float → half → image */
+    /* Half-precision staging buffer: float d_vol → half d_vol_half → vol_img */
     cl_mem d_vol_half = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE,
                                        (size_t)vol_n * sizeof(cl_half), NULL, &err);
     CL_CHECK(err,"d_vol_half");
-    cl_mem d_ratio_half = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE,
-                                         (size_t)np*H*W * sizeof(cl_half), NULL, &err);
-    CL_CHECK(err,"d_ratio_half");
 
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
-        double t0, t_f2h, t_fp, t_div, t_prep, t_bp, t_upd;
 
         /* ── float d_vol → half d_vol_half → vol_img (GPU-side, no PCIe) ── */
-        t0 = get_time_sec();
         {
             cl_kernel k = cl->k_f2h;
             clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
@@ -839,13 +821,9 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                                            0, origin, region, 0,NULL,NULL);
             CL_CHECK(err,"CopyBufferToImage vol half");
         }
-        clFinish(cl->queue); t_f2h = get_time_sec() - t0;
-        t0 = get_time_sec();
         run_fp_image(cl, p, vol_img, d_proj_b);
-        clFinish(cl->queue); t_fp = get_time_sec() - t0;
 
         /* ── ratio = p0/b ── */
-        t0 = get_time_sec();
         {
             cl_kernel k = cl->k_divide;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
@@ -856,33 +834,18 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"divide opt");
         }
-        clFinish(cl->queue); t_div = get_time_sec() - t0;
-        t0 = get_time_sec();
         run_preprocess(cl, p, d_ratio, d_ratio_prep);
-        clFinish(cl->queue); t_prep = get_time_sec() - t0;
 
-        /* ── float ratio_prep → half → ratio_img ── */
-        {
-            int ratio_n = np*H*W;
-            cl_kernel k = cl->k_f2h;
-            clSetKernelArg(k, 0, sizeof(cl_mem), &d_ratio_prep);
-            clSetKernelArg(k, 1, sizeof(cl_mem), &d_ratio_half);
-            clSetKernelArg(k, 2, sizeof(int),    &ratio_n);
-            size_t gws = ((size_t)ratio_n + 255) / 256 * 256;
-            size_t lws = 256;
-            err = clEnqueueNDRangeKernel(cl->queue, k, 1, NULL, &gws, &lws, 0, NULL, NULL);
-            CL_CHECK(err,"float_to_half ratio");
-        }
+        /* ── copy d_ratio_prep buffer → ratio_img ── */
         {
             size_t origin[3]={0,0,0};
             size_t region[3]={(size_t)H,(size_t)W,(size_t)np};
-            err=clEnqueueCopyBufferToImage(cl->queue, d_ratio_half, ratio_img,
+            err=clEnqueueCopyBufferToImage(cl->queue, d_ratio_prep, ratio_img,
                                            0, origin, region, 0, NULL, NULL);
-            CL_CHECK(err,"CopyBufferToImage ratio half");
+            CL_CHECK(err,"CopyBufferToImage ratio");
         }
 
         /* ── bp_opt(ratio_img) ── */
-        t0 = get_time_sec();
         {
             cl_kernel k = cl->k_bp_opt;
             clSetKernelArg(k,0,sizeof(cl_mem),&ratio_img);
@@ -904,10 +867,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ratio");
         }
-        clFinish(cl->queue); t_bp = get_time_sec() - t0;
 
         /* ── update (float4 vectorized) ── */
-        t0 = get_time_sec();
         {
             cl_kernel k = cl->k_update;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
@@ -918,14 +879,11 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"update opt");
         }
-        clFinish(cl->queue); t_upd = get_time_sec() - t0;
-        printf("  epoch %3d/%d  %.3f s  [f2h=%.0fms fp=%.0fms div=%.0fms prep=%.0fms bp=%.0fms upd=%.0fms]\n",
-               epoch+1, epochs, get_time_sec()-t_ep,
-               t_f2h*1e3, t_fp*1e3, t_div*1e3, t_prep*1e3, t_bp*1e3, t_upd*1e3);
+        clFinish(cl->queue);
+        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
     }
     clReleaseMemObject(vol_img);
     clReleaseMemObject(d_vol_half);
-    clReleaseMemObject(d_ratio_half);
     clReleaseMemObject(ratio_img);
 
     clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
