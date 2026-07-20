@@ -309,7 +309,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
     int W = p->detector_width,   H  = p->detector_height;
     int np = p->num_projs;
-    int n_samples = (int)ceilf(Nxz * 1.0f);
+    int n_samples = p->n_samples;
     float SOD=(float)p->SOD, SDD=(float)p->SDD;
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
@@ -380,7 +380,7 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
     int W = p->detector_width,   H  = p->detector_height;
     int np = p->num_projs;
-    int n_samples = (int)ceilf(Nxz * 1.0f);
+    int n_samples = p->n_samples;
     float SOD=(float)p->SOD, SDD=(float)p->SDD;
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 

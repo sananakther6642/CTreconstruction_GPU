@@ -42,27 +42,29 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 DATA256 ?= /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5
 DATA512 ?= /lgrp/edu-2026-1-gpulab/proj_512_75.hdf5
 DATA    ?= $(DATA256)
-EPOCHS  ?= 100
+EPOCHS    ?= 100
+SAMPLES   ?= 0      # 0 = auto (Nxz); override e.g. SAMPLES=384
+SAMPLES512 ?= 384   # default for 512^3: 0.75*Nxz saves ~25% fp time
 
-# 256 targets
+# 256 targets (n_samples defaults to Nxz=256)
 run-cpu:
-	$(TARGET) --data $(DATA256) --out output_cpu.hdf5        --mode cpu     --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+	$(TARGET) --data $(DATA256) --out output_cpu.hdf5         --mode cpu     --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
 run-gpu-buf:
-	$(TARGET) --data $(DATA256) --out output_gpu_buf.hdf5    --mode gpu-buf --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+	$(TARGET) --data $(DATA256) --out output_gpu_buf.hdf5     --mode gpu-buf --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
 run-gpu-img:
-	$(TARGET) --data $(DATA256) --out output_gpu_img.hdf5    --mode gpu-img --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+	$(TARGET) --data $(DATA256) --out output_gpu_img.hdf5     --mode gpu-img --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
 run-gpu-opt:
-	$(TARGET) --data $(DATA256) --out output_gpu_opt.hdf5    --mode gpu-opt --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+	$(TARGET) --data $(DATA256) --out output_gpu_opt.hdf5     --mode gpu-opt --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
 
-# 512 targets
+# 512 targets (n_samples=384 by default, override with SAMPLES512=N)
 run-cpu-512:
-	$(TARGET) --data $(DATA512) --out output_cpu_512.hdf5    --mode cpu     --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+	$(TARGET) --data $(DATA512) --out output_cpu_512.hdf5     --mode cpu     --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 run-gpu-buf-512:
-	$(TARGET) --data $(DATA512) --out output_gpu_buf_512.hdf5 --mode gpu-buf --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+	$(TARGET) --data $(DATA512) --out output_gpu_buf_512.hdf5 --mode gpu-buf --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 run-gpu-img-512:
-	$(TARGET) --data $(DATA512) --out output_gpu_img_512.hdf5 --mode gpu-img --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+	$(TARGET) --data $(DATA512) --out output_gpu_img_512.hdf5 --mode gpu-img --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 run-gpu-opt-512:
-	$(TARGET) --data $(DATA512) --out output_gpu_opt_512.hdf5 --mode gpu-opt --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+	$(TARGET) --data $(DATA512) --out output_gpu_opt_512.hdf5 --mode gpu-opt --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR)
