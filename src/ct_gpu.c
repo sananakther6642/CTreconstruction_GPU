@@ -396,7 +396,7 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,13, sizeof(float),  &px);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
-    size_t lws[3] = {64, 1, 1};
+    size_t lws[3] = {16, 16, 1};
     for (int d=0;d<3;d++) {
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     }
