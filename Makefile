@@ -61,7 +61,8 @@ run-gpu-opt:
 run-cpu-512:
 	OMP_NUM_THREADS=$(OMP_THREADS) $(TARGET) --data $(DATA512) --out output_cpu_512.hdf5     --mode cpu     --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 run-gpu-buf-512:
-	$(TARGET) --data $(DATA512) --out output_gpu_buf_512.hdf5 --mode gpu-buf --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
+	@echo "ERROR: gpu-buf on 512^3 causes GPU driver hang (global memory thrashing). Use gpu-img or gpu-opt for 512^3."
+	@exit 1
 run-gpu-img-512:
 	$(TARGET) --data $(DATA512) --out output_gpu_img_512.hdf5 --mode gpu-img --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 run-gpu-opt-512:
