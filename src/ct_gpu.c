@@ -763,6 +763,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
 
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
+        double t0, t1;
+        int profile = (epoch == 2);  /* profile one warm epoch */
 
         /* ── copy d_vol buffer → vol_img (GPU-side, no PCIe) ── */
         {
@@ -772,7 +774,9 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                                            0, origin, region, 0,NULL,NULL);
             CL_CHECK(err,"CopyBufferToImage vol");
         }
+        if (profile) { clFinish(cl->queue); t0=get_time_sec(); }
         run_fp_image(cl, p, vol_img, d_proj_b);
+        if (profile) { clFinish(cl->queue); t1=get_time_sec(); printf("  [prof] fp_image:    %.4f s\n", t1-t0); t0=t1; }
 
         /* ── ratio = p0/b ── */
         {
@@ -785,8 +789,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"divide opt");
         }
-
-        run_preprocess(cl, p, d_ratio, d_ratio_prep);  /* fused: cone_weight + flip + transpose */
+        run_preprocess(cl, p, d_ratio, d_ratio_prep);
+        if (profile) { clFinish(cl->queue); t1=get_time_sec(); printf("  [prof] divide+prep: %.4f s\n", t1-t0); t0=t1; }
 
         /* ── copy d_ratio_prep buffer → ratio_img (no host roundtrip) ── */
         {
@@ -796,8 +800,9 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                                            0, origin, region, 0, NULL, NULL);
             CL_CHECK(err,"CopyBufferToImage ratio");
         }
+        if (profile) { clFinish(cl->queue); t1=get_time_sec(); printf("  [prof] buf2img rat: %.4f s\n", t1-t0); t0=t1; }
 
-        /* ── bp_opt(ratio_img): plain = write per voxel, no zero-fill needed ── */
+        /* ── bp_opt(ratio_img) ── */
         {
             cl_kernel k = cl->k_bp_opt;
             clSetKernelArg(k,0,sizeof(cl_mem),&ratio_img);
@@ -819,6 +824,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ratio");
         }
+        if (profile) { clFinish(cl->queue); t1=get_time_sec(); printf("  [prof] bp_opt:      %.4f s\n", t1-t0); t0=t1; }
 
         /* ── update (float4 vectorized) ── */
         {
@@ -831,6 +837,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"update opt");
         }
+        if (profile) { clFinish(cl->queue); t1=get_time_sec(); printf("  [prof] update:      %.4f s\n", t1-t0); }
         clFinish(cl->queue);  /* single sync per epoch — for timing */
         printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
     }
