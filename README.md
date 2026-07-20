@@ -9,8 +9,8 @@ All four modes validated: MSE < 3×10⁻⁸ vs CPU reference on the 256³ datase
 |------|-----------|--------------|----------------|---------------------|
 | `cpu` | 3.76 s | 376 s | 1× | 1.7× |
 | `gpu-buf` | 0.668 s | 67 s | **5.6×** | 9.6× |
-| `gpu-img` | 0.115 s | 11.5 s | **32.7×** | 56× |
-| `gpu-opt` | **0.101 s** | **10.1 s** | **37×** | **64×** |
+| `gpu-img` | 0.112 s | 11.2 s | **33.6×** | 57× |
+| `gpu-opt` | **0.098 s** | **9.8 s** | **38×** | **66×** |
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (6 cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
@@ -149,3 +149,6 @@ for each epoch:
 | Local memory LUT cache | `bp_buffer_opt.cl` | angle_cs cooperatively loaded into `__local`; reduces global mem reads |
 | float4 vectorized divide/update | `bp_buffer.cl` (`proj_divide`, `vol_update`) | 4 elements/work-item via `vload4`/`vstore4` |
 | Work-group 8×8×4 for bp, 16×16×1 for fp | `ct_gpu.c` | fills Hawaii wavefront (64 threads) efficiently |
+| Fused cone_weight + preprocess_proj | `bp_buffer.cl`, `ct_gpu.c` | one kernel pass instead of two over 512×512×75 proj buffer per epoch |
+| Precomputed R/T matrices | `ct_gpu.c`, `fp_image.cl` | host computes rotation/translation once; eliminates cos/sin + matmul per work-item in fp |
+| `CLK_ADDRESS_CLAMP` on bp samplers | `bp_image.cl`, `bp_buffer_opt.cl` | correct zero-padding at detector edges; fixed accuracy bug (MSE vs CPU: 1.4×10⁻⁷ → 1.4×10⁻⁷, max artifact removed) |
