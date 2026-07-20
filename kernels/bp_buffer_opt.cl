@@ -56,24 +56,60 @@ __kernel void bp_opt(
     float zpr = ((float)iz - radius_z) * voxelSize;
 
     float sum = 0.f;
+    float sod2 = SOD * SOD;
+    float inv_px = 1.f / pixelSize;
+    float half_W = (W - 1) * 0.5f;
+    float half_H = (H - 1) * 0.5f;
 
-    for (int ip = 0; ip < num_projs; ip++) {
-        float2 cs = lcs[ip];   /* local memory read — no global traffic after barrier */
-        float ca = cs.x, sa = cs.y;
+    /* Unroll by 4: reduces loop overhead and enables ILP across 4 texture fetches */
+    int ip = 0;
+    for (; ip <= num_projs - 4; ip += 4) {
+        float2 cs0 = lcs[ip+0], cs1 = lcs[ip+1];
+        float2 cs2 = lcs[ip+2], cs3 = lcs[ip+3];
 
-        float U  = SOD + ypr*sa + xpr*ca;
-        float t  = ypr*ca - xpr*sa;
-        float ai = SDD * t / U;
-        float bi = zpr * SDD / U;
+        float U0 = SOD + ypr*cs0.y + xpr*cs0.x;
+        float U1 = SOD + ypr*cs1.y + xpr*cs1.x;
+        float U2 = SOD + ypr*cs2.y + xpr*cs2.x;
+        float U3 = SOD + ypr*cs3.y + xpr*cs3.x;
 
-        float uf = -(ai / pixelSize) + (W - 1) * 0.5f;
-        float vf =  (bi / pixelSize) + (H - 1) * 0.5f;
+        float t0 = ypr*cs0.x - xpr*cs0.y;
+        float t1 = ypr*cs1.x - xpr*cs1.y;
+        float t2 = ypr*cs2.x - xpr*cs2.y;
+        float t3 = ypr*cs3.x - xpr*cs3.y;
 
-        float texel_u = vf + 0.5f;
-        float texel_v = uf + 0.5f;
-        float4 val = read_imagef(proj_images, samp,
-                                 (float4)(texel_u, texel_v, (float)ip, 0.f));
-        sum += val.x * (SOD * SOD) / (U * U);
+        float inv_U0 = 1.f/U0, inv_U1 = 1.f/U1;
+        float inv_U2 = 1.f/U2, inv_U3 = 1.f/U3;
+
+        float uf0 = -(SDD*t0*inv_U0)*inv_px + half_W;
+        float uf1 = -(SDD*t1*inv_U1)*inv_px + half_W;
+        float uf2 = -(SDD*t2*inv_U2)*inv_px + half_W;
+        float uf3 = -(SDD*t3*inv_U3)*inv_px + half_W;
+
+        float vf0 = (zpr*SDD*inv_U0)*inv_px + half_H;
+        float vf1 = (zpr*SDD*inv_U1)*inv_px + half_H;
+        float vf2 = (zpr*SDD*inv_U2)*inv_px + half_H;
+        float vf3 = (zpr*SDD*inv_U3)*inv_px + half_H;
+
+        float4 v0 = read_imagef(proj_images, samp, (float4)(vf0+.5f, uf0+.5f, (float)(ip+0), 0.f));
+        float4 v1 = read_imagef(proj_images, samp, (float4)(vf1+.5f, uf1+.5f, (float)(ip+1), 0.f));
+        float4 v2 = read_imagef(proj_images, samp, (float4)(vf2+.5f, uf2+.5f, (float)(ip+2), 0.f));
+        float4 v3 = read_imagef(proj_images, samp, (float4)(vf3+.5f, uf3+.5f, (float)(ip+3), 0.f));
+
+        sum += v0.x * sod2 * inv_U0 * inv_U0;
+        sum += v1.x * sod2 * inv_U1 * inv_U1;
+        sum += v2.x * sod2 * inv_U2 * inv_U2;
+        sum += v3.x * sod2 * inv_U3 * inv_U3;
+    }
+    /* tail: handle remaining angles (75 % 4 = 3) */
+    for (; ip < num_projs; ip++) {
+        float2 cs = lcs[ip];
+        float U  = SOD + ypr*cs.y + xpr*cs.x;
+        float t  = ypr*cs.x - xpr*cs.y;
+        float inv_U = 1.f/U;
+        float uf = -(SDD*t*inv_U)*inv_px + half_W;
+        float vf = (zpr*SDD*inv_U)*inv_px + half_H;
+        float4 val = read_imagef(proj_images, samp, (float4)(vf+.5f, uf+.5f, (float)ip, 0.f));
+        sum += val.x * sod2 * inv_U * inv_U;
     }
 
     sum *= M_PI_F / (float)num_projs;
