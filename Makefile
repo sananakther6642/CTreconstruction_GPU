@@ -45,10 +45,11 @@ DATA    ?= $(DATA256)
 EPOCHS    ?= 100
 SAMPLES   ?= 0      # 0 = auto (Nxz); override e.g. SAMPLES=384
 SAMPLES512 ?= 512   # full Nyquist sampling for 512^3
+OMP_THREADS ?= $(shell nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 8)
 
 # 256 targets (n_samples defaults to Nxz=256)
 run-cpu:
-	$(TARGET) --data $(DATA256) --out output_cpu.hdf5         --mode cpu     --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+	OMP_NUM_THREADS=$(OMP_THREADS) $(TARGET) --data $(DATA256) --out output_cpu.hdf5         --mode cpu     --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
 run-gpu-buf:
 	$(TARGET) --data $(DATA256) --out output_gpu_buf.hdf5     --mode gpu-buf --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
 run-gpu-img:
@@ -58,7 +59,7 @@ run-gpu-opt:
 
 # 512 targets (n_samples=384 by default, override with SAMPLES512=N)
 run-cpu-512:
-	$(TARGET) --data $(DATA512) --out output_cpu_512.hdf5     --mode cpu     --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
+	OMP_NUM_THREADS=$(OMP_THREADS) $(TARGET) --data $(DATA512) --out output_cpu_512.hdf5     --mode cpu     --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 run-gpu-buf-512:
 	$(TARGET) --data $(DATA512) --out output_gpu_buf_512.hdf5 --mode gpu-buf --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 run-gpu-img-512:
