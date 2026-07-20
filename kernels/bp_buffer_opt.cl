@@ -71,7 +71,7 @@ __kernel void bp_opt(
             float U0 = SOD + ypr*cs0.y + xpr*cs0.x;
             float U1 = SOD + ypr*cs1.y + xpr*cs1.x;
 
-            float inv_U0 = 1.f/U0, inv_U1 = 1.f/U1;
+            float inv_U0 = native_recip(U0), inv_U1 = native_recip(U1);
 
             float uf0 = -(SDD*(ypr*cs0.x - xpr*cs0.y)*inv_U0)*inv_px + half_W;
             float uf1 = -(SDD*(ypr*cs1.x - xpr*cs1.y)*inv_U1)*inv_px + half_W;
@@ -89,7 +89,7 @@ __kernel void bp_opt(
     for (; ip < num_projs; ip++) {
         float2 cs = lcs[ip];
         float U = SOD + ypr*cs.y + xpr*cs.x;
-        float inv_U = 1.f/U;
+        float inv_U = native_recip(U);
         float uf = -(SDD*(ypr*cs.x - xpr*cs.y)*inv_U)*inv_px + half_W;
         float vf = (zpr*SDD*inv_U)*inv_px + half_H;
         float4 val = read_imagef(proj_images, samp, (float4)(vf+.5f, uf+.5f, (float)ip, 0.f));
