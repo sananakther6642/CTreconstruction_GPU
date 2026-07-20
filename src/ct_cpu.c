@@ -227,7 +227,7 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
 
     memset(proj, 0, (size_t)np * H * W * sizeof(float));
 
-    /* collapse(2): ip × iu gives 360×512 = 184k independent work items */
+    /* collapse(2): ip × iu gives np×W independent work items */
     #pragma omp parallel for collapse(2) schedule(static)
     for (int ip = 0; ip < np; ip++) {
         for (int iu = 0; iu < W; iu++) {
