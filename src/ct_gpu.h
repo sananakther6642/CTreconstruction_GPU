@@ -35,6 +35,7 @@ typedef struct {
     cl_program prog_image;
     cl_kernel  k_bp_img;
     cl_kernel  k_fp_img;
+    cl_kernel  k_f2h;      /* float_to_half: float vol buffer → half buf for vol_img */
 
     /* optimized kernels */
     cl_program prog_opt;
