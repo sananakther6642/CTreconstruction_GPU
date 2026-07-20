@@ -24,7 +24,8 @@ SRCS = $(SRC_DIR)/main.c \
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
 TARGET = $(BUILD_DIR)/ct_recon
 
-.PHONY: all clean run-cpu run-gpu-buf run-gpu-img run-gpu-opt
+.PHONY: all clean run-cpu run-gpu-buf run-gpu-img run-gpu-opt \
+               run-cpu-512 run-gpu-buf-512 run-gpu-img-512 run-gpu-opt-512
 
 all: $(BUILD_DIR) $(TARGET)
 
@@ -37,29 +38,31 @@ $(TARGET): $(OBJS)
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# ── Example run targets (set DATA and OUT) ──
-DATA    ?= /lgrp/edu-2026-1-gpulab/proj_512_75.hdf5
-OUT_CPU ?= output_cpu.hdf5
-OUT_BUF ?= output_gpu_buf.hdf5
-OUT_IMG ?= output_gpu_img.hdf5
+# ── Run targets ──
+DATA256 ?= /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5
+DATA512 ?= /lgrp/edu-2026-1-gpulab/proj_512_75.hdf5
+DATA    ?= $(DATA256)
 EPOCHS  ?= 100
 
+# 256 targets
 run-cpu:
-	$(TARGET) --data $(DATA) --out $(OUT_CPU) --mode cpu --epochs $(EPOCHS) \
-	          --kernels $(KERNEL_DIR)
-
+	$(TARGET) --data $(DATA256) --out output_cpu.hdf5        --mode cpu     --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
 run-gpu-buf:
-	$(TARGET) --data $(DATA) --out $(OUT_BUF) --mode gpu-buf --epochs $(EPOCHS) \
-	          --kernels $(KERNEL_DIR)
-
+	$(TARGET) --data $(DATA256) --out output_gpu_buf.hdf5    --mode gpu-buf --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
 run-gpu-img:
-	$(TARGET) --data $(DATA) --out $(OUT_IMG) --mode gpu-img --epochs $(EPOCHS) \
-	          --kernels $(KERNEL_DIR)
-
-OUT_OPT ?= output_gpu_opt.hdf5
+	$(TARGET) --data $(DATA256) --out output_gpu_img.hdf5    --mode gpu-img --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
 run-gpu-opt:
-	$(TARGET) --data $(DATA) --out $(OUT_OPT) --mode gpu-opt --epochs $(EPOCHS) \
-	          --kernels $(KERNEL_DIR)
+	$(TARGET) --data $(DATA256) --out output_gpu_opt.hdf5    --mode gpu-opt --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+
+# 512 targets
+run-cpu-512:
+	$(TARGET) --data $(DATA512) --out output_cpu_512.hdf5    --mode cpu     --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+run-gpu-buf-512:
+	$(TARGET) --data $(DATA512) --out output_gpu_buf_512.hdf5 --mode gpu-buf --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+run-gpu-img-512:
+	$(TARGET) --data $(DATA512) --out output_gpu_img_512.hdf5 --mode gpu-img --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+run-gpu-opt-512:
+	$(TARGET) --data $(DATA512) --out output_gpu_opt_512.hdf5 --mode gpu-opt --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR)
