@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Validate GPU reconstruction outputs against CPU and Python reference."""
+"""Validate GPU reconstruction outputs against CPU reference.
+Usage:
+  python3 validate.py        # 256^3 outputs (default)
+  python3 validate.py 512    # 512^3 outputs
+"""
 import sys
 import numpy as np
 
@@ -8,12 +12,14 @@ try:
 except ImportError:
     sys.exit("h5py not found: pip install h5py")
 
+suffix = '_512' if (len(sys.argv) > 1 and sys.argv[1] == '512') else ''
+
 FILES = {
     'python':  'output_python.hdf5',
-    'cpu':     'output_cpu.hdf5',
-    'gpu-buf': 'output_gpu_buf.hdf5',
-    'gpu-img': 'output_gpu_img.hdf5',
-    'gpu-opt': 'output_gpu_opt.hdf5',
+    'cpu':     f'output_cpu{suffix}.hdf5',
+    'gpu-buf': f'output_gpu_buf{suffix}.hdf5',
+    'gpu-img': f'output_gpu_img{suffix}.hdf5',
+    'gpu-opt': f'output_gpu_opt{suffix}.hdf5',
 }
 
 def load(path):
@@ -29,20 +35,21 @@ def stats(v):
 
 volumes = {k: load(p) for k, p in FILES.items()}
 
-# Primary reference: cpu. Secondary: python (if available).
 ref = volumes.get('cpu')
 if ref is None:
-    sys.exit("output_cpu.hdf5 not found — run cpu mode first")
+    sys.exit(f"{FILES['cpu']} not found — run cpu mode first")
 
 py_ref = volumes.get('python')
 
+label = "512^3" if suffix else "256^3"
+print(f"\n=== {label} validation ===")
 print(f"\n{'Mode':<10} {'min':>10} {'max':>10} {'mean':>10} {'nan':>6} {'inf':>6}  MSE vs CPU     MSE vs Python")
 print("-" * 95)
 
 for name, v in volumes.items():
     if v is None:
         if name == 'python':
-            continue  # python ref optional — skip silently
+            continue
         print(f"{name:<10}  [file not found]")
         continue
 
