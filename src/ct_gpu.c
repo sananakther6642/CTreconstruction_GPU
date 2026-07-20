@@ -259,24 +259,6 @@ static void run_preprocess(CLState *cl, const CBpara *p,
     CL_CHECK(err, "preprocess_proj enqueue");
 }
 
-static void run_cone_weight_hw(CLState *cl, const CBpara *p, cl_mem d_proj)
-{
-    cl_int err;
-    cl_kernel k = cl->k_cone_hw;
-    int W = p->detector_width, H = p->detector_height, np = p->num_projs;
-    float SDD = (float)p->SDD, px = (float)p->pixelSize;
-    clSetKernelArg(k, 0, sizeof(cl_mem), &d_proj);
-    clSetKernelArg(k, 1, sizeof(int),    &W);
-    clSetKernelArg(k, 2, sizeof(int),    &H);
-    clSetKernelArg(k, 3, sizeof(float),  &SDD);
-    clSetKernelArg(k, 4, sizeof(float),  &px);
-    size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
-    size_t lws[3] = {16, 16, 1};
-    for (int d = 0; d < 3; d++)
-        if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
-    err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
-    CL_CHECK(err, "cone_weight_hw enqueue");
-}
 
 /* ── Internal: run backprojection on GPU (buffer mode) ─────────────────── */
 static void run_bp_buffer(CLState *cl, const CBpara *p,
@@ -746,8 +728,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,10,sizeof(float),&SDD);
             clSetKernelArg(k,11,sizeof(float),&vs);
             clSetKernelArg(k,12,sizeof(float),&px);
-            size_t gws[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
-            size_t lws[3]={64,1,4};
+            size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
+            size_t lws[3]={8,8,4};
             for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ones");
@@ -831,8 +813,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,10,sizeof(float),&SDD);
             clSetKernelArg(k,11,sizeof(float),&vs);
             clSetKernelArg(k,12,sizeof(float),&px);
-            size_t gws[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
-            size_t lws[3]={64,1,4};
+            size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
+            size_t lws[3]={8,8,4};
             for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ratio");
