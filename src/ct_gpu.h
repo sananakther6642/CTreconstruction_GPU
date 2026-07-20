@@ -40,6 +40,10 @@ typedef struct {
     cl_program prog_opt;
     cl_kernel  k_bp_opt;
 
+    /* precomputed R/T for fp_image — built once per reconstruct call */
+    cl_mem d_R_mats;  /* [num_projs * 9] float */
+    cl_mem d_T_vecs;  /* [num_projs * 3] float */
+
     GPUMode mode;
 } CLState;
 

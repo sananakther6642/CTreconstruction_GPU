@@ -58,6 +58,55 @@ static char *concat_src(const char *a, const char *b)
     return out;
 }
 
+/* ── Precompute R/T matrices for fp_image kernel ───────────────────────────
+ * phi1=-pi/2, phi2=pi/2 are constants; R = R3(angle)*R2(phi2)*R1(phi1)
+ * Stores result in cl->d_R_mats ([np*9]) and cl->d_T_vecs ([np*3]).
+ */
+static void build_RT_buffers(CLState *cl, const CBpara *p)
+{
+    int np = p->num_projs;
+    float *R_host = (float *)malloc(np * 9 * sizeof(float));
+    float *T_host = (float *)malloc(np * 3 * sizeof(float));
+
+    /* R1(phi1=-pi/2, rot X): {{1,0,0},{0,0,1},{0,-1,0}} */
+    /* R2(phi2=+pi/2, rot Z): {{0,-1,0},{1,0,0},{0,0,1}} */
+    /* R12 = R2*R1 */
+    float R12[3][3] = {
+        { 0.f,  0.f, -1.f},
+        { 1.f,  0.f,  0.f},
+        { 0.f, -1.f,  0.f}
+    };
+
+    for (int i = 0; i < np; i++) {
+        float angle = (float)p->angles[i];
+        float ca = cosf(angle), sa = sinf(angle);
+        /* R3(angle) */
+        float R3[3][3] = {{ca,-sa,0.f},{sa,ca,0.f},{0.f,0.f,1.f}};
+        /* R = R3 * R12 */
+        float R[3][3];
+        for (int r=0;r<3;r++) for (int c=0;c<3;c++) {
+            R[r][c] = 0.f;
+            for (int k=0;k<3;k++) R[r][c] += R3[r][k]*R12[k][c];
+        }
+        for (int r=0;r<3;r++) for (int c=0;c<3;c++)
+            R_host[i*9 + r*3 + c] = R[r][c];
+        T_host[i*3+0] = (float)p->SOD * ca;
+        T_host[i*3+1] = (float)p->SOD * sa;
+        T_host[i*3+2] = 0.f;
+    }
+
+    cl_int err;
+    cl->d_R_mats = clCreateBuffer(cl->ctx,
+        CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR, np*9*sizeof(float), R_host, &err);
+    CL_CHECK(err, "d_R_mats");
+    cl->d_T_vecs = clCreateBuffer(cl->ctx,
+        CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR, np*3*sizeof(float), T_host, &err);
+    CL_CHECK(err, "d_T_vecs");
+
+    free(R_host);
+    free(T_host);
+}
+
 /* ── gpu_init ─────────────────────────────────────────────────────────────── */
 int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
 {
@@ -179,23 +228,28 @@ void gpu_cleanup(CLState *cl)
 }
 
 /*
- * run_preprocess — flip+transpose+/voxelSize (cone_weight applied separately before).
+ * run_preprocess — fused: cone_weight + flip + transpose + /voxelSize in one kernel pass.
  * src: [np*H*W]  (row-major [ip][ih][iw])
  * dst: [np*W*H]  (col-major [ip][iw][ih], ready for bp kernels)
  */
+/* Fused: cone_weight + flip + transpose + /voxelSize in one pass */
 static void run_preprocess(CLState *cl, const CBpara *p,
                             cl_mem src, cl_mem dst)
 {
     cl_int err;
     cl_kernel k = cl->k_preproc;
     int W = p->detector_width, H = p->detector_height, np = p->num_projs;
-    float vs = (float)p->voxelSize;
+    float vs  = (float)p->voxelSize;
+    float SDD = (float)p->SDD;
+    float px  = (float)p->pixelSize;
 
     clSetKernelArg(k, 0, sizeof(cl_mem), &src);
     clSetKernelArg(k, 1, sizeof(cl_mem), &dst);
     clSetKernelArg(k, 2, sizeof(int),    &W);
     clSetKernelArg(k, 3, sizeof(int),    &H);
     clSetKernelArg(k, 4, sizeof(float),  &vs);
+    clSetKernelArg(k, 5, sizeof(float),  &SDD);
+    clSetKernelArg(k, 6, sizeof(float),  &px);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
     size_t lws[3] = {16, 16, 1};
@@ -205,28 +259,10 @@ static void run_preprocess(CLState *cl, const CBpara *p,
     CL_CHECK(err, "preprocess_proj enqueue");
 }
 
-static void run_cone_weight_hw(CLState *cl, const CBpara *p, cl_mem d_proj)
-{
-    cl_int err;
-    cl_kernel k = cl->k_cone_hw;
-    int W = p->detector_width, H = p->detector_height, np = p->num_projs;
-    float SDD = (float)p->SDD, px = (float)p->pixelSize;
-    clSetKernelArg(k, 0, sizeof(cl_mem), &d_proj);
-    clSetKernelArg(k, 1, sizeof(int),    &W);
-    clSetKernelArg(k, 2, sizeof(int),    &H);
-    clSetKernelArg(k, 3, sizeof(float),  &SDD);
-    clSetKernelArg(k, 4, sizeof(float),  &px);
-    size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
-    size_t lws[3] = {16, 16, 1};
-    for (int d = 0; d < 3; d++)
-        if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
-    err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
-    CL_CHECK(err, "cone_weight_hw enqueue");
-}
 
 /* ── Internal: run backprojection on GPU (buffer mode) ─────────────────── */
 static void run_bp_buffer(CLState *cl, const CBpara *p,
-                           cl_mem d_proj, cl_mem d_angles,
+                           cl_mem d_proj, cl_mem d_ang_cs,
                            cl_mem d_vol)
 {
     cl_int err;
@@ -238,7 +274,7 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
     clSetKernelArg(k, 0, sizeof(cl_mem), &d_proj);
-    clSetKernelArg(k, 1, sizeof(cl_mem), &d_angles);
+    clSetKernelArg(k, 1, sizeof(cl_mem), &d_ang_cs);
     clSetKernelArg(k, 2, sizeof(cl_mem), &d_vol);
     clSetKernelArg(k, 3, sizeof(int),    &Nxz);
     clSetKernelArg(k, 4, sizeof(int),    &Ny);
@@ -262,8 +298,7 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
 
 /* ── Internal: run forward projection on GPU (buffer mode) ─────────────── */
 static void run_fp_buffer(CLState *cl, const CBpara *p,
-                           cl_mem d_vol, cl_mem d_angles,
-                           cl_mem d_proj)
+                           cl_mem d_vol, cl_mem d_proj)
 {
     cl_int err;
     cl_kernel k = cl->k_fp_buf;
@@ -275,18 +310,19 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
     clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
-    clSetKernelArg(k, 1, sizeof(cl_mem), &d_angles);
-    clSetKernelArg(k, 2, sizeof(cl_mem), &d_proj);
-    clSetKernelArg(k, 3, sizeof(int),    &Nxz);
-    clSetKernelArg(k, 4, sizeof(int),    &Ny);
-    clSetKernelArg(k, 5, sizeof(int),    &W);
-    clSetKernelArg(k, 6, sizeof(int),    &H);
-    clSetKernelArg(k, 7, sizeof(int),    &np);
-    clSetKernelArg(k, 8, sizeof(int),    &n_samples);
-    clSetKernelArg(k, 9, sizeof(float),  &SOD);
-    clSetKernelArg(k,10, sizeof(float),  &SDD);
-    clSetKernelArg(k,11, sizeof(float),  &vs);
-    clSetKernelArg(k,12, sizeof(float),  &px);
+    clSetKernelArg(k, 1, sizeof(cl_mem), &cl->d_R_mats);
+    clSetKernelArg(k, 2, sizeof(cl_mem), &cl->d_T_vecs);
+    clSetKernelArg(k, 3, sizeof(cl_mem), &d_proj);
+    clSetKernelArg(k, 4, sizeof(int),    &Nxz);
+    clSetKernelArg(k, 5, sizeof(int),    &Ny);
+    clSetKernelArg(k, 6, sizeof(int),    &W);
+    clSetKernelArg(k, 7, sizeof(int),    &H);
+    clSetKernelArg(k, 8, sizeof(int),    &np);
+    clSetKernelArg(k, 9, sizeof(int),    &n_samples);
+    clSetKernelArg(k,10, sizeof(float),  &SOD);
+    clSetKernelArg(k,11, sizeof(float),  &SDD);
+    clSetKernelArg(k,12, sizeof(float),  &vs);
+    clSetKernelArg(k,13, sizeof(float),  &px);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
     size_t lws[3] = {16, 16, 1};
@@ -333,7 +369,7 @@ static void run_bp_image(CLState *cl, const CBpara *p,
 
 /* ── Internal: run forward projection (image mode) ─────────────────────── */
 static void run_fp_image(CLState *cl, const CBpara *p,
-                          cl_mem vol_img, cl_mem d_angles, cl_mem d_proj)
+                          cl_mem vol_img, cl_mem d_proj)
 {
     cl_int err;
     cl_kernel k = cl->k_fp_img;
@@ -345,18 +381,19 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
     clSetKernelArg(k, 0, sizeof(cl_mem), &vol_img);
-    clSetKernelArg(k, 1, sizeof(cl_mem), &d_angles);
-    clSetKernelArg(k, 2, sizeof(cl_mem), &d_proj);
-    clSetKernelArg(k, 3, sizeof(int),    &Nxz);
-    clSetKernelArg(k, 4, sizeof(int),    &Ny);
-    clSetKernelArg(k, 5, sizeof(int),    &W);
-    clSetKernelArg(k, 6, sizeof(int),    &H);
-    clSetKernelArg(k, 7, sizeof(int),    &np);
-    clSetKernelArg(k, 8, sizeof(int),    &n_samples);
-    clSetKernelArg(k, 9, sizeof(float),  &SOD);
-    clSetKernelArg(k,10, sizeof(float),  &SDD);
-    clSetKernelArg(k,11, sizeof(float),  &vs);
-    clSetKernelArg(k,12, sizeof(float),  &px);
+    clSetKernelArg(k, 1, sizeof(cl_mem), &cl->d_R_mats);
+    clSetKernelArg(k, 2, sizeof(cl_mem), &cl->d_T_vecs);
+    clSetKernelArg(k, 3, sizeof(cl_mem), &d_proj);
+    clSetKernelArg(k, 4, sizeof(int),    &Nxz);
+    clSetKernelArg(k, 5, sizeof(int),    &Ny);
+    clSetKernelArg(k, 6, sizeof(int),    &W);
+    clSetKernelArg(k, 7, sizeof(int),    &H);
+    clSetKernelArg(k, 8, sizeof(int),    &np);
+    clSetKernelArg(k, 9, sizeof(int),    &n_samples);
+    clSetKernelArg(k,10, sizeof(float),  &SOD);
+    clSetKernelArg(k,11, sizeof(float),  &SDD);
+    clSetKernelArg(k,12, sizeof(float),  &vs);
+    clSetKernelArg(k,13, sizeof(float),  &px);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
     size_t lws[3] = {16, 16, 1};
@@ -380,16 +417,25 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
     size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
 
-    /* Convert angles to float */
-    float *ang_f = (float *)malloc(np * sizeof(float));
-    for (int i=0;i<np;i++) ang_f[i] = (float)p->angles[i];
+    build_RT_buffers(cl, p);
+
+    /* Build float2 cos/sin LUT for bp_buffer */
+    float *ang_cs = (float *)malloc(np * 2 * sizeof(float));
+    float *ang_f  = (float *)malloc(np * sizeof(float));
+    for (int i=0;i<np;i++) {
+        ang_cs[2*i]   = (float)cos(p->angles[i]);
+        ang_cs[2*i+1] = (float)sin(p->angles[i]);
+        ang_f[i]      = (float)p->angles[i];
+    }
 
     /* ── Allocate device buffers ── */
-    /* READ_WRITE so we can apply cone weight in-place before iterating */
     cl_mem d_proj_meas = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
                                          proj_bytes, (void*)proj_measured, &err);
     CL_CHECK(err, "d_proj_meas");
 
+    cl_mem d_ang_cs = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR,
+                                      np*2*sizeof(float), ang_cs, &err);
+    CL_CHECK(err, "d_ang_cs buf");
     cl_mem d_angles = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR,
                                       np*sizeof(float), ang_f, &err);
     CL_CHECK(err, "d_angles");
@@ -422,26 +468,18 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         err = clEnqueueFillBuffer(cl->queue, d_ones_raw, &one, sizeof(float),
                                   0, proj_bytes, 0, NULL, NULL);
         CL_CHECK(err, "fill ones");
-        clFinish(cl->queue);
-        run_cone_weight_hw(cl, p, d_ones_raw);
-        clFinish(cl->queue);
-        run_preprocess(cl, p, d_ones_raw, d_ones_prep);
-        clFinish(cl->queue);
+        run_preprocess(cl, p, d_ones_raw, d_ones_prep);  /* fused: cone_weight + flip + transpose */
 
         float zero = 0.f;
         clEnqueueFillBuffer(cl->queue, d_bp_ones, &zero, sizeof(float),
                             0, vol_bytes, 0, NULL, NULL);
-        clFinish(cl->queue);
 
         if (cl->mode == GPU_MODE_BUFFER) {
-            run_bp_buffer(cl, p, d_ones_prep, d_angles, d_bp_ones);
+            run_bp_buffer(cl, p, d_ones_prep, d_ang_cs, d_bp_ones);
         } else {
-            /* ones_prep is already [np][W][H] with /voxelSize applied —
-             * same scale as ratio_prep, so bp_ones/bp_ratio cancel correctly */
             cl_image_format fmt = {CL_R, CL_FLOAT};
             cl_image_desc desc = {0};
             desc.image_type       = CL_MEM_OBJECT_IMAGE2D_ARRAY;
-            /* d_ones_prep is [np][W][H] col-major; use width=H,height=W. */
             desc.image_width      = (size_t)H;
             desc.image_height     = (size_t)W;
             desc.image_array_size = (size_t)np;
@@ -452,11 +490,10 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             err = clEnqueueCopyBufferToImage(cl->queue, d_ones_prep, ones_img,
                                              0, oorigin, oregion, 0, NULL, NULL);
             CL_CHECK(err,"CopyBufferToImage ones_prep");
-            clFinish(cl->queue);
             run_bp_image(cl, p, ones_img, d_angles, d_bp_ones);
             clReleaseMemObject(ones_img);
         }
-        clFinish(cl->queue);
+        clFinish(cl->queue);  /* wait for bp_ones before epoch loop */
         clReleaseMemObject(d_ones_raw);
         clReleaseMemObject(d_ones_prep);
         printf("  bp(ones) computed.\n");
@@ -507,19 +544,17 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 
         /* forward project: b = F(v0) */
         if (cl->mode == GPU_MODE_BUFFER) {
-            run_fp_buffer(cl, p, d_vol, d_angles, d_proj_b);
+            run_fp_buffer(cl, p, d_vol, d_proj_b);
         } else {
-            /* GPU-side copy: d_vol buffer → vol_img (no PCIe roundtrip) */
             size_t vorigin[3]={0,0,0};
             size_t vregion[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
             err=clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img,
                                            0, vorigin, vregion, 0,NULL,NULL);
             CL_CHECK(err,"CopyBufferToImage vol img");
-            run_fp_image(cl, p, vol_img, d_angles, d_proj_b);
+            run_fp_image(cl, p, vol_img, d_proj_b);
         }
-        clFinish(cl->queue);
 
-        /* ratio = p0 / b  (float4 vectorized: dispatch ceil(proj_n/4) items) */
+        /* ratio = p0 / b */
         {
             cl_kernel k = cl->k_divide;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
@@ -530,31 +565,26 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"proj_divide");
         }
-        clFinish(cl->queue);
 
-        /* cone_weight fused into preprocess_proj — one kernel pass */
-        run_preprocess(cl, p, d_ratio, d_ratio_prep);
-        clFinish(cl->queue);
+        run_preprocess(cl, p, d_ratio, d_ratio_prep);  /* fused: cone_weight + flip + transpose */
 
         /* bp_ratio = bp(ratio_prep) */
         {
             float zero=0.f;
             clEnqueueFillBuffer(cl->queue,d_bp_ratio,&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
             if (cl->mode == GPU_MODE_BUFFER) {
-                run_bp_buffer(cl, p, d_ratio_prep, d_angles, d_bp_ratio);
+                run_bp_buffer(cl, p, d_ratio_prep, d_ang_cs, d_bp_ratio);
             } else {
                 size_t rorigin[3]={0,0,0};
                 size_t rregion[3]={(size_t)H,(size_t)W,(size_t)np};
                 err=clEnqueueCopyBufferToImage(cl->queue, d_ratio_prep, ratio_img_buf,
                                                0, rorigin, rregion, 0,NULL,NULL);
                 CL_CHECK(err,"CopyBufferToImage ratio img");
-                clFinish(cl->queue);
                 run_bp_image(cl, p, ratio_img_buf, d_angles, d_bp_ratio);
             }
         }
-        clFinish(cl->queue);
 
-        /* v0 *= bp_ratio / bp_ones (float4 vectorized: dispatch ceil(vol_n/4) items) */
+        /* v0 *= bp_ratio / bp_ones */
         {
             cl_kernel k = cl->k_update;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
@@ -565,8 +595,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"vol_update");
         }
-        clFinish(cl->queue);
-
+        clFinish(cl->queue);  /* single sync per epoch — for timing */
         printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
     }
 
@@ -586,6 +615,10 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     if (proj_img_array) clReleaseMemObject(proj_img_array);
     if (vol_img)        clReleaseMemObject(vol_img);
     if (ratio_img_buf)  clReleaseMemObject(ratio_img_buf);
+    clReleaseMemObject(d_ang_cs);
+    clReleaseMemObject(cl->d_R_mats);
+    clReleaseMemObject(cl->d_T_vecs);
+    free(ang_cs);
     free(ang_f);
 }
 
@@ -653,28 +686,23 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     /* image format for proj image array */
     cl_image_format img_fmt = {CL_R, CL_FLOAT};
 
+    build_RT_buffers(cl, p);
+
     /* d_proj_meas stays raw — cone weight applied to ratio after divide, matching Python */
-    clFinish(cl->queue);
 
     /* ── bp_ones: preprocess all-ones → image, run bp_opt ── */
     {
-        /* Build ones_prep: ones raw → preprocess (flip+transpose+/voxelSize)
-         * Must match ratio_prep scale so bp_ones/bp_ratio cancel correctly */
         cl_mem d_ones_raw  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
         CL_CHECK(err,"d_ones_raw opt");
         cl_mem d_ones_prep = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
         CL_CHECK(err,"d_ones_prep opt");
         float one=1.f;
         clEnqueueFillBuffer(cl->queue, d_ones_raw, &one, sizeof(float), 0, proj_bytes, 0, NULL, NULL);
-        clFinish(cl->queue);
-        /* cone_weight fused into preprocess_proj */
-        run_preprocess(cl, p, d_ones_raw, d_ones_prep);
-        clFinish(cl->queue);
+        run_preprocess(cl, p, d_ones_raw, d_ones_prep);  /* fused: cone_weight + flip + transpose */
         clReleaseMemObject(d_ones_raw);
 
         float zero=0.f;
         clEnqueueFillBuffer(cl->queue,d_bp_ones,&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
-        clFinish(cl->queue);
 
         cl_image_desc idesc={0};
         idesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
@@ -687,7 +715,6 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         err = clEnqueueCopyBufferToImage(cl->queue, d_ones_prep, ones_img,
                                          0, oorigin, oregion, 0, NULL, NULL);
         CL_CHECK(err,"CopyBufferToImage ones_prep opt");
-        clFinish(cl->queue);
         clReleaseMemObject(d_ones_prep);
 
         {
@@ -713,7 +740,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ones");
         }
-        clFinish(cl->queue);
+        clFinish(cl->queue);  /* wait for bp_opt(ones) before epoch loop */
         clReleaseMemObject(ones_img);
         printf("  bp_opt(ones) computed.\n");
     }
@@ -751,8 +778,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                                            0, origin, region, 0,NULL,NULL);
             CL_CHECK(err,"CopyBufferToImage vol");
         }
-        run_fp_image(cl, p, vol_img, d_angles, d_proj_b);
-        clFinish(cl->queue);
+        run_fp_image(cl, p, vol_img, d_proj_b);
 
         /* ── ratio = p0/b ── */
         {
@@ -765,12 +791,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"divide opt");
         }
-        clFinish(cl->queue);
-
-        run_cone_weight_hw(cl, p, d_ratio);
-        clFinish(cl->queue);
         run_preprocess(cl, p, d_ratio, d_ratio_prep);
-        clFinish(cl->queue);
 
         /* ── copy d_ratio_prep buffer → ratio_img (no host roundtrip) ── */
         {
@@ -780,9 +801,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                                            0, origin, region, 0, NULL, NULL);
             CL_CHECK(err,"CopyBufferToImage ratio");
         }
-        clFinish(cl->queue);
 
-        /* ── bp_opt(ratio_img): plain = write per voxel, no zero-fill needed ── */
+        /* ── bp_opt(ratio_img) ── */
         {
             cl_kernel k = cl->k_bp_opt;
             clSetKernelArg(k,0,sizeof(cl_mem),&ratio_img);
@@ -804,7 +824,6 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ratio");
         }
-        clFinish(cl->queue);
 
         /* ── update (float4 vectorized) ── */
         {
@@ -817,7 +836,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"update opt");
         }
-        clFinish(cl->queue);
+        clFinish(cl->queue);  /* single sync per epoch — for timing */
         printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
     }
     clReleaseMemObject(vol_img);
@@ -835,6 +854,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     clReleaseMemObject(d_ratio_prep);
     clReleaseMemObject(d_bp_ratio);
     clReleaseMemObject(d_bp_ones);
+    clReleaseMemObject(cl->d_R_mats);
+    clReleaseMemObject(cl->d_T_vecs);
     free(ang_cs);
     free(ang_f);
 }
