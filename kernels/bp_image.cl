@@ -8,9 +8,11 @@
  * Pixel (u, v) maps to image coord (u + W/2, v + H/2) in texel space.
  */
 
+/* CLK_ADDRESS_CLAMP returns 0 outside image bounds — eliminates per-sample
+ * bounds check while keeping correct zero-padding at detector edges. */
 __constant sampler_t samp =
     CLK_NORMALIZED_COORDS_FALSE |
-    CLK_ADDRESS_CLAMP_TO_EDGE   |
+    CLK_ADDRESS_CLAMP           |
     CLK_FILTER_LINEAR;
 
 __kernel void bp_image(
@@ -61,21 +63,10 @@ __kernel void bp_image(
         float uf = -(ai / pixelSize) + (W - 1) * 0.5f;
         float vf =  (bi / pixelSize) + (H - 1) * 0.5f;
 
-        /*
-         * Match CPU/buffer behavior: skip samples outside detector support.
-         * Without this, CLAMP_TO_EDGE would replicate edge texels and cause bias.
-         */
-        if (uf >= 0.f && uf < (float)(W - 1) &&
-            vf >= 0.f && vf < (float)(H - 1)) {
-            /*
-             * Image stores preprocessed buffer [W][H] with width=H,height=W:
-             * x <- ih (vf), y <- iw (uf).
-             */
-            float texel_u = vf + 0.5f;
-            float texel_v = uf + 0.5f;
-            float4 val = read_imagef(proj_images, samp, (float4)(texel_u, texel_v, (float)ip, 0.f));
-            sum += val.x * (SOD*SOD) / (U*U);
-        }
+        float texel_u = vf + 0.5f;
+        float texel_v = uf + 0.5f;
+        float4 val = read_imagef(proj_images, samp, (float4)(texel_u, texel_v, (float)ip, 0.f));
+        sum += val.x * (SOD*SOD) / (U*U);
     }
 
     sum *= M_PI_F / (float)num_projs;
