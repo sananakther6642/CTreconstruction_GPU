@@ -17,7 +17,7 @@ __constant sampler_t samp =
 
 __kernel void bp_image(
     __read_only  image2d_array_t proj_images, /* [num_projs][W][H] as 2D array */
-    __global const float *angles,
+    __global const float2 *angle_cs,          /* [num_projs] (.x=cos,.y=sin) LUT */
     __global       float *volume,
     int   Nxz,
     int   Ny,
@@ -46,13 +46,14 @@ __kernel void bp_image(
     float sum = 0.f;
 
     for (int ip = 0; ip < num_projs; ip++) {
-        float angle = angles[ip];
-        float ca = cos(angle), sa = sin(angle);
+        float2 cs = angle_cs[ip];
+        float ca = cs.x, sa = cs.y;
 
         float U  = SOD + ypr*sa + xpr*ca;
+        float inv_U = native_recip(U);
         float t  = ypr*ca - xpr*sa;
-        float ai = SDD * t / U;
-        float bi = zpr * SDD / U;
+        float ai = SDD * t * inv_U;
+        float bi = zpr * SDD * inv_U;
 
         /*
          * Convert (ai, bi) mm coords to texel coords.
@@ -66,7 +67,7 @@ __kernel void bp_image(
         float texel_u = vf + 0.5f;
         float texel_v = uf + 0.5f;
         float4 val = read_imagef(proj_images, samp, (float4)(texel_u, texel_v, (float)ip, 0.f));
-        sum += val.x * (SOD*SOD) / (U*U);
+        sum += val.x * (SOD*SOD) * inv_U * inv_U;
     }
 
     sum *= M_PI_F / (float)num_projs;

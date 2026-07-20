@@ -56,24 +56,44 @@ __kernel void bp_opt(
     float zpr = ((float)iz - radius_z) * voxelSize;
 
     float sum = 0.f;
+    float sod2 = SOD * SOD;
+    float inv_px = 1.f / pixelSize;
+    float half_W = (W - 1) * 0.5f;
+    float half_H = (H - 1) * 0.5f;
 
-    for (int ip = 0; ip < num_projs; ip++) {
-        float2 cs = lcs[ip];   /* local memory read — no global traffic after barrier */
-        float ca = cs.x, sa = cs.y;
+    /* Large volumes (>=512): unroll x2 hides texture latency with acceptable register cost.
+     * Small volumes (<512): scalar loop — occupancy more valuable than ILP. */
+    int ip = 0;
+    if (Nxz >= 512) {
+        for (; ip <= num_projs - 2; ip += 2) {
+            float2 cs0 = lcs[ip+0], cs1 = lcs[ip+1];
 
-        float U  = SOD + ypr*sa + xpr*ca;
-        float t  = ypr*ca - xpr*sa;
-        float ai = SDD * t / U;
-        float bi = zpr * SDD / U;
+            float U0 = SOD + ypr*cs0.y + xpr*cs0.x;
+            float U1 = SOD + ypr*cs1.y + xpr*cs1.x;
 
-        float uf = -(ai / pixelSize) + (W - 1) * 0.5f;
-        float vf =  (bi / pixelSize) + (H - 1) * 0.5f;
+            float inv_U0 = native_recip(U0), inv_U1 = native_recip(U1);
 
-        float texel_u = vf + 0.5f;
-        float texel_v = uf + 0.5f;
-        float4 val = read_imagef(proj_images, samp,
-                                 (float4)(texel_u, texel_v, (float)ip, 0.f));
-        sum += val.x * (SOD * SOD) / (U * U);
+            float uf0 = -(SDD*(ypr*cs0.x - xpr*cs0.y)*inv_U0)*inv_px + half_W;
+            float uf1 = -(SDD*(ypr*cs1.x - xpr*cs1.y)*inv_U1)*inv_px + half_W;
+
+            float vf0 = (zpr*SDD*inv_U0)*inv_px + half_H;
+            float vf1 = (zpr*SDD*inv_U1)*inv_px + half_H;
+
+            float4 v0 = read_imagef(proj_images, samp, (float4)(vf0+.5f, uf0+.5f, (float)(ip+0), 0.f));
+            float4 v1 = read_imagef(proj_images, samp, (float4)(vf1+.5f, uf1+.5f, (float)(ip+1), 0.f));
+
+            sum += v0.x * sod2 * inv_U0 * inv_U0;
+            sum += v1.x * sod2 * inv_U1 * inv_U1;
+        }
+    }
+    for (; ip < num_projs; ip++) {
+        float2 cs = lcs[ip];
+        float U = SOD + ypr*cs.y + xpr*cs.x;
+        float inv_U = native_recip(U);
+        float uf = -(SDD*(ypr*cs.x - xpr*cs.y)*inv_U)*inv_px + half_W;
+        float vf = (zpr*SDD*inv_U)*inv_px + half_H;
+        float4 val = read_imagef(proj_images, samp, (float4)(vf+.5f, uf+.5f, (float)ip, 0.f));
+        sum += val.x * sod2 * inv_U * inv_U;
     }
 
     sum *= M_PI_F / (float)num_projs;

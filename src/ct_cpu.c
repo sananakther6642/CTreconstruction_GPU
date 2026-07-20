@@ -210,7 +210,7 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
     float dist_max  = sVoxel_xz * 1.42f;
     float near_t    = fmaxf(0.f, SOD - dist_max);
     float far_t     = fminf(SOD * 2.f, SOD + dist_max);
-    int   n_samples = (int)ceilf(Nxz * 1.0f);
+    int   n_samples = p->n_samples;
     float dt        = (far_t - near_t) / (float)(n_samples - 1);
 
     /* constants for world→voxel mapping */
@@ -227,7 +227,7 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
 
     memset(proj, 0, (size_t)np * H * W * sizeof(float));
 
-    /* collapse(2): ip × iu gives 360×512 = 184k independent work items */
+    /* collapse(2): ip × iu gives np×W independent work items */
     #pragma omp parallel for collapse(2) schedule(static)
     for (int ip = 0; ip < np; ip++) {
         for (int iu = 0; iu < W; iu++) {

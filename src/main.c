@@ -11,7 +11,8 @@ static void print_usage(const char *prog)
 {
     fprintf(stderr,
         "Usage: %s --data <file.hdf5> --out <out.hdf5> --mode <cpu|gpu-buf|gpu-img|gpu-opt>\n"
-        "           [--epochs N]  (default: 100)\n"
+        "           [--epochs N]    (default: 100)\n"
+        "           [--samples N]   (ray samples per projection, default: volume Nxz)\n"
         "           [--kernels <kernel_dir>]  (default: ../kernels)\n",
         prog);
 }
@@ -23,6 +24,7 @@ int main(int argc, char **argv)
     const char *mode_str     = "gpu-buf";
     const char *kernel_dir   = "../kernels";
     int         epochs       = 100;
+    int         n_samples    = 0;  /* 0 = auto (Nxz) */
 
     /* ── Parse args ── */
     for (int i = 1; i < argc; i++) {
@@ -31,6 +33,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--mode")    && i+1<argc) mode_str    = argv[++i];
         else if (!strcmp(argv[i], "--epochs")  && i+1<argc) epochs      = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--kernels") && i+1<argc) kernel_dir  = argv[++i];
+        else if (!strcmp(argv[i], "--samples") && i+1<argc) n_samples   = atoi(argv[++i]);
         else { print_usage(argv[0]); return 1; }
     }
 
@@ -41,6 +44,7 @@ int main(int argc, char **argv)
     float *proj_measured = NULL;
     printf("Loading %s ...\n", data_path);
     if (load_hdf5(data_path, &para, &proj_measured) != 0) return 1;
+    para.n_samples = (n_samples > 0) ? n_samples : para.Volumen_num_xz;
 
     printf("  Volume:    %d x %d x %d\n", para.Volumen_num_xz, para.Volumen_num_xz, para.Volumen_num_y);
     printf("  Detector:  %d x %d\n", para.detector_width, para.detector_height);
