@@ -8,37 +8,6 @@
  * Proj layout:    [num_projs][H][W]  → slice[iv*W + iu]
  */
 
-/* Build rotation matrix R and translation T from angle (same as Python angle2pose) */
-static void angle2pose_cl(float SOD, float angle,
-                           float R[3][3], float T[3])
-{
-    float phi1 = -M_PI_2_F;
-    float phi2 =  M_PI_2_F;
-
-    float c1=cos(phi1), s1=sin(phi1);
-    float c2=cos(phi2), s2=sin(phi2);
-    float ca=cos(angle), sa=sin(angle);
-
-    /* R1 (x-axis rotation phi1) */
-    float R1[3][3]={{1,0,0},{0,c1,-s1},{0,s1,c1}};
-    /* R2 (z-axis rotation phi2) */
-    float R2[3][3]={{c2,-s2,0},{s2,c2,0},{0,0,1}};
-    /* R3 (z-axis rotation angle) */
-    float R3[3][3]={{ca,-sa,0},{sa,ca,0},{0,0,1}};
-
-    /* tmp = R3 @ R2 */
-    float tmp[3][3];
-    for (int i=0;i<3;i++) for (int j=0;j<3;j++) {
-        tmp[i][j]=0.f;
-        for (int k=0;k<3;k++) tmp[i][j]+=R3[i][k]*R2[k][j];
-    }
-    /* R = tmp @ R1 */
-    for (int i=0;i<3;i++) for (int j=0;j<3;j++) {
-        R[i][j]=0.f;
-        for (int k=0;k<3;k++) R[i][j]+=tmp[i][k]*R1[k][j];
-    }
-    T[0]=SOD*ca; T[1]=SOD*sa; T[2]=0.f;
-}
 
 static float trilinear_buf(__global const float *vol,
                             int Nxz, int Ny,
@@ -64,9 +33,10 @@ static float trilinear_buf(__global const float *vol,
 }
 
 __kernel void fp_buffer(
-    __global const float *volume,   /* [Nxz * Nxz * Ny] */
-    __global const float *angles,   /* [num_projs] */
-    __global       float *proj,     /* [num_projs * H * W] output */
+    __global const float *volume,    /* [Nxz * Nxz * Ny] */
+    __constant float     *R_mats,    /* [num_projs * 9] row-major R per angle */
+    __constant float     *T_vecs,    /* [num_projs * 3] T per angle */
+    __global       float *proj,      /* [num_projs * H * W] output */
     int   Nxz,
     int   Ny,
     int   W,
@@ -79,9 +49,9 @@ __kernel void fp_buffer(
     float pixelSize
 )
 {
-    int iu = get_global_id(0);  /* detector width  [0, W) */
-    int iv = get_global_id(1);  /* detector height [0, H) */
-    int ip = get_global_id(2);  /* projection index */
+    int iu = get_global_id(0);
+    int iv = get_global_id(1);
+    int ip = get_global_id(2);
 
     if (iu >= W || iv >= H || ip >= num_projs) return;
 
@@ -92,9 +62,8 @@ __kernel void fp_buffer(
     float far_t     = fmin(SOD * 2.f, SOD + dist_max);
     float dt        = (far_t - near_t) / (float)(n_samples - 1);
 
-    float angle = angles[ip];
-    float R[3][3], T[3];
-    angle2pose_cl(SOD, angle, R, T);
+    __constant float *R = R_mats + ip * 9;
+    __constant float *T = T_vecs + ip * 3;
 
     float uu = ((float)iu + 0.5f - W * 0.5f) * pixelSize;
     float vv = ((float)iv + 0.5f - H * 0.5f) * pixelSize;
@@ -102,7 +71,7 @@ __kernel void fp_buffer(
     float dirs[3] = {uu/SDD, vv/SDD, 1.f};
     float rd[3];
     for (int k=0;k<3;k++)
-        rd[k] = R[k][0]*dirs[0] + R[k][1]*dirs[1] + R[k][2]*dirs[2];
+        rd[k] = R[k*3+0]*dirs[0] + R[k*3+1]*dirs[1] + R[k*3+2]*dirs[2];
 
     float rd_norm = sqrt(rd[0]*rd[0] + rd[1]*rd[1] + rd[2]*rd[2]);
 
