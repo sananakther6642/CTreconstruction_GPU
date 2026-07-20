@@ -339,7 +339,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
 
 /* ── Internal: run backprojection (image mode) ──────────────────────────── */
 static void run_bp_image(CLState *cl, const CBpara *p,
-                          cl_mem proj_img, cl_mem d_angles, cl_mem d_vol)
+                          cl_mem proj_img, cl_mem d_ang_cs, cl_mem d_vol)
 {
     cl_int err;
     cl_kernel k = cl->k_bp_img;
@@ -350,7 +350,7 @@ static void run_bp_image(CLState *cl, const CBpara *p,
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
     clSetKernelArg(k, 0, sizeof(cl_mem), &proj_img);
-    clSetKernelArg(k, 1, sizeof(cl_mem), &d_angles);
+    clSetKernelArg(k, 1, sizeof(cl_mem), &d_ang_cs);
     clSetKernelArg(k, 2, sizeof(cl_mem), &d_vol);
     clSetKernelArg(k, 3, sizeof(int),    &Nxz);
     clSetKernelArg(k, 4, sizeof(int),    &Ny);
@@ -363,7 +363,7 @@ static void run_bp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &px);
 
     size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
-    size_t lws[3] = {8, 8, 4};
+    size_t lws[3] = {4, 4, 16};
     for (int d=0;d<3;d++) {
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     }
@@ -498,7 +498,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             err = clEnqueueCopyBufferToImage(cl->queue, d_ones_prep, ones_img,
                                              0, oorigin, oregion, 0, NULL, NULL);
             CL_CHECK(err,"CopyBufferToImage ones_prep");
-            run_bp_image(cl, p, ones_img, d_angles, d_bp_ones);
+            run_bp_image(cl, p, ones_img, d_ang_cs, d_bp_ones);
             clReleaseMemObject(ones_img);
         }
         clFinish(cl->queue);  /* wait for bp_ones before epoch loop */
@@ -610,7 +610,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                 err=clEnqueueCopyBufferToImage(cl->queue, d_ratio_prep, ratio_img_buf,
                                                0, rorigin, rregion, 0,NULL,NULL);
                 CL_CHECK(err,"CopyBufferToImage ratio img");
-                run_bp_image(cl, p, ratio_img_buf, d_angles, d_bp_ratio);
+                run_bp_image(cl, p, ratio_img_buf, d_ang_cs, d_bp_ratio);
             }
         }
 
