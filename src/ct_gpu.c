@@ -291,7 +291,7 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &px);
 
     size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
-    size_t lws[3] = {8, 8, 4};  /* tune for target GPU */
+    size_t lws[3] = {4, 4, 16};  /* 16 contiguous z-threads → coalesced writes */
     /* round up to multiple of lws */
     for (int d=0;d<3;d++) {
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
@@ -309,7 +309,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
     int W = p->detector_width,   H  = p->detector_height;
     int np = p->num_projs;
-    int n_samples = (int)ceilf(Nxz * 1.0f);
+    int n_samples = p->n_samples;
     float SOD=(float)p->SOD, SDD=(float)p->SDD;
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
@@ -339,7 +339,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
 
 /* ── Internal: run backprojection (image mode) ──────────────────────────── */
 static void run_bp_image(CLState *cl, const CBpara *p,
-                          cl_mem proj_img, cl_mem d_angles, cl_mem d_vol)
+                          cl_mem proj_img, cl_mem d_ang_cs, cl_mem d_vol)
 {
     cl_int err;
     cl_kernel k = cl->k_bp_img;
@@ -350,7 +350,7 @@ static void run_bp_image(CLState *cl, const CBpara *p,
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
     clSetKernelArg(k, 0, sizeof(cl_mem), &proj_img);
-    clSetKernelArg(k, 1, sizeof(cl_mem), &d_angles);
+    clSetKernelArg(k, 1, sizeof(cl_mem), &d_ang_cs);
     clSetKernelArg(k, 2, sizeof(cl_mem), &d_vol);
     clSetKernelArg(k, 3, sizeof(int),    &Nxz);
     clSetKernelArg(k, 4, sizeof(int),    &Ny);
@@ -363,7 +363,7 @@ static void run_bp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &px);
 
     size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
-    size_t lws[3] = {8, 8, 4};
+    size_t lws[3] = {4, 4, 16};
     for (int d=0;d<3;d++) {
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     }
@@ -380,7 +380,7 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
     int W = p->detector_width,   H  = p->detector_height;
     int np = p->num_projs;
-    int n_samples = (int)ceilf(Nxz * 1.0f);
+    int n_samples = p->n_samples;
     float SOD=(float)p->SOD, SDD=(float)p->SDD;
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
@@ -398,6 +398,10 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &SDD);
     clSetKernelArg(k,12, sizeof(float),  &vs);
     clSetKernelArg(k,13, sizeof(float),  &px);
+    /* AABB ray clipping helps on large detectors (many edge pixels miss volume);
+     * hurts on small detectors where overhead exceeds savings. */
+    int use_aabb = (W > 512) ? 1 : 0;
+    clSetKernelArg(k,14, sizeof(int), &use_aabb);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
     size_t lws[3] = {16, 16, 1};
@@ -494,7 +498,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             err = clEnqueueCopyBufferToImage(cl->queue, d_ones_prep, ones_img,
                                              0, oorigin, oregion, 0, NULL, NULL);
             CL_CHECK(err,"CopyBufferToImage ones_prep");
-            run_bp_image(cl, p, ones_img, d_angles, d_bp_ones);
+            run_bp_image(cl, p, ones_img, d_ang_cs, d_bp_ones);
             clReleaseMemObject(ones_img);
         }
         clFinish(cl->queue);  /* wait for bp_ones before epoch loop */
@@ -540,6 +544,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 
     /* persistent ratio image2d_array for gpu-img mode */
     cl_mem ratio_img_buf = NULL;
+    (void)0; /* removed unused d_ratio_half_img */
     if (cl->mode == GPU_MODE_IMAGE) {
         cl_image_desc rdesc={0};
         rdesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
@@ -605,7 +610,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                 err=clEnqueueCopyBufferToImage(cl->queue, d_ratio_prep, ratio_img_buf,
                                                0, rorigin, rregion, 0,NULL,NULL);
                 CL_CHECK(err,"CopyBufferToImage ratio img");
-                run_bp_image(cl, p, ratio_img_buf, d_angles, d_bp_ratio);
+                run_bp_image(cl, p, ratio_img_buf, d_ang_cs, d_bp_ratio);
             }
         }
 
@@ -761,7 +766,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,11,sizeof(float),&vs);
             clSetKernelArg(k,12,sizeof(float),&px);
             size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
-            size_t lws[3]={8,8,4};
+            size_t lws[3]={4,4,16};
             for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ones");
@@ -776,7 +781,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     float SOD=(float)p->SOD, SDD=(float)p->SDD;
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
-    /* Persistent image2d_array for ratio — reused every epoch via CopyBufferToImage */
+    /* Persistent image2d_array for ratio */
+    cl_image_format half_fmt = {CL_R, CL_HALF_FLOAT};
     cl_image_desc rdesc={0};
     rdesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
     rdesc.image_width=(size_t)H; rdesc.image_height=(size_t)W;
@@ -784,8 +790,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     cl_mem ratio_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &img_fmt, &rdesc, NULL, &err);
     CL_CHECK(err,"ratio_img persistent");
 
-    /* Persistent image3D for volume — CL_HALF_FLOAT halves texture bandwidth in fp_image */
-    cl_image_format half_fmt = {CL_R, CL_HALF_FLOAT};
+    /* half_fmt used below for vol_img */
     cl_image_desc vdesc={0};
     vdesc.image_type=CL_MEM_OBJECT_IMAGE3D;
     vdesc.image_width=(size_t)Ny;
@@ -835,7 +840,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         }
         run_preprocess(cl, p, d_ratio, d_ratio_prep);
 
-        /* ── copy d_ratio_prep buffer → ratio_img (no host roundtrip) ── */
+        /* ── copy d_ratio_prep buffer → ratio_img ── */
         {
             size_t origin[3]={0,0,0};
             size_t region[3]={(size_t)H,(size_t)W,(size_t)np};
@@ -861,7 +866,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,11,sizeof(float),&vs);
             clSetKernelArg(k,12,sizeof(float),&px);
             size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
-            size_t lws[3]={8,8,4};
+            size_t lws[3]={4,4,16};
             for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ratio");
@@ -878,7 +883,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"update opt");
         }
-        clFinish(cl->queue);  /* single sync per epoch — for timing */
+        clFinish(cl->queue);
         printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
     }
     clReleaseMemObject(vol_img);

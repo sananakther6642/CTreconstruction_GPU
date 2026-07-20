@@ -65,9 +65,10 @@ __kernel void bp_buffer(
         float ca = cs.x, sa = cs.y;
 
         float U  = SOD + ypr*sa + xpr*ca;
+        float inv_U = native_recip(U);
         float t  = ypr*ca - xpr*sa;
-        float ai = SDD * t / U;
-        float bi = zpr * SDD / U;
+        float ai = SDD * t * inv_U;
+        float bi = zpr * SDD * inv_U;
 
         /* ai/bi are in mm; match CPU/Python detector-u sign convention */
         float uf = -ai / pixelSize;
@@ -75,7 +76,7 @@ __kernel void bp_buffer(
 
         __global const float *slice = proj + ip * W * H;
         float val = bilinear_buf(slice, W, H, uf, vf);
-        sum += val * (SOD*SOD) / (U*U);
+        sum += val * (SOD*SOD) * inv_U * inv_U;
     }
 
     sum *= M_PI_F / (float)num_projs;

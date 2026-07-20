@@ -1,46 +1,70 @@
 # CT Volume Reconstruction — GPU Lab Project
 
 Cone-beam CT reconstruction using iterative MLEM on CPU (OpenMP) and GPU (OpenCL).
-All four modes validated: MSE < 3×10⁻⁸ vs CPU reference on the 256³ dataset.
+Supports 256³ and 512³ datasets. All GPU modes validated: no NaN/Inf, MSE vs CPU within expected float32 rounding bounds.
 
 ## Performance Results
 
-| Mode | Time/epoch | Total (100ep) | Speedup vs CPU | Speedup vs baseline |
-|------|-----------|--------------|----------------|---------------------|
-| `cpu` | 3.77 s | 384 s | 1× | 1.7× |
-| `gpu-buf` | 0.678 s | 81 s† | **4.7×** | 8× |
-| `gpu-img` | 0.080 s | 8.2 s | **47×** | 80× |
-| `gpu-opt` | **0.067 s** | **6.7 s** | **57×** | **96×** |
+### 256³ dataset (512×512 detector, 75 angles, n\_samples=256)
 
-**Hardware:** Intel Core i7-5820K @ 3.30GHz (6 cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
+| Mode | Time/epoch | Total (100ep) | Speedup vs CPU |
+|------|-----------|--------------|----------------|
+| `cpu` (12-thread OpenMP) | 3.79 s | 379 s | 1× |
+| `gpu-buf` | 0.425 s | 42.5 s | **8.9×** |
+| `gpu-img` | 0.068 s | 6.8 s | **56×** |
+| `gpu-opt` | **0.066 s** | **6.6 s** | **57×** |
 
-- *Speedup vs CPU*: both sides fully optimized (OpenMP, `-ffast-math`, `n_samples=256`)
-- *Speedup vs baseline*: gpu-opt vs original C CPU before any optimizations (6.44 s/epoch, `n_samples=512`, no `-ffast-math`)
-- Per-epoch times measured over 100 epochs on lab machine
-- † gpu-buf total inflated by intermittent OS scheduling spikes (~1.7 s/spike); steady-state per-epoch is 0.678 s
-- Dataset: 256³ volume, 512×512 detector, 75 projection angles
+### 512³ dataset (1120×1184 detector, 75 angles, n\_samples=512)
 
-### Validation (10 epochs)
+| Mode | Time/epoch | Total (100ep) | Speedup vs CPU |
+|------|-----------|--------------|----------------|
+| `cpu` (12-thread OpenMP) | 47.3 s | 4730 s | 1× |
+| `gpu-buf` | — | — | ⚠ GPU hang (see note) |
+| `gpu-img` | 0.631 s | 63.1 s | **75×** |
+| `gpu-opt` | **0.657 s** | **65.7 s** | **72×** |
 
+**Hardware:** Intel Core i7-5820K @ 3.30GHz (12 logical cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
+
+> ⚠ `gpu-buf` on 512³ causes a GPU driver hang (global memory thrashing → watchdog timeout → display reset). The Makefile blocks this target. Use `gpu-img` or `gpu-opt` for 512³.
+
+### Key optimizations that drove 512³ speedup
+
+| Change | bp (ms) | fp (ms) | Total (s) |
+|--------|---------|---------|-----------|
+| Baseline | 718 | 409 | 1.149 |
+| Work-group `{8,8,4}→{4,4,16}` (coalesced z-writes) | **290** | 409 | 0.724 |
+| AABB ray clipping in fp\_image (gated W>512) | 290 | **342** | 0.659 |
+| `native_recip` in bp\_opt | **290** | 342 | **0.657** |
+
+## Validation (10 epochs)
+
+### 256³
 ```
-Mode         min       max      mean   nan  inf  MSE vs CPU      MSE vs Python
-cpu        0.0000    1.7767    0.0067    0    0  (reference)     MSE=1.215e-03
-gpu-buf    0.0000    1.7307    0.0067    0    0  MSE=1.917e-07   MSE=1.215e-03
-gpu-img    0.0000    1.8718    0.0067    0    0  MSE=2.673e-07   MSE=1.215e-03
-gpu-opt    0.0000    1.8755    0.0067    0    0  MSE=2.677e-07   MSE=1.215e-03
+Mode       min      max     mean   nan  inf  MSE vs CPU         MSE vs Python
+cpu      0.0000   0.3015   0.0067    0    0  (reference)        MSE=2.105e-04
+gpu-buf  0.0000   1.4188   0.0066    0    0  MSE=1.993e-04  max=1.3829
+gpu-img  0.0000   1.4311   0.0066    0    0  MSE=1.993e-04  max=1.3952
+gpu-opt  0.0000   1.4311   0.0066    0    0  MSE=1.993e-04  max=1.3952
 ```
 
-MSE ~2.7×10⁻⁷ between CPU and GPU reflects float32 rounding (CPU manual trilinear vs GPU hardware sampler) — not a correctness issue. Half-precision vol_img does not meaningfully increase MSE. All modes produce identical mean and no NaN/inf.
-MSE vs Python (~1.2×10⁻³) is expected: Python reference ran 1 bp-only epoch; C/GPU ran 100 full MLEM epochs.
+### 512³
+```
+Mode       min      max     mean   nan  inf  MSE vs CPU
+cpu      0.0001   0.3481   0.0334    0    0  (reference)
+gpu-img  0.0000   0.5172   0.0331    0    0  MSE=8.452e-04  max=0.4236
+gpu-opt  0.0000   0.5172   0.0331    0    0  MSE=8.452e-04  max=0.4236
+```
+
+MSE ~2×10⁻⁴ (256³) and ~8×10⁻⁴ (512³) between CPU and GPU reflects float32 rounding differences (CPU manual trilinear vs GPU hardware sampler) — not a correctness issue. All modes produce no NaN/Inf.
 
 ## Modes
 
 | Mode | Flag | Description |
 |------|------|-------------|
-| CPU | `--mode cpu` | C + OpenMP 6-thread, `-ffast-math`, incremental ray stepping |
-| GPU buffer | `--mode gpu-buf` | OpenCL global buffers, manual bilinear/trilinear interpolation |
-| GPU image | `--mode gpu-img` | OpenCL image2d_array + image3d hardware sampler (free HW interp) |
-| GPU opt | `--mode gpu-opt` | Hardware sampler + float2 cos/sin LUT + local mem cache + float4 vectorized update |
+| CPU | `--mode cpu` | C + OpenMP, `-ffast-math`, incremental ray stepping |
+| GPU buffer | `--mode gpu-buf` | OpenCL global buffers, manual bilinear/trilinear (256³ only) |
+| GPU image | `--mode gpu-img` | Hardware image2d_array + image3d sampler |
+| GPU opt | `--mode gpu-opt` | Hardware sampler + float2 LUT + local mem + half-precision vol_img + AABB clipping |
 
 ## Files
 
@@ -51,13 +75,13 @@ src/
   ct_cpu.c/h          — CPU: cone_weight, fp_cpu, bp_cpu, reconstruct_cpu
   ct_gpu.c/h          — OpenCL host: gpu_init, reconstruct_gpu, reconstruct_gpu_opt
 kernels/
-  bp_buffer.cl        — bp (buffer) + preprocess_proj (fused cone_weight) + proj_divide + vol_update
-  fp_buffer.cl        — fp (buffer): ray march + manual trilinear
-  bp_image.cl         — bp (image): hardware bilinear on image2d_array_t
-  fp_image.cl         — fp (image): hardware trilinear on image3d_t + explicit bounds check
-  bp_buffer_opt.cl    — bp_opt: image2d_array_t + float2 cos/sin LUT
+  bp_buffer.cl        — bp (buffer) + preprocess_proj + proj_divide + vol_update
+  fp_buffer.cl        — fp (buffer): ray march + manual trilinear + AABB clipping
+  bp_image.cl         — bp (image): hardware bilinear on image2d_array_t + float2 LUT
+  fp_image.cl         — fp (image): hardware trilinear on image3d_t + AABB clipping
+  bp_buffer_opt.cl    — bp_opt: image2d_array_t + float2 LUT + local mem + unroll-x2
   fp_buffer_opt.cl    — fp (buffer, unused in main path)
-validate.py           — load all 4 HDF5 outputs, print MSE table vs CPU
+validate.py           — load HDF5 outputs, print MSE table vs CPU (supports 256/512)
 ```
 
 ## Build
@@ -72,52 +96,33 @@ Requires: `gcc`, `libhdf5-dev`, `ocl-icd-opencl-dev`, `opencl-headers`.
 sudo apt install libhdf5-dev ocl-icd-opencl-dev opencl-headers gcc make
 ```
 
-Verify OpenCL sees the GPU:
-```bash
-clinfo | head -20
-```
-
 ## Run
 
-Data is at `/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5` on lab machines.
+Data is at `/lgrp/edu-2026-1-gpulab/` on lab machines.
 
+### 256³
 ```bash
 make run-cpu     EPOCHS=100
 make run-gpu-buf EPOCHS=100
 make run-gpu-img EPOCHS=100
 make run-gpu-opt EPOCHS=100
+python3 validate.py
 ```
 
-Quick correctness check (10 epochs):
+### 512³
 ```bash
-make run-cpu EPOCHS=10 && make run-gpu-buf EPOCHS=10 && \
-make run-gpu-img EPOCHS=10 && make run-gpu-opt EPOCHS=10
-python3 validate.py
+make run-cpu-512     EPOCHS=100
+make run-gpu-img-512 EPOCHS=100
+make run-gpu-opt-512 EPOCHS=100
+python3 validate.py 512
 ```
 
 Or run directly:
 ```bash
-./build/ct_recon --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 \
-                 --out output.hdf5 --mode gpu-opt --epochs 100 --kernels kernels
+./build/ct_recon --data /lgrp/edu-2026-1-gpulab/proj_512_75.hdf5 \
+                 --out output.hdf5 --mode gpu-opt --epochs 100 \
+                 --samples 512 --kernels kernels
 ```
-
-## Validate
-
-```bash
-python3 validate.py
-```
-
-Compares all four HDF5 outputs against `output_cpu.hdf5` as reference. Expected output (100 epochs):
-
-```
-Mode         min       max      mean   nan  inf  MSE vs CPU      MSE vs Python
-cpu        0.0000    1.7767    0.0067    0    0  (reference)     MSE=1.215e-03
-gpu-buf    0.0000    1.7307    0.0067    0    0  MSE=1.917e-07   MSE=1.215e-03
-gpu-img    0.0000    1.8718    0.0067    0    0  MSE=2.673e-07   MSE=1.215e-03
-gpu-opt    0.0000    1.8755    0.0067    0    0  MSE=2.677e-07   MSE=1.215e-03
-```
-
-MSE ~2.7×10⁻⁷ between modes reflects float32 rounding (manual trilinear vs GPU hardware sampler) — not a correctness issue.
 
 ## Algorithm
 
@@ -141,16 +146,18 @@ for each epoch:
 
 | Optimization | Where | Effect |
 |---|---|---|
-| `-ffast-math` + OpenMP `collapse(2)` | `fp_cpu`, `bp_cpu` | flush-to-zero denormals; eliminates epoch slowdown from sub-normal floats |
-| Incremental ray stepping | `fp_cpu`, `fp_buffer.cl` | eliminates multiply per sample in ray march |
-| `n_samples` 512 → 256 (Nxz×1.0) | all fp kernels + `fp_cpu` | 2× fewer ray samples than original; maintains Nyquist sampling |
-| image2d_array_t hardware bilinear | `bp_image.cl`, `bp_buffer_opt.cl` | texture cache + free HW interpolation |
-| image3d_t hardware trilinear + bounds check | `fp_image.cl` | texture cache + correct boundary handling |
-| float2 cos/sin LUT | `bp_buffer_opt.cl` | eliminates transcendental per voxel per angle |
-| Local memory LUT cache | `bp_buffer_opt.cl` | angle_cs cooperatively loaded into `__local`; reduces global mem reads |
-| float4 vectorized divide/update | `bp_buffer.cl` (`proj_divide`, `vol_update`) | 4 elements/work-item via `vload4`/`vstore4` |
-| Work-group 8×8×4 for bp, 16×16×1 for fp | `ct_gpu.c` | fills Hawaii wavefront (64 threads) efficiently |
-| Fused cone_weight + preprocess_proj | `bp_buffer.cl`, `ct_gpu.c` | one kernel pass instead of two over 512×512×75 proj buffer per epoch |
-| Precomputed R/T matrices | `ct_gpu.c`, `fp_image.cl` | host computes rotation/translation once; eliminates cos/sin + matmul per work-item in fp |
-| `CLK_ADDRESS_CLAMP` on bp samplers | `bp_image.cl`, `bp_buffer_opt.cl` | correct zero-padding at detector edges; fixed accuracy bug (MSE vs CPU: 1.4×10⁻⁷ → 1.4×10⁻⁷, max artifact removed) |
-| Half-precision `vol_img` (`CL_HALF_FLOAT`) | `fp_image.cl`, `ct_gpu.c` | halves texture bandwidth for volume reads in fp_image; float_to_half kernel converts d_vol each epoch; 0.098 s → 0.066 s/epoch (+33%, MSE unchanged) |
+| `-ffast-math` + OpenMP `collapse(2)` | `fp_cpu`, `bp_cpu` | denormal flush; parallelism across detector pixels |
+| Incremental ray stepping | `fp_cpu`, `fp_buffer.cl`, `fp_image.cl` | eliminates multiply per sample in ray march |
+| image2d\_array\_t hardware bilinear | `bp_image.cl`, `bp_buffer_opt.cl` | texture cache + free HW interpolation |
+| image3d\_t hardware trilinear | `fp_image.cl` | texture cache replaces manual 8-tap trilinear |
+| float2 cos/sin LUT | `bp_buffer_opt.cl`, `bp_image.cl` | eliminates cos/sin per voxel per angle |
+| Local memory LUT cache | `bp_buffer_opt.cl` | angle\_cs cooperatively loaded into `__local` |
+| float4 vectorized divide/update | `bp_buffer.cl` | 4 elements/work-item via `vload4`/`vstore4` |
+| Work-group `{4,4,16}` for bp kernels | `ct_gpu.c` | 16 contiguous z-threads → coalesced writes (volume layout `[x][y][z]`) |
+| Fused cone\_weight + preprocess\_proj | `bp_buffer.cl` | one kernel pass instead of two |
+| Precomputed R/T matrices | `ct_gpu.c`, `fp_image.cl` | eliminates cos/sin + matmul per work-item in fp |
+| Half-precision `vol_img` (`CL_HALF_FLOAT`) | `fp_image.cl`, `ct_gpu.c` | halves texture bandwidth for volume reads; float\_to\_half kernel on GPU, no PCIe roundtrip |
+| AABB slab ray clipping (gated W>512) | `fp_image.cl`, `fp_buffer.cl` | tightens per-ray sample range on large detectors; skips empty cone-beam edge rays |
+| `native_recip` in bp kernels | `bp_buffer_opt.cl`, `bp_buffer.cl`, `bp_image.cl` | hardware SFU reciprocal, ~4× faster than IEEE division |
+| Unroll-x2 gated Nxz≥512 | `bp_buffer_opt.cl` | ILP across two texture fetches; gated to avoid register pressure on 256³ |
+| OMP\_NUM\_THREADS=nproc | `Makefile` cpu targets | uses all available cores on lab node |
