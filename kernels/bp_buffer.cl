@@ -32,7 +32,7 @@ static float bilinear_buf(__global const float *img,
 
 __kernel void bp_buffer(
     __global const float *proj,       /* [num_projs * W * H] cone-weighted */
-    __global const float *angles,     /* [num_projs] radians */
+    __constant float2    *angle_cs,   /* [num_projs] (.x=cos, .y=sin) */
     __global       float *volume,     /* [Nxz * Nxz * Ny] output */
     int   Nxz,
     int   Ny,
@@ -61,8 +61,8 @@ __kernel void bp_buffer(
     float sum = 0.f;
 
     for (int ip = 0; ip < num_projs; ip++) {
-        float angle = angles[ip];
-        float ca = cos(angle), sa = sin(angle);
+        float2 cs = angle_cs[ip];
+        float ca = cs.x, sa = cs.y;
 
         float U  = SOD + ypr*sa + xpr*ca;
         float t  = ypr*ca - xpr*sa;

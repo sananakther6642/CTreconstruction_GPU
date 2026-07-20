@@ -262,7 +262,7 @@ static void run_preprocess(CLState *cl, const CBpara *p,
 
 /* ── Internal: run backprojection on GPU (buffer mode) ─────────────────── */
 static void run_bp_buffer(CLState *cl, const CBpara *p,
-                           cl_mem d_proj, cl_mem d_angles,
+                           cl_mem d_proj, cl_mem d_ang_cs,
                            cl_mem d_vol)
 {
     cl_int err;
@@ -274,7 +274,7 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
     clSetKernelArg(k, 0, sizeof(cl_mem), &d_proj);
-    clSetKernelArg(k, 1, sizeof(cl_mem), &d_angles);
+    clSetKernelArg(k, 1, sizeof(cl_mem), &d_ang_cs);
     clSetKernelArg(k, 2, sizeof(cl_mem), &d_vol);
     clSetKernelArg(k, 3, sizeof(int),    &Nxz);
     clSetKernelArg(k, 4, sizeof(int),    &Ny);
@@ -298,8 +298,7 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
 
 /* ── Internal: run forward projection on GPU (buffer mode) ─────────────── */
 static void run_fp_buffer(CLState *cl, const CBpara *p,
-                           cl_mem d_vol, cl_mem d_angles,
-                           cl_mem d_proj)
+                           cl_mem d_vol, cl_mem d_proj)
 {
     cl_int err;
     cl_kernel k = cl->k_fp_buf;
@@ -311,18 +310,19 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
     clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
-    clSetKernelArg(k, 1, sizeof(cl_mem), &d_angles);
-    clSetKernelArg(k, 2, sizeof(cl_mem), &d_proj);
-    clSetKernelArg(k, 3, sizeof(int),    &Nxz);
-    clSetKernelArg(k, 4, sizeof(int),    &Ny);
-    clSetKernelArg(k, 5, sizeof(int),    &W);
-    clSetKernelArg(k, 6, sizeof(int),    &H);
-    clSetKernelArg(k, 7, sizeof(int),    &np);
-    clSetKernelArg(k, 8, sizeof(int),    &n_samples);
-    clSetKernelArg(k, 9, sizeof(float),  &SOD);
-    clSetKernelArg(k,10, sizeof(float),  &SDD);
-    clSetKernelArg(k,11, sizeof(float),  &vs);
-    clSetKernelArg(k,12, sizeof(float),  &px);
+    clSetKernelArg(k, 1, sizeof(cl_mem), &cl->d_R_mats);
+    clSetKernelArg(k, 2, sizeof(cl_mem), &cl->d_T_vecs);
+    clSetKernelArg(k, 3, sizeof(cl_mem), &d_proj);
+    clSetKernelArg(k, 4, sizeof(int),    &Nxz);
+    clSetKernelArg(k, 5, sizeof(int),    &Ny);
+    clSetKernelArg(k, 6, sizeof(int),    &W);
+    clSetKernelArg(k, 7, sizeof(int),    &H);
+    clSetKernelArg(k, 8, sizeof(int),    &np);
+    clSetKernelArg(k, 9, sizeof(int),    &n_samples);
+    clSetKernelArg(k,10, sizeof(float),  &SOD);
+    clSetKernelArg(k,11, sizeof(float),  &SDD);
+    clSetKernelArg(k,12, sizeof(float),  &vs);
+    clSetKernelArg(k,13, sizeof(float),  &px);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
     size_t lws[3] = {16, 16, 1};
@@ -417,19 +417,25 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
     size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
 
-    if (cl->mode == GPU_MODE_IMAGE)
-        build_RT_buffers(cl, p);
+    build_RT_buffers(cl, p);
 
-    /* Convert angles to float */
-    float *ang_f = (float *)malloc(np * sizeof(float));
-    for (int i=0;i<np;i++) ang_f[i] = (float)p->angles[i];
+    /* Build float2 cos/sin LUT for bp_buffer */
+    float *ang_cs = (float *)malloc(np * 2 * sizeof(float));
+    float *ang_f  = (float *)malloc(np * sizeof(float));
+    for (int i=0;i<np;i++) {
+        ang_cs[2*i]   = (float)cos(p->angles[i]);
+        ang_cs[2*i+1] = (float)sin(p->angles[i]);
+        ang_f[i]      = (float)p->angles[i];
+    }
 
     /* ── Allocate device buffers ── */
-    /* READ_WRITE so we can apply cone weight in-place before iterating */
     cl_mem d_proj_meas = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
                                          proj_bytes, (void*)proj_measured, &err);
     CL_CHECK(err, "d_proj_meas");
 
+    cl_mem d_ang_cs = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR,
+                                      np*2*sizeof(float), ang_cs, &err);
+    CL_CHECK(err, "d_ang_cs buf");
     cl_mem d_angles = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR,
                                       np*sizeof(float), ang_f, &err);
     CL_CHECK(err, "d_angles");
@@ -469,7 +475,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                             0, vol_bytes, 0, NULL, NULL);
 
         if (cl->mode == GPU_MODE_BUFFER) {
-            run_bp_buffer(cl, p, d_ones_prep, d_angles, d_bp_ones);
+            run_bp_buffer(cl, p, d_ones_prep, d_ang_cs, d_bp_ones);
         } else {
             cl_image_format fmt = {CL_R, CL_FLOAT};
             cl_image_desc desc = {0};
@@ -538,7 +544,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 
         /* forward project: b = F(v0) */
         if (cl->mode == GPU_MODE_BUFFER) {
-            run_fp_buffer(cl, p, d_vol, d_angles, d_proj_b);
+            run_fp_buffer(cl, p, d_vol, d_proj_b);
         } else {
             size_t vorigin[3]={0,0,0};
             size_t vregion[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
@@ -567,7 +573,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             float zero=0.f;
             clEnqueueFillBuffer(cl->queue,d_bp_ratio,&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
             if (cl->mode == GPU_MODE_BUFFER) {
-                run_bp_buffer(cl, p, d_ratio_prep, d_angles, d_bp_ratio);
+                run_bp_buffer(cl, p, d_ratio_prep, d_ang_cs, d_bp_ratio);
             } else {
                 size_t rorigin[3]={0,0,0};
                 size_t rregion[3]={(size_t)H,(size_t)W,(size_t)np};
@@ -609,10 +615,10 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     if (proj_img_array) clReleaseMemObject(proj_img_array);
     if (vol_img)        clReleaseMemObject(vol_img);
     if (ratio_img_buf)  clReleaseMemObject(ratio_img_buf);
-    if (cl->mode == GPU_MODE_IMAGE) {
-        clReleaseMemObject(cl->d_R_mats);
-        clReleaseMemObject(cl->d_T_vecs);
-    }
+    clReleaseMemObject(d_ang_cs);
+    clReleaseMemObject(cl->d_R_mats);
+    clReleaseMemObject(cl->d_T_vecs);
+    free(ang_cs);
     free(ang_f);
 }
 
