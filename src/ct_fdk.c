@@ -83,11 +83,11 @@ static void fdk_filter(const CBpara *p, const float *proj_in, float *proj_out)
     int Nfft = next_pow2(2 * W);
     float *row = (float *)malloc(2 * Nfft * sizeof(float));
 
-    /* Ram-Lak ramp: H[k] = |k| * (px / (2*Nfft))
-     * Factors: 1/Nfft from IFFT normalization, 1/2 from Nyquist, px from Δu.
-     * Together gives the standard FBP filter h(u) = 1/(2*Δu²) * ramp-in-space. */
+    /* Ram-Lak ramp: H[k] = k / (Nfft * Δu)
+     * Discretized |ω_k| where ω_k = k/(Nfft*Δu) cycles/mm.
+     * IFFT (with built-in 1/Nfft) then gives the correct FBP convolution. */
     float *ramp = (float *)malloc(Nfft * sizeof(float));
-    float ramp_scale = px / (2.f * (float)Nfft);
+    float ramp_scale = 1.0f / ((float)Nfft * px);
     ramp[0] = 0.f;
     for (int k = 1; k <= Nfft/2; k++) {
         ramp[k]        = (float)k * ramp_scale;
