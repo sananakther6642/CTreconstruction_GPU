@@ -38,7 +38,7 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # ── Example run targets (set DATA and OUT) ──
-DATA    ?= /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5
+DATA    ?= /lgrp/edu-2026-1-gpulab/proj_512_75.hdf5
 OUT_CPU ?= output_cpu.hdf5
 OUT_BUF ?= output_gpu_buf.hdf5
 OUT_IMG ?= output_gpu_img.hdf5
