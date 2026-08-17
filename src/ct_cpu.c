@@ -307,7 +307,16 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
                     float yi = wy * inv_sv_y  + shift_y;
                     float zi = wz * inv_sv_xz + shift_xz;
 
-                    int x0 = (int)xi, y0 = (int)yi, z0 = (int)zi;
+                    /* floorf, not (int) truncation: (int)xi truncates toward
+                     * zero, so for xi in (-1,0) it gives x0=0 instead of -1,
+                     * which then WRONGLY PASSES the unsigned bounds check
+                     * below (0 < Nxz-1 is true) and samples volume[0] with a
+                     * bogus interpolation weight instead of being rejected
+                     * as out-of-bounds. This was the actual source of the
+                     * fp divergence from the Python reference (confirmed via
+                     * diag_fp.py: pixel where C=1.107, Python=0.0, both use
+                     * n_samples=Nxz and no jitter). */
+                    int x0 = (int)floorf(xi), y0 = (int)floorf(yi), z0 = (int)floorf(zi);
                     /* single bounds check — no branch inside interpolation */
                     if ((unsigned)x0 < (unsigned)(Nxz-1) &&
                         (unsigned)y0 < (unsigned)(Ny -1) &&
