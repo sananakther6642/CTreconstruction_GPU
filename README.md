@@ -136,17 +136,25 @@ Python reference per-operator.
 ### 512³ — current (post-fix)
 ```
 Mode       min      max     mean   nan  inf  MSE vs CPU
-cpu      0.0000   0.5171   0.0331    0    0  (reference)
-gpu-img  0.0000   0.5171   0.0331    0    0  MSE=7.935e-12  max=0.0003
-gpu-opt  0.0000   0.5171   0.0331    0    0  MSE=7.935e-12  max=0.0003
+cpu      0.0000   0.5171   0.0331    0    0  (reference, 10 epochs)
+gpu-img  0.0000   0.5171   0.0331    0    0  MSE=7.935e-12  max=0.0003   (10 epochs)
+gpu-opt  0.0000   0.5171   0.0331    0    0  MSE=7.935e-12  max=0.0003   (10 epochs)
 ```
 `gpu-img`/`gpu-opt` MSE vs CPU is essentially the float32 noise floor —
-better than the 256³ result (`max=0.0762`). `gpu-buf` row not included:
-completes now (chunking fix confirmed working, no crash), but wasn't run
-alongside this particular validate.py pass — re-run
-`make run-gpu-buf-512 EPOCHS=10` before `python3 validate.py 512` to
-include it; expect similar float32-noise-floor agreement to gpu-img/opt
-since it's the same algorithm, just via the manual (uncached) kernel path.
+better than the 256³ result (`max=0.0762`).
+
+`gpu-buf` row deliberately excluded from this table: the only run
+available was **3 epochs** (gpu-buf-512 is slow, ~50-60s/epoch — a
+10-epoch run wasn't completed this session), while `cpu`/`gpu-img`/
+`gpu-opt` above are all 10 epochs. Comparing a 3-epoch MLEM volume against
+a 10-epoch reference produces a real but meaningless MSE (different amount
+of converged iteration, not a correctness signal) — an early attempt at
+this comparison showed `MSE=8.44e-04, max=0.4235`, which looked alarmingly
+close to the pre-fix numbers but was actually just the epoch mismatch, not
+a regression. Re-run `make run-gpu-buf-512 EPOCHS=10` and
+`python3 validate.py 512` together (same epoch count as the other three)
+for a real number — expected to land at the same float32 noise floor as
+gpu-img/opt, since it's the same algorithm via the slower uncached kernel.
 
 ### CPU 512³ speedup: fp_cpu ray-tiling rewrite
 `fp_cpu` dominates the CPU epoch time at 512³ (was 35.2-36.2s of a
@@ -180,7 +188,8 @@ by the same kind of gather, just at 1/4 the total time budget).
   reconciled — doesn't affect CPU-vs-GPU correctness (both C paths use the
   same n_samples), but means "MSE vs Python" isn't apples-to-apples yet.
 - `gpu-buf-512` row missing from the current validate.py 512 table above —
-  needs a run alongside the other three modes to fill in.
+  the only completed run was 3 epochs vs the other modes' 10; needs a
+  matching-epoch-count run to produce a real comparison.
 
 ## Modes
 
