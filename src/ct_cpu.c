@@ -125,8 +125,8 @@ void bp_cpu(const float *proj, float *volume, const CBpara *p)
                 float zf   = SDD * Uinv;
 
                 float uf = (ai - a_min) / da;
-                if (uf < 0.f || uf >= (float)(W-1)) continue;
-                int u0 = (int)uf; float du = uf - u0;
+                int u0 = (int)floorf(uf), u1 = u0 + 1;
+                float du = uf - u0;
 
                 const float *slice = proj + ip * W * H;
 
@@ -134,11 +134,19 @@ void bp_cpu(const float *proj, float *volume, const CBpara *p)
                     float zpr = ((float)iz - radius_z) * vs;
                     float bi  = zpr * zf;
                     float vf  = (bi - b_min) / db;
-                    if (vf < 0.f || vf >= (float)(H-1)) continue;
-                    int v0 = (int)vf; float dv = vf - v0;
+                    int v0 = (int)floorf(vf), v1 = v0 + 1;
+                    float dv = vf - v0;
 
-                    float val = (slice[u0*H+v0]   *(1-du) + slice[(u0+1)*H+v0]   *du)*(1-dv)
-                              + (slice[u0*H+v0+1] *(1-du) + slice[(u0+1)*H+v0+1] *du)*dv;
+                    /* zero-pad taps outside detector bounds — matches GPU
+                     * bilinear_buf / CLK_ADDRESS_CLAMP semantics instead of
+                     * dropping the whole sample */
+                    float c00 = (u0>=0&&u0<W&&v0>=0&&v0<H) ? slice[u0*H+v0] : 0.f;
+                    float c10 = (u1>=0&&u1<W&&v0>=0&&v0<H) ? slice[u1*H+v0] : 0.f;
+                    float c01 = (u0>=0&&u0<W&&v1>=0&&v1<H) ? slice[u0*H+v1] : 0.f;
+                    float c11 = (u1>=0&&u1<W&&v1>=0&&v1<H) ? slice[u1*H+v1] : 0.f;
+
+                    float val = (c00*(1-du) + c10*du)*(1-dv)
+                              + (c01*(1-du) + c11*du)*dv;
 
                     strip[iz] += val * w;
                 }
@@ -227,8 +235,11 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
 
     memset(proj, 0, (size_t)np * H * W * sizeof(float));
 
-    /* collapse(2): ip × iu gives np×W independent work items */
-    #pragma omp parallel for collapse(2) schedule(static)
+    /* collapse(2): ip × iu gives np×W independent work items.
+     * dynamic schedule: ray cost varies a lot per column (edge rays traverse
+     * mostly empty space, center rays hit the full volume) — static chunks
+     * leave threads idle waiting on the slowest chunk. */
+    #pragma omp parallel for collapse(2) schedule(dynamic, 4)
     for (int ip = 0; ip < np; ip++) {
         for (int iu = 0; iu < W; iu++) {
             float uu = ((float)iu + 0.5f - W * 0.5f) * pxsz;
@@ -248,17 +259,49 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
                 float rd_norm  = sqrtf(rdx*rdx + rdy*rdy + rdz*rdz);
                 float step_val = dt * rd_norm;   /* accumulated outside sample loop */
 
-                /* ray start in world space at near_t */
-                float ox = T[0] + rdx * near_t;
-                float oy = T[1] + rdy * near_t;
-                float oz = T[2] + rdz * near_t;
+                /* AABB slab clipping: tighten sample range for large detectors
+                 * (many edge rays miss the volume entirely). Same gate (W>512)
+                 * and math as fp_image.cl / fp_buffer.cl so CPU does the same
+                 * work as GPU — ported here for both speed and MSE parity. */
+                int s_start = 0, s_end = n_samples;
+                if (W > 512) {
+                    float hxz = 0.5f * Nxz * vs;
+                    float hy  = 0.5f * Ny  * vs;
+                    float tmin = near_t, tmax = far_t;
+                    if (fabsf(rdx) > 1e-6f) {
+                        float t1 = (-hxz - T[0]) / rdx, t2 = (hxz - T[0]) / rdx;
+                        if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
+                        tmin = fmaxf(tmin, t1); tmax = fminf(tmax, t2);
+                    }
+                    if (fabsf(rdy) > 1e-6f) {
+                        float t1 = (-hxz - T[1]) / rdy, t2 = (hxz - T[1]) / rdy;
+                        if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
+                        tmin = fmaxf(tmin, t1); tmax = fminf(tmax, t2);
+                    }
+                    if (fabsf(rdz) > 1e-6f) {
+                        float t1 = (-hy - T[2]) / rdz, t2 = (hy - T[2]) / rdz;
+                        if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
+                        tmin = fmaxf(tmin, t1); tmax = fminf(tmax, t2);
+                    }
+                    if (tmin >= tmax) {
+                        proj[ip*H*W + iv*W + iu] = 0.f;
+                        continue;
+                    }
+                    s_start = (int)fmaxf(0.f,        (tmin - near_t) / dt);
+                    s_end   = (int)fminf((float)n_samples, (tmax - near_t) / dt + 1.f);
+                }
+
+                /* ray start in world space at (near_t + s_start*dt) */
+                float ox = T[0] + rdx * (near_t + s_start * dt);
+                float oy = T[1] + rdy * (near_t + s_start * dt);
+                float oz = T[2] + rdz * (near_t + s_start * dt);
                 /* incremental step — avoids multiply per sample */
                 float dox = rdx * dt, doy = rdy * dt, doz = rdz * dt;
 
                 float val = 0.f;
                 float wx = ox, wy = oy, wz = oz;
 
-                for (int s = 0; s < n_samples; s++) {
+                for (int s = s_start; s < s_end; s++) {
                     float xi = wx * inv_sv_xz + shift_xz;
                     float yi = wy * inv_sv_y  + shift_y;
                     float zi = wz * inv_sv_xz + shift_xz;

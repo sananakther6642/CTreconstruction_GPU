@@ -61,10 +61,15 @@ def angle2pose(SOD, angle):
     T = np.eye(4); T[:-1,:-1] = rot; T[:-1,-1] = trans
     return T
 
-def fp_func(cb_para, volume, sample_ratio=2):
+def fp_func(cb_para, volume, sample_ratio=2, jitter=True):
     """Vectorized fp_func — same math as reference but no Python inner loops.
     Processes all pixels for one angle at once via batched map_coordinates.
-    Memory: ~2 GB peak for 256^3 volume, 512x512 detector, 512 samples."""
+    Memory: ~2 GB peak for 256^3 volume, 512x512 detector, 512 samples.
+
+    jitter=False uses the interval midpoint instead of a random offset —
+    the C/GPU fp kernels have no jitter, so only jitter=False is directly
+    comparable to their output. jitter=True (original reference behavior)
+    is kept as the default so existing callers are unaffected."""
     angles    = cb_para['angles']
     H, W      = cb_para['detector_height'], cb_para['detector_width']
     SDD, SOD  = cb_para['SDD'], cb_para['SOD']
@@ -99,13 +104,16 @@ def fp_func(cb_para, volume, sample_ratio=2):
         rays_d = (R @ dirs.reshape(-1, 3).T).T.reshape(W, H, 3).astype(np.float32)
         rays_o = trans  # broadcast [3]
 
-        # sample t values with jitter [n_samples]
+        # sample t values, optionally jittered [n_samples]
         t_vals = np.linspace(0., 1., n_samples, dtype=np.float32)
         z_vals = near * (1. - t_vals) + far * t_vals
-        mids   = 0.5 * (z_vals[1:] + z_vals[:-1])
-        upper  = np.concatenate([mids, z_vals[-1:]])
-        lower  = np.concatenate([z_vals[:1], mids])
-        z_vals = lower + (upper - lower) * np.random.rand(n_samples).astype(np.float32)
+        if jitter:
+            mids   = 0.5 * (z_vals[1:] + z_vals[:-1])
+            upper  = np.concatenate([mids, z_vals[-1:]])
+            lower  = np.concatenate([z_vals[:1], mids])
+            z_vals = lower + (upper - lower) * np.random.rand(n_samples).astype(np.float32)
+        # jitter=False: z_vals stays at the uniform grid — matches the C/GPU
+        # fp kernels' fixed-step ray march (near_t + s*dt), no randomization.
 
         # dists [n_samples]: same for all pixels (rays_d norm varies but applied below)
         dists_t = np.concatenate([z_vals[1:] - z_vals[:-1],
@@ -139,51 +147,68 @@ def fp_func(cb_para, volume, sample_ratio=2):
     return np.stack(projs, axis=0)  # [num_projs, H, W]
 
 # ── main ──────────────────────────────────────────────────────────────────────
+#
+# Runs the SAME full MLEM loop as reconstruct_cpu (src/ct_cpu.c) / reconstruct_gpu
+# (src/ct_gpu.c): v *= bp(cone_weight(p0/fp(v))) / bp(cone_weight(ones)), for
+# EPOCHS iterations. Earlier versions of this script only ran a single bp-only
+# update (no fp at all) — that made "MSE vs Python" in validate.py compare two
+# different algorithms, not a meaningful check. fp_func runs with jitter=False
+# so its fixed-step ray march matches the C/GPU kernels (which have no jitter).
+#
+# fp_func in Python is slow (~minutes/epoch) — keep EPOCHS small unless you
+# have time to wait, and set it to match whatever EPOCHS you pass to
+# `make run-cpu` / `make run-gpu-*` so validate.py's comparison is apples-to-apples.
 
-path_data = '/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5'
-out_path  = 'output_python.hdf5'
-EPOCHS    = 1    # 1 epoch sufficient for MSE validation vs C/GPU
+if __name__ == '__main__':
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--data', default='/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5')
+    ap.add_argument('--out', default='output_python.hdf5')
+    ap.add_argument('--epochs', type=int, default=10,
+                     help='must match --epochs used for the C/GPU runs being compared')
+    args = ap.parse_args()
 
-print(f"Loading {path_data} ...")
-with h5py.File(path_data, 'r') as f:
-    voxelSize      = f['voxelSize'][()]
-    Volumen_num_xz = int(f['Volumen_num_xz'][()])
-    Volumen_num_y  = int(f['Volumen_num_y'][()])
-    SDD            = f['SDD'][()]
-    SOD            = f['SOD'][()]
-    pixelSize      = f['pixelSize'][()]
-    num_projs      = int(f['num_projs'][()])
-    detector_width = int(f['detector_width'][()])
-    detector_height= int(f['detector_height'][()])
-    angles         = f['Angle'][()]
-    projection_0   = f['Projection'][:,:,:]
+    print(f"Loading {args.data} ...")
+    with h5py.File(args.data, 'r') as f:
+        voxelSize      = f['voxelSize'][()]
+        Volumen_num_xz = int(f['Volumen_num_xz'][()])
+        Volumen_num_y  = int(f['Volumen_num_y'][()])
+        SDD            = f['SDD'][()]
+        SOD            = f['SOD'][()]
+        pixelSize      = f['pixelSize'][()]
+        num_projs      = int(f['num_projs'][()])
+        detector_width = int(f['detector_width'][()])
+        detector_height= int(f['detector_height'][()])
+        angles         = f['Angle'][()]
+        projection_0   = f['Projection'][:, :, :].astype(np.float32)
 
-cb_para = {
-    'angles': angles, 'pixelSize': pixelSize, 'voxelSize': voxelSize,
-    'Volumen_num_xz': Volumen_num_xz, 'Volumen_num_y': Volumen_num_y,
-    'SDD': SDD, 'SOD': SOD,
-    'detector_width': detector_width, 'detector_height': detector_height,
-}
+    cb_para = {
+        'angles': angles, 'pixelSize': pixelSize, 'voxelSize': voxelSize,
+        'Volumen_num_xz': Volumen_num_xz, 'Volumen_num_y': Volumen_num_y,
+        'SDD': SDD, 'SOD': SOD,
+        'detector_width': detector_width, 'detector_height': detector_height,
+    }
 
-v0 = np.ones((Volumen_num_xz, Volumen_num_xz, Volumen_num_xz), dtype=np.float32)
+    v0 = np.ones((Volumen_num_xz, Volumen_num_xz, Volumen_num_xz), dtype=np.float32)
 
-print("Running bp_func only (1 call on all-ones) to validate bp_func vs C bp_cpu ...")
-t0 = time.time()
-bp_ones = bp_func(np.ones_like(projection_0), cb_para)
-print(f"  bp(ones) done in {time.time()-t0:.1f}s  min={bp_ones.min():.4f} max={bp_ones.max():.4f}")
+    print("Precomputing bp(cone_weight(ones)) ...")
+    t0 = time.time()
+    bp_ones = bp_func(np.ones_like(projection_0), cb_para)
+    print(f"  done in {time.time()-t0:.1f}s  min={bp_ones.min():.4f} max={bp_ones.max():.4f}")
+    bp_ones_safe = np.where(bp_ones > 1e-10, bp_ones, 1.0)
 
-print("Running bp_func on measured projections (1 call) ...")
-t0 = time.time()
-bp_meas = bp_func(projection_0.copy(), cb_para)
-print(f"  bp(p0)  done in {time.time()-t0:.1f}s  min={bp_meas.min():.4f} max={bp_meas.max():.4f}")
+    for epoch in range(args.epochs):
+        t_ep = time.time()
+        b = fp_func(cb_para, v0, sample_ratio=2, jitter=False)
+        ratio = np.divide(projection_0, b, out=np.zeros_like(projection_0), where=(b != 0))
+        bp_ratio = bp_func(ratio, cb_para)
+        v0 *= bp_ratio / bp_ones_safe
+        print(f"  epoch {epoch+1:3d}/{args.epochs}  {time.time()-t_ep:.1f}s  "
+              f"min={v0.min():.4f} max={v0.max():.4f}")
 
-# one MLEM step without fp: v0 *= bp(p0) / bp(ones)  — tests bp correctness
-v0 *= bp_meas / np.where(bp_ones > 1e-10, bp_ones, 1.0)
-print(f"  v0 after 1 bp-only update: min={v0.min():.4f} max={v0.max():.4f}")
+    print(f"Saving to {args.out} ...")
+    with h5py.File(args.out, 'w') as f:
+        f.create_dataset('voxelSize', data=voxelSize)
+        f.create_dataset('Volume',    data=v0)
 
-print(f"Saving to {out_path} ...")
-with h5py.File(out_path, 'w') as f:
-    f.create_dataset('voxelSize', data=voxelSize)
-    f.create_dataset('Volume',    data=v0)
-
-print("Done.")
+    print("Done.")
