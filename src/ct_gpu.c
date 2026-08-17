@@ -300,14 +300,24 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
      * loads/angle/voxel with no texture cache — at 512^3 one unchunked
      * launch can exceed the ~10s driver timeout and reset the GPU). */
     const size_t Z_SLAB = 64;
+    int slab_idx = 0;
     for (size_t z0 = 0; z0 < gws_full[2]; z0 += Z_SLAB) {
         size_t slab = (gws_full[2] - z0 < Z_SLAB) ? (gws_full[2] - z0) : Z_SLAB;
         size_t offset[3] = {0, 0, z0};
         size_t gws[3]    = {gws_full[0], gws_full[1], slab};
+        double t0 = get_time_sec();
         err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, NULL);
         CL_CHECK(err, "bp_buffer enqueue (slab)");
         err = clFinish(cl->queue);
         CL_CHECK(err, "bp_buffer slab finish");
+        double dt = get_time_sec() - t0;
+        /* flag any slab that takes much longer than a healthy slab should —
+         * pinpoints WHICH slab stalls within a slow epoch, since epoch
+         * totals alone can't distinguish "one bad slab" from "uniformly
+         * slower this epoch" */
+        if (dt > 2.0)
+            printf("    [bp_buffer slab %d, z0=%zu] %.3f s (SLOW)\n", slab_idx, z0, dt);
+        slab_idx++;
     }
 }
 
@@ -347,14 +357,20 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     /* Chunk over angles (dim 2, lws=1) — same watchdog-avoidance rationale
      * as run_bp_buffer; fp_buffer's trilinear_buf is also uncoalesced. */
     const size_t ANG_SLAB = 8;
+    int slab_idx = 0;
     for (size_t p0 = 0; p0 < gws_full[2]; p0 += ANG_SLAB) {
         size_t slab = (gws_full[2] - p0 < ANG_SLAB) ? (gws_full[2] - p0) : ANG_SLAB;
         size_t offset[3] = {0, 0, p0};
         size_t gws[3]    = {gws_full[0], gws_full[1], slab};
+        double t0 = get_time_sec();
         err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, NULL);
         CL_CHECK(err, "fp_buffer enqueue (slab)");
         err = clFinish(cl->queue);
         CL_CHECK(err, "fp_buffer slab finish");
+        double dt = get_time_sec() - t0;
+        if (dt > 2.0)
+            printf("    [fp_buffer slab %d, p0=%zu] %.3f s (SLOW)\n", slab_idx, p0, dt);
+        slab_idx++;
     }
 }
 
