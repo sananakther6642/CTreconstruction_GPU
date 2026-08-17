@@ -94,6 +94,24 @@ int save_hdf5(const char *path, const CBpara *para, const float *volume)
     return 0;
 }
 
+int save_hdf5_proj(const char *path, const CBpara *para, const float *proj)
+{
+    hid_t file = H5Fcreate(path, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    if (file < 0) { fprintf(stderr, "Cannot create %s\n", path); return -1; }
+
+    hsize_t dims[3] = {(hsize_t)para->num_projs,
+                        (hsize_t)para->detector_height,
+                        (hsize_t)para->detector_width};
+    hid_t sp = H5Screate_simple(3, dims, NULL);
+    hid_t ds = H5Dcreate2(file, "Projection", H5T_NATIVE_FLOAT, sp,
+                           H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    H5Dwrite(ds, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, proj);
+    H5Dclose(ds); H5Sclose(sp);
+
+    H5Fclose(file);
+    return 0;
+}
+
 double get_time_sec(void)
 {
     struct timespec ts;

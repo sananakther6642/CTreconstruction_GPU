@@ -25,7 +25,8 @@ OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
 TARGET = $(BUILD_DIR)/ct_recon
 
 .PHONY: all clean run-cpu run-gpu-buf run-gpu-img run-gpu-opt \
-               run-cpu-512 run-gpu-buf-512 run-gpu-img-512 run-gpu-opt-512
+               run-cpu-512 run-gpu-buf-512 run-gpu-img-512 run-gpu-opt-512 \
+               run-python run-op-fp run-op-bp
 
 all: $(BUILD_DIR) $(TARGET)
 
@@ -49,7 +50,7 @@ OMP_THREADS ?= $(shell nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null 
 
 # 256 targets (n_samples defaults to Nxz=256)
 run-cpu:
-	OMP_NUM_THREADS=$(OMP_THREADS) $(TARGET) --data $(DATA256) --out output_cpu.hdf5         --mode cpu     --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+	OMP_NUM_THREADS=$(OMP_THREADS) OMP_PROC_BIND=close OMP_PLACES=cores $(TARGET) --data $(DATA256) --out output_cpu.hdf5         --mode cpu     --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
 run-gpu-buf:
 	$(TARGET) --data $(DATA256) --out output_gpu_buf.hdf5     --mode gpu-buf --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
 run-gpu-img:
@@ -59,14 +60,26 @@ run-gpu-opt:
 
 # 512 targets (n_samples=384 by default, override with SAMPLES512=N)
 run-cpu-512:
-	OMP_NUM_THREADS=$(OMP_THREADS) $(TARGET) --data $(DATA512) --out output_cpu_512.hdf5     --mode cpu     --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
+	OMP_NUM_THREADS=$(OMP_THREADS) OMP_PROC_BIND=close OMP_PLACES=cores $(TARGET) --data $(DATA512) --out output_cpu_512.hdf5     --mode cpu     --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 run-gpu-buf-512:
-	@echo "ERROR: gpu-buf on 512^3 causes GPU driver hang (global memory thrashing). Use gpu-img or gpu-opt for 512^3."
-	@exit 1
+	$(TARGET) --data $(DATA512) --out output_gpu_buf_512.hdf5     --mode gpu-buf --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 run-gpu-img-512:
 	$(TARGET) --data $(DATA512) --out output_gpu_img_512.hdf5 --mode gpu-img --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 run-gpu-opt-512:
 	$(TARGET) --data $(DATA512) --out output_gpu_opt_512.hdf5 --mode gpu-opt --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
+
+
+# ── Validation helpers ──
+# Python reference: must use the same EPOCHS as the C/GPU run being compared
+# (validate.py's "MSE vs Python" column is only meaningful when they match).
+run-python:
+	python3 run_python_reference.py --data $(DATA256) --out output_python.hdf5 --epochs $(EPOCHS)
+
+# Component tests: isolate fp/bp correctness from accumulated MLEM iteration.
+run-op-fp:
+	$(TARGET) --data $(DATA256) --out fp_cpu.hdf5 --mode cpu --op fp --kernels $(KERNEL_DIR)
+run-op-bp:
+	$(TARGET) --data $(DATA256) --out bp_cpu.hdf5 --mode cpu --op bp --kernels $(KERNEL_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR)
