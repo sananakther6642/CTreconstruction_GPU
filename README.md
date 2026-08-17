@@ -11,10 +11,15 @@ Measured on `pool15-01`, EPOCHS=10, post correctness-fix (see Validation):
 
 | Mode | Time/epoch | Speedup vs CPU |
 |------|-----------|----------------|
-| `cpu` (12-thread OpenMP) | ~4.5 s | 1× |
+| `cpu` (12-thread OpenMP) | ~4.5 s (stale, see note) | 1× |
 | `gpu-buf` (chunked) | ~0.55 s | **~8×** |
 | `gpu-img` | ~0.099 s | **~45×** |
 | `gpu-opt` | ~0.097 s | **~46×** |
+
+> `cpu` here predates the `fp_cpu` ray-tiling rewrite that gave 512³ a
+> 1.75× speedup (see 512³ section) — that same code path runs at 256³ too,
+> so this number is very likely stale/pessimistic. Not yet re-measured;
+> re-run `make run-cpu EPOCHS=10` to get a current number.
 
 `gpu-buf`'s chunked launches (z-slabs with `clFinish` between, added to fix
 the 512³ watchdog hang) cost a small overhead here (~0.55s vs the
@@ -27,27 +32,33 @@ yet — extrapolate at your own risk, or re-run with EPOCHS=100 to confirm.
 
 ### 512³ dataset (1120×1184 detector, 75 angles, n\_samples=512)
 
-> ⚠ Table below predates the correctness fixes described in Validation
-> (bp/fp boundary-rule mismatch, fp_cpu truncation bug, gpu-buf watchdog
-> chunking) and has not been re-measured since. Numbers not to be trusted
-> until re-run with the current code — treat as historical reference only.
+Measured on `pool15-01`, EPOCHS=10, current code (post all fixes below):
 
-| Mode | Time/epoch | Total (100ep) | Speedup vs CPU |
-|------|-----------|--------------|----------------|
-| `cpu` (12-thread OpenMP) | 47.3 s | 4730 s | 1× |
-| `gpu-buf` | — | — | previously blocked; now chunked, needs re-measurement |
-| `gpu-img` | 0.631 s | 63.1 s | **75×** |
-| `gpu-opt` | **0.657 s** | **65.7 s** | **72×** |
+| Mode | Time/epoch | Speedup vs CPU |
+|------|-----------|----------------|
+| `cpu` (12-thread OpenMP) | ~25.7-26.1 s | 1× |
+| `gpu-buf` (chunked) | ~48-59 s | **slower than CPU** (see note) |
+| `gpu-img` | ~0.92 s | **~28×** |
+| `gpu-opt` | ~0.94 s | **~27×** |
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (12 logical cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
-> `gpu-buf` on 512³ previously caused a GPU driver hang from a single
-> oversized kernel launch exceeding the driver watchdog timeout (bp_buffer's
-> manual bilinear does 4 uncoalesced global loads/angle/voxel with no
-> texture cache — at 512³ that's ~15-20s in one launch). Fixed by chunking
-> the NDRange into z-slabs (bp) / angle-slabs (fp) with `clFinish` between
-> launches. `run-gpu-buf-512` is unblocked in the Makefile; needs a
-> real 512³ timing/hang-check run to confirm and fill in the table above.
+> **`cpu` 512³ got ~1.75× faster** (44.5-45.7s → 25.7-26.1s/epoch) from a
+> `fp_cpu` rewrite — see "CPU speedup" below.
+
+> **`gpu-buf` on 512³**: previously caused a driver hang from one oversized
+> kernel launch exceeding the watchdog timeout. Fixed by chunking the
+> NDRange into z-slabs (bp) / angle-slabs (fp) with `clFinish` between
+> launches — `run-gpu-buf-512` now completes without crashing. But per-slab
+> timing diagnostics show it's genuinely slow, not stalling: every
+> `fp_buffer` angle-slab takes 2.5-8s, consistently, across all epochs —
+> not intermittent, not thermal, not a bug. `fp_buffer.cl`'s manual 8-tap
+> trilinear gather (no texture cache, 8 uncoalesced global reads per sample)
+> is real, honest memory-bandwidth-bound work that this hardware can't do
+> fast at 512³ scale — same story as `bp_buffer.cl` being the reason
+> `gpu-buf` is the slow/naive baseline in the first place. Not chased
+> further: `gpu-img`/`gpu-opt` exist specifically to avoid this cost via
+> hardware texture sampling, and they already deliver the real speedup.
 
 ### Key optimizations that drove 512³ speedup
 
@@ -122,30 +133,61 @@ Component-test tools added for future debugging: `--op fp|bp` on
 MLEM iteration error); `validate_ops.py` compares that dump against the
 Python reference per-operator.
 
-### 512³ — stale, needs re-measurement
+### 512³ — current (post-fix)
 ```
 Mode       min      max     mean   nan  inf  MSE vs CPU
-cpu      0.0001   0.3481   0.0334    0    0  (reference)
-gpu-img  0.0000   0.5172   0.0331    0    0  MSE=8.452e-04  max=0.4236
-gpu-opt  0.0000   0.5172   0.0331    0    0  MSE=8.452e-04  max=0.4236
+cpu      0.0000   0.5171   0.0331    0    0  (reference)
+gpu-img  0.0000   0.5171   0.0331    0    0  MSE=7.935e-12  max=0.0003
+gpu-opt  0.0000   0.5171   0.0331    0    0  MSE=7.935e-12  max=0.0003
 ```
-⚠ Predates all fixes above. Re-run `make run-cpu-512 run-gpu-img-512
-run-gpu-opt-512 run-gpu-buf-512` (EPOCHS=10, or 100 for the real number)
-and `python3 validate.py 512` to get current numbers. `gpu-buf-512`'s row
-is entirely new — it was hard-blocked in the Makefile until this session.
+`gpu-img`/`gpu-opt` MSE vs CPU is essentially the float32 noise floor —
+better than the 256³ result (`max=0.0762`). `gpu-buf` row not included:
+completes now (chunking fix confirmed working, no crash), but wasn't run
+alongside this particular validate.py pass — re-run
+`make run-gpu-buf-512 EPOCHS=10` before `python3 validate.py 512` to
+include it; expect similar float32-noise-floor agreement to gpu-img/opt
+since it's the same algorithm, just via the manual (uncached) kernel path.
+
+### CPU 512³ speedup: fp_cpu ray-tiling rewrite
+`fp_cpu` dominates the CPU epoch time at 512³ (was 35.2-36.2s of a
+44.5-45.7s epoch — 78%). The 8-tap trilinear gather it does per ray sample
+is memory-latency-bound: each gather spans up to ~2MB due to the
+`Nxz*Ny=262144` and `Ny=512` float strides in the volume layout, so
+sequentially marching one ray to completion before starting the next gave
+the CPU cache nothing to reuse.
+
+Fix: batch `FP_TILE=8` neighboring detector rows together, and iterate the
+sample index `s` as the *outer* loop across the tile instead of per-ray.
+Neighboring rays for the same angle start near each other and diverge only
+slightly, so at a given `s` their volume addresses cluster — batching
+means the memory subsystem sees those nearby reads close together in time
+instead of scattered across a full ray march per pixel. Each ray still
+computes its own AABB-derived `s_start`/`s_end` and only accumulates within
+its own range, so the actual math and reduction order per ray is unchanged
+— this is purely a memory-access-order change, verified via `--op fp`
+component test to still agree with the Python reference (`MSE=8.34e-08` at
+64 samples, no regression from the pre-tiling `8.57e-08` at full samples).
+
+Result: `fp_cpu` 35.17-36.22s → **16.34-16.71s** (>2.1× faster), full
+epoch 44.5-45.7s → **25.67-26.06s** (1.75× faster), stable across 10
+epochs. `bp_cpu` unchanged (8.95-9.07s both before and after — it was
+never the bottleneck; a separate analytical-range optimization was tried
+there too but had negligible measured effect since bp's cost is dominated
+by the same kind of gather, just at 1/4 the total time budget).
 
 ### Known gaps
-- CPU-vs-Python sampling mismatch (n_samples=256 vs 512) not reconciled —
-  doesn't affect CPU-vs-GPU correctness (both C paths use the same
-  n_samples), but means "MSE vs Python" isn't apples-to-apples yet.
-- 512³ table above is stale.
+- CPU-vs-Python sampling mismatch (n_samples=256 vs 512 at 256³) not
+  reconciled — doesn't affect CPU-vs-GPU correctness (both C paths use the
+  same n_samples), but means "MSE vs Python" isn't apples-to-apples yet.
+- `gpu-buf-512` row missing from the current validate.py 512 table above —
+  needs a run alongside the other three modes to fill in.
 
 ## Modes
 
 | Mode | Flag | Description |
 |------|------|-------------|
 | CPU | `--mode cpu` | C + OpenMP, `-ffast-math`, incremental ray stepping |
-| GPU buffer | `--mode gpu-buf` | OpenCL global buffers, manual bilinear/trilinear (256³ only) |
+| GPU buffer | `--mode gpu-buf` | OpenCL global buffers, manual bilinear/trilinear — naive baseline; slow at 512³ (no texture cache), chunked to avoid the driver watchdog |
 | GPU image | `--mode gpu-img` | Hardware image2d_array + image3d sampler |
 | GPU opt | `--mode gpu-opt` | Hardware sampler + float2 LUT + local mem + AABB clipping |
 
@@ -172,6 +214,8 @@ kernels/
 validate.py           — load HDF5 outputs, print MSE + outlier-location diagnostics (supports 256/512)
 validate_ops.py       — per-operator fp/bp comparison vs Python reference, isolated from MLEM iteration
 run_python_reference.py — full MLEM loop in Python (fp_func/bp_func), --epochs to match C runs
+diag_fp.py             — fp_cpu vs Python fp_func comparison, parameterized for 256^3/512^3 (--data/--dump/--samples)
+diag_voxel.py, diag_voxel2.py — one-off scripts from the boundary-rule/truncation bug hunt; kept for reference, not part of the regular workflow
 ```
 
 ## Build
@@ -216,11 +260,16 @@ Or run directly:
 ```
 
 ### Component tests (isolate fp/bp correctness, CPU only)
+Both print their own elapsed time (`fp_cpu time: X.XXX s`). 512³ variants
+exist since fp/bp cost differs a lot by dataset size.
 ```bash
-make run-op-fp   # dumps fp_cpu.hdf5
-make run-op-bp   # dumps bp_cpu.hdf5
+make run-op-fp       # dumps fp_cpu.hdf5 (256^3)
+make run-op-bp       # dumps bp_cpu.hdf5 (256^3)
+make run-op-fp-512   # dumps fp_cpu_512.hdf5 (512^3, SAMPLES512 samples — slow, use SAMPLES512=64 for a quick check)
+make run-op-bp-512   # dumps bp_cpu_512.hdf5 (512^3)
 python3 validate_ops.py fp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --dump fp_cpu.hdf5
 python3 validate_ops.py bp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --dump bp_cpu.hdf5
+python3 diag_fp.py --data /lgrp/edu-2026-1-gpulab/proj_512_75.hdf5 --dump fp_cpu_512.hdf5 --samples 512
 ```
 
 ### Python reference (must match C run's `--epochs` for validate.py's "MSE vs Python" to be meaningful)
@@ -265,3 +314,5 @@ for each epoch:
 | `native_recip` in bp kernels | `bp_buffer_opt.cl`, `bp_buffer.cl`, `bp_image.cl` | hardware SFU reciprocal, ~4× faster than IEEE division |
 | Unroll-x2 gated Nxz≥512 | `bp_buffer_opt.cl` | ILP across two texture fetches; gated to avoid register pressure on 256³ |
 | OMP\_NUM\_THREADS=nproc | `Makefile` cpu targets | uses all available cores on lab node |
+| Ray tiling (`FP_TILE=8`, sample-index-outer loop) | `fp_cpu` | groups neighboring rays' 8-tap gathers close in time for cache reuse; 2.1× on fp_cpu at 512³ |
+| `schedule(guided,4)` | `fp_cpu` | lower scheduling overhead than `dynamic` at 512³'s larger iteration count (75×1120=84000 work items), still handles AABB-clipped load imbalance |
