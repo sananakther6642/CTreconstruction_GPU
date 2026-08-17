@@ -30,3 +30,6 @@ build/
 
 # clFFT (third-party, link as submodule or install separately)
 clFFT/
+
+# Session logs (local only, never pushed)
+sessions/
