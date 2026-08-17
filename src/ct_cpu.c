@@ -139,10 +139,39 @@ void bp_cpu(const float *proj, float *volume, const CBpara *p)
 
                 const float *slice = proj + ip * W * H;
 
-                for (int iz = 0; iz < Ny; iz++) {
+                /* vf is affine in iz: vf(iz) = ((iz - radius_z)*vs*zf - b_min)/db.
+                 * Solve the valid range [iz_lo, iz_hi) analytically instead of
+                 * checking vf<0.f||vf>=(H-1) every iteration — at 512^3 (Ny=512)
+                 * most (ip,ix,iy) combinations only have a fraction of iz in
+                 * bounds (cone-beam geometry), so this skips the zpr/bi/vf
+                 * computation entirely for iz outside the valid range rather
+                 * than computing it and then discarding. */
+                float vf_slope = vs * zf / db;
+                float vf0      = (((0.f - radius_z) * vs * zf) - b_min) / db;
+                int iz_lo, iz_hi;
+                if (vf_slope > 1e-12f || vf_slope < -1e-12f) {
+                    /* vf(iz) = vf0 + iz*vf_slope; solve 0 <= vf < H-1 */
+                    float lo = -vf0 / vf_slope;
+                    float hi = ((float)(H-1) - vf0) / vf_slope;
+                    if (lo > hi) { float tmp = lo; lo = hi; hi = tmp; }
+                    iz_lo = (int)ceilf(lo);
+                    iz_hi = (int)ceilf(hi);       /* exclusive upper bound: vf<H-1 strictly */
+                    if (iz_lo < 0)   iz_lo = 0;
+                    if (iz_hi > Ny)  iz_hi = Ny;
+                } else {
+                    /* zf ~ 0: vf constant across all iz — either all in or all out */
+                    int all_in = (vf0 >= 0.f && vf0 < (float)(H-1));
+                    iz_lo = 0;
+                    iz_hi = all_in ? Ny : 0;
+                }
+
+                for (int iz = iz_lo; iz < iz_hi; iz++) {
                     float zpr = ((float)iz - radius_z) * vs;
                     float bi  = zpr * zf;
                     float vf  = (bi - b_min) / db;
+                    /* keep the check as a safety net against the boundary
+                     * rounding in ceilf above — cost is negligible since the
+                     * range is now tight */
                     if (vf < 0.f || vf >= (float)(H-1)) continue;
                     int v0 = (int)vf; float dv = vf - v0;
 
@@ -237,10 +266,15 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
     memset(proj, 0, (size_t)np * H * W * sizeof(float));
 
     /* collapse(2): ip × iu gives np×W independent work items.
-     * dynamic schedule: ray cost varies a lot per column (edge rays traverse
-     * mostly empty space, center rays hit the full volume) — static chunks
-     * leave threads idle waiting on the slowest chunk. */
-    #pragma omp parallel for collapse(2) schedule(dynamic, 4)
+     * guided schedule: ray cost varies a lot per column (edge rays traverse
+     * mostly empty space or get AABB-clipped short, center rays hit the
+     * full volume) — static chunks leave threads idle waiting on the
+     * slowest chunk. guided starts with large chunks (low scheduling
+     * overhead while imbalance is still being discovered) and shrinks
+     * toward the end (fine-grained load balancing for the tail) — cheaper
+     * than dynamic's constant re-dispatch overhead at large np*W (75*1120
+     * =84000 work items at 512^3, vs 75*512=38400 at 256^3). */
+    #pragma omp parallel for collapse(2) schedule(guided, 4)
     for (int ip = 0; ip < np; ip++) {
         for (int iu = 0; iu < W; iu++) {
             float uu = ((float)iu + 0.5f - W * 0.5f) * pxsz;
