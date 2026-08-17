@@ -73,13 +73,26 @@ for name, v in volumes.items():
     else:
         ref64 = ref.astype(np.float64)
         v64   = v.astype(np.float64)
-        mse   = np.mean((v64 - ref64)**2)
-        maxd  = np.max(np.abs(v64 - ref64))
+        diff  = np.abs(v64 - ref64)
+        mse   = np.mean(diff**2)
+        maxd  = np.max(diff)
         cpu_str = f"MSE={mse:.3e}  max={maxd:.4f}"
         py_str = ""
         if py_ok:
             m = np.mean((v64 - py_ref.astype(np.float64))**2)
             py_str = f"MSE={m:.3e}"
         print(f"{name:<10} {mn:>10.4f} {mx:>10.4f} {me:>10.4f} {nan_c:>6} {inf_c:>6}  {cpu_str:<20} {py_str}")
+
+        # outlier diagnostics: is max diff a handful of voxels (e.g. near a
+        # geometric singularity where U->0 amplifies rounding via 1/U^2) or
+        # widespread (systematic boundary-rule mismatch)?
+        Nxz = v.shape[0]
+        thresh = 10 * np.sqrt(mse) if mse > 0 else maxd * 0.5
+        n_outliers = int(np.sum(diff > thresh))
+        idx = np.unravel_index(np.argmax(diff), diff.shape)
+        center = (Nxz - 1) / 2.0
+        radial = np.sqrt(sum((idx[d] - center)**2 for d in range(2))) if len(idx) >= 2 else -1
+        print(f"{'':10} outliers(diff>10*rms)={n_outliers}  worst_voxel_idx={idx}  "
+              f"radial_dist_from_center_xy={radial:.1f} (Nxz/2={Nxz/2:.0f})")
 
 print()
