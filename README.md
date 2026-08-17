@@ -41,10 +41,11 @@ Supports 256³ and 512³ datasets. All GPU modes validated: no NaN/Inf, MSE vs C
 ### 256³
 ```
 Mode       min      max     mean   nan  inf  MSE vs CPU         MSE vs Python
-cpu      0.0000   0.3015   0.0067    0    0  (reference)        MSE=2.105e-04
-gpu-buf  0.0000   1.4188   0.0066    0    0  MSE=1.993e-04  max=1.3829
-gpu-img  0.0000   1.4311   0.0066    0    0  MSE=1.993e-04  max=1.3952
-gpu-opt  0.0000   1.4311   0.0066    0    0  MSE=1.993e-04  max=1.3952
+python   0.0002   0.1225   0.0144    0    0  (python ref)      -
+cpu      0.0000   1.4069   0.0066    0    0  (reference)        MSE=6.262e-04
+gpu-buf  0.0000   1.4188   0.0066    0    0  MSE=1.521e-07  max=1.2484  MSE=6.263e-04
+gpu-img  0.0000   1.4311   0.0066    0    0  MSE=1.373e-07  max=1.1721  MSE=6.263e-04
+gpu-opt  0.0000   1.4311   0.0066    0    0  MSE=1.373e-07  max=1.1721  MSE=6.263e-04
 ```
 
 ### 512³
