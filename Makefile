@@ -26,7 +26,7 @@ TARGET = $(BUILD_DIR)/ct_recon
 
 .PHONY: all clean run-cpu run-gpu-buf run-gpu-img run-gpu-opt \
                run-cpu-512 run-gpu-buf-512 run-gpu-img-512 run-gpu-opt-512 \
-               run-python run-op-fp run-op-bp
+               run-python run-op-fp run-op-bp run-op-fp-512 run-op-bp-512
 
 all: $(BUILD_DIR) $(TARGET)
 
@@ -80,6 +80,10 @@ run-op-fp:
 	$(TARGET) --data $(DATA256) --out fp_cpu.hdf5 --mode cpu --op fp --kernels $(KERNEL_DIR)
 run-op-bp:
 	$(TARGET) --data $(DATA256) --out bp_cpu.hdf5 --mode cpu --op bp --kernels $(KERNEL_DIR)
+run-op-fp-512:
+	$(TARGET) --data $(DATA512) --out fp_cpu_512.hdf5 --mode cpu --op fp --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
+run-op-bp-512:
+	$(TARGET) --data $(DATA512) --out bp_cpu_512.hdf5 --mode cpu --op bp --kernels $(KERNEL_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR)

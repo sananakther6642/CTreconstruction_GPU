@@ -5,17 +5,31 @@ stack and at specific pixels. bp(ones) was already verified clean (agrees to
 comes from.
 
 Usage:
-  make run-op-fp   # generates fp_cpu.hdf5
+  make run-op-fp       # generates fp_cpu.hdf5 (256^3)
   python3 diag_fp.py
+
+  make run-op-fp-512   # generates fp_cpu_512.hdf5 (512^3, SAMPLES512 samples)
+  python3 diag_fp.py --data /lgrp/edu-2026-1-gpulab/proj_512_75.hdf5 \\
+                      --dump fp_cpu_512.hdf5 --samples 512
 """
 import sys
+import argparse
 import numpy as np
 import h5py
 
 sys.path.insert(0, '.')
 from run_python_reference import fp_func
 
-DATA = sys.argv[1] if len(sys.argv) > 1 else '/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5'
+ap = argparse.ArgumentParser()
+ap.add_argument('--data', default='/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5')
+ap.add_argument('--dump', default='fp_cpu.hdf5',
+                 help='HDF5 dump from ./ct_recon --op fp')
+ap.add_argument('--samples', type=int, default=None,
+                 help='n_samples used for the C dump (must match --samples '
+                      'passed to ct_recon, or omit if it used the default '
+                      'n_samples=Nxz)')
+args = ap.parse_args()
+DATA = args.data
 
 with h5py.File(DATA, 'r') as f:
     voxelSize = float(f['voxelSize'][()])
@@ -35,17 +49,21 @@ cb_para = {
     'detector_width': W, 'detector_height': H,
 }
 
-with h5py.File('fp_cpu.hdf5', 'r') as f:
+with h5py.File(args.dump, 'r') as f:
     c_proj = f['Projection'][:].astype(np.float64)  # [np, H, W]
 
-print(f"Loaded C fp_cpu.hdf5: shape={c_proj.shape}")
+print(f"Loaded C dump {args.dump}: shape={c_proj.shape}")
 
-# CPU's --op fp uses n_samples=Nxz by default (no --samples flag passed to
-# `make run-op-fp`); fp_func's n_samples = ceil(Nxz * sample_ratio), so
-# sample_ratio must be 1.0 here to match, not the module's default of 2.
-sample_ratio = 1.0
-print(f"Running Python fp_func(ones, sample_ratio={sample_ratio}, jitter=False) "
-      f"-> n_samples={int(np.ceil(Nxz*sample_ratio))} (matches C's default n_samples=Nxz={Nxz})...")
+# CPU's --op fp uses n_samples=Nxz by default when --samples is omitted;
+# fp_func's n_samples = ceil(Nxz * sample_ratio), so sample_ratio must be
+# chosen to reproduce whatever n_samples the C dump actually used — pass
+# --samples explicitly if the C run used --samples (e.g. 512^3 uses
+# SAMPLES512, which happens to equal Nxz=512 by default but don't assume
+# that holds for other overrides).
+n_samples_used = args.samples if args.samples is not None else Nxz
+sample_ratio = n_samples_used / Nxz
+print(f"Running Python fp_func(ones, sample_ratio={sample_ratio:.6f}, jitter=False) "
+      f"-> n_samples={int(np.ceil(Nxz*sample_ratio))} (matches C's n_samples={n_samples_used})...")
 
 ones_vol = np.ones((Nxz, Nxz, Nxz), dtype=np.float32)
 py_proj = fp_func(cb_para, ones_vol, sample_ratio=sample_ratio, jitter=False)  # [np, H, W]
