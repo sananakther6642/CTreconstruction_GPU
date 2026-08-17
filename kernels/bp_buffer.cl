@@ -22,10 +22,16 @@ static float bilinear_buf(__global const float *img,
     int v0 = (int)floor(v), v1 = v0 + 1;
     float du = u - u0, dv = v - v0;
 
-    float c00 = (u0>=0&&u0<W&&v0>=0&&v0<H) ? img[u0*H+v0] : 0.f;
-    float c10 = (u1>=0&&u1<W&&v0>=0&&v0<H) ? img[u1*H+v0] : 0.f;
-    float c01 = (u0>=0&&u0<W&&v1>=0&&v1<H) ? img[u0*H+v1] : 0.f;
-    float c11 = (u1>=0&&u1<W&&v1>=0&&v1<H) ? img[u1*H+v1] : 0.f;
+    /* Whole-cell zero rule matching the Python reference
+     * (scipy RegularGridInterpolator, fill_value=0): if any corner of the
+     * interpolation cell is outside the grid, the WHOLE sample is 0 — not
+     * a per-tap zero-pad blend. */
+    if (u0 < 0 || u1 >= W || v0 < 0 || v1 >= H) return 0.f;
+
+    float c00 = img[u0*H+v0];
+    float c10 = img[u1*H+v0];
+    float c01 = img[u0*H+v1];
+    float c11 = img[u1*H+v1];
 
     return c00*(1-du)*(1-dv) + c10*du*(1-dv) + c01*(1-du)*dv + c11*du*dv;
 }
