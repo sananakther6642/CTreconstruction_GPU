@@ -64,6 +64,12 @@ __kernel void bp_image(
         float uf = -(ai / pixelSize) + (W - 1) * 0.5f;
         float vf =  (bi / pixelSize) + (H - 1) * 0.5f;
 
+        /* Whole-cell zero rule matching the Python reference (see bp_buffer.cl):
+         * CLK_ADDRESS_CLAMP zero-pads individual texels, which differs from
+         * scipy's all-or-nothing fill_value=0 — gate explicitly instead. */
+        int u0 = (int)floor(uf), v0 = (int)floor(vf);
+        if (u0 < 0 || u0+1 >= W || v0 < 0 || v0+1 >= H) continue;
+
         float texel_u = vf + 0.5f;
         float texel_v = uf + 0.5f;
         float4 val = read_imagef(proj_images, samp, (float4)(texel_u, texel_v, (float)ip, 0.f));

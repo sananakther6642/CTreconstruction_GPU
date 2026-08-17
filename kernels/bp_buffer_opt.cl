@@ -61,6 +61,12 @@ __kernel void bp_opt(
     float half_W = (W - 1) * 0.5f;
     float half_H = (H - 1) * 0.5f;
 
+    /* Whole-cell zero rule matching the Python reference (see bp_buffer.cl):
+     * CLK_ADDRESS_CLAMP zero-pads individual texels, which differs from
+     * scipy's all-or-nothing fill_value=0 — gate explicitly instead. */
+#define OOB(u,v) ((int)floor(u) < 0 || (int)floor(u)+1 >= W || \
+                  (int)floor(v) < 0 || (int)floor(v)+1 >= H)
+
     /* Large volumes (>=512): unroll x2 hides texture latency with acceptable register cost.
      * Small volumes (<512): scalar loop — occupancy more valuable than ILP. */
     int ip = 0;
@@ -79,11 +85,14 @@ __kernel void bp_opt(
             float vf0 = (zpr*SDD*inv_U0)*inv_px + half_H;
             float vf1 = (zpr*SDD*inv_U1)*inv_px + half_H;
 
-            float4 v0 = read_imagef(proj_images, samp, (float4)(vf0+.5f, uf0+.5f, (float)(ip+0), 0.f));
-            float4 v1 = read_imagef(proj_images, samp, (float4)(vf1+.5f, uf1+.5f, (float)(ip+1), 0.f));
-
-            sum += v0.x * sod2 * inv_U0 * inv_U0;
-            sum += v1.x * sod2 * inv_U1 * inv_U1;
+            if (!OOB(uf0, vf0)) {
+                float4 v0 = read_imagef(proj_images, samp, (float4)(vf0+.5f, uf0+.5f, (float)(ip+0), 0.f));
+                sum += v0.x * sod2 * inv_U0 * inv_U0;
+            }
+            if (!OOB(uf1, vf1)) {
+                float4 v1 = read_imagef(proj_images, samp, (float4)(vf1+.5f, uf1+.5f, (float)(ip+1), 0.f));
+                sum += v1.x * sod2 * inv_U1 * inv_U1;
+            }
         }
     }
     for (; ip < num_projs; ip++) {
@@ -92,9 +101,11 @@ __kernel void bp_opt(
         float inv_U = native_recip(U);
         float uf = -(SDD*(ypr*cs.x - xpr*cs.y)*inv_U)*inv_px + half_W;
         float vf = (zpr*SDD*inv_U)*inv_px + half_H;
+        if (OOB(uf, vf)) continue;
         float4 val = read_imagef(proj_images, samp, (float4)(vf+.5f, uf+.5f, (float)ip, 0.f));
         sum += val.x * sod2 * inv_U * inv_U;
     }
+#undef OOB
 
     sum *= M_PI_F / (float)num_projs;
 

@@ -124,9 +124,18 @@ void bp_cpu(const float *proj, float *volume, const CBpara *p)
                 float w    = sod2 * Uinv * Uinv;
                 float zf   = SDD * Uinv;
 
+                /* Whole-point zero rule matching the Python reference:
+                 * both scipy.interpolate.RegularGridInterpolator(fill_value=0)
+                 * (bp) and scipy.ndimage.map_coordinates(mode='constant',
+                 * cval=0) (fp) return 0 for the ENTIRE query point the
+                 * instant its interpolation cell touches outside the grid —
+                 * verified empirically, they do not blend/zero-pad individual
+                 * taps. GPU kernels currently zero-pad per-tap instead; that
+                 * mismatch (not this CPU code) is the actual source of the
+                 * edge-voxel outliers seen in validate.py. */
                 float uf = (ai - a_min) / da;
-                int u0 = (int)floorf(uf), u1 = u0 + 1;
-                float du = uf - u0;
+                if (uf < 0.f || uf >= (float)(W-1)) continue;
+                int u0 = (int)uf; float du = uf - u0;
 
                 const float *slice = proj + ip * W * H;
 
@@ -134,19 +143,11 @@ void bp_cpu(const float *proj, float *volume, const CBpara *p)
                     float zpr = ((float)iz - radius_z) * vs;
                     float bi  = zpr * zf;
                     float vf  = (bi - b_min) / db;
-                    int v0 = (int)floorf(vf), v1 = v0 + 1;
-                    float dv = vf - v0;
+                    if (vf < 0.f || vf >= (float)(H-1)) continue;
+                    int v0 = (int)vf; float dv = vf - v0;
 
-                    /* zero-pad taps outside detector bounds — matches GPU
-                     * bilinear_buf / CLK_ADDRESS_CLAMP semantics instead of
-                     * dropping the whole sample */
-                    float c00 = (u0>=0&&u0<W&&v0>=0&&v0<H) ? slice[u0*H+v0] : 0.f;
-                    float c10 = (u1>=0&&u1<W&&v0>=0&&v0<H) ? slice[u1*H+v0] : 0.f;
-                    float c01 = (u0>=0&&u0<W&&v1>=0&&v1<H) ? slice[u0*H+v1] : 0.f;
-                    float c11 = (u1>=0&&u1<W&&v1>=0&&v1<H) ? slice[u1*H+v1] : 0.f;
-
-                    float val = (c00*(1-du) + c10*du)*(1-dv)
-                              + (c01*(1-du) + c11*du)*dv;
+                    float val = (slice[u0*H+v0]   *(1-du) + slice[(u0+1)*H+v0]   *du)*(1-dv)
+                              + (slice[u0*H+v0+1] *(1-du) + slice[(u0+1)*H+v0+1] *du)*dv;
 
                     strip[iz] += val * w;
                 }
