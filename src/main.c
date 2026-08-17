@@ -82,7 +82,10 @@ int main(int argc, char **argv)
             size_t proj_n = (size_t)para.num_projs * para.detector_height * para.detector_width;
             float *proj_out = (float *)calloc(proj_n, sizeof(float));
             printf("\n=== --op fp: single fp_cpu(ones) call ===\n");
+            t_start = get_time_sec();
             fp_cpu(volume, proj_out, &para);
+            t_end = get_time_sec();
+            printf("fp_cpu time: %.3f s (n_samples=%d)\n", t_end - t_start, para.n_samples);
             if (save_hdf5_proj(out_path, &para, proj_out) != 0) return 1;
             printf("Saved fp(ones) to %s\n", out_path);
             free(proj_out);
@@ -102,7 +105,10 @@ int main(int argc, char **argv)
                     for (int ih = 0; ih < H; ih++)
                         d[iw*H+ih] = s[(H-1-ih)*W+iw] / (float)para.voxelSize;
             }
+            t_start = get_time_sec();
             bp_cpu(ones_p, volume, &para);
+            t_end = get_time_sec();
+            printf("bp_cpu time: %.3f s\n", t_end - t_start);
             if (save_hdf5(out_path, &para, volume) != 0) return 1;
             printf("Saved bp(ones) to %s\n", out_path);
             free(ones_raw); free(ones_p);
