@@ -274,106 +274,138 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
      * toward the end (fine-grained load balancing for the tail) — cheaper
      * than dynamic's constant re-dispatch overhead at large np*W (75*1120
      * =84000 work items at 512^3, vs 75*512=38400 at 256^3). */
+    /* Tile over iv: neighboring detector rows for the same (ip,iu) column
+     * have rays that start near each other and diverge only slightly, so at
+     * a given sample index s their volume-read addresses cluster. Batching
+     * TILE rays together and iterating s in the outer loop (instead of one
+     * ray fully marched at a time) means the memory subsystem sees nearby
+     * reads close together in time instead of scattered across a full ray
+     * march per pixel — improves cache/prefetcher reuse for the 8-tap
+     * trilinear gather, which dominates fp_cpu's cost at 512^3 (8 reads x
+     * up to 512 samples x 1.3M pixels x 75 angles, each gather spanning up
+     * to ~2MB due to the Nxz*Ny and Ny strides). Correctness is unchanged:
+     * each ray still computes its own s_start/s_end and does its own
+     * per-sample bounds check exactly as before — this only reorders when
+     * each ray's reads happen relative to its neighbors', not what is read
+     * or how it's weighted. */
+#define FP_TILE 8
     #pragma omp parallel for collapse(2) schedule(guided, 4)
     for (int ip = 0; ip < np; ip++) {
         for (int iu = 0; iu < W; iu++) {
             float uu = ((float)iu + 0.5f - W * 0.5f) * pxsz;
             float d0 = uu / SDD, d2 = 1.f;
-            /* precompute rd components for this column (iv only changes vv) */
             float (*R)[3] = R_all[ip];
             float *T      = T_all[ip];
 
-            for (int iv = 0; iv < H; iv++) {
-                float vv = ((float)iv + 0.5f - H * 0.5f) * pxsz;
-                float d1 = vv / SDD;
+            for (int iv0 = 0; iv0 < H; iv0 += FP_TILE) {
+                int tile_n = (H - iv0 < FP_TILE) ? (H - iv0) : FP_TILE;
 
-                float rdx = R[0][0]*d0 + R[0][1]*d1 + R[0][2]*d2;
-                float rdy = R[1][0]*d0 + R[1][1]*d1 + R[1][2]*d2;
-                float rdz = R[2][0]*d0 + R[2][1]*d1 + R[2][2]*d2;
+                float step_val[FP_TILE];
+                int   s_start[FP_TILE], s_end[FP_TILE];
+                float wx[FP_TILE], wy[FP_TILE], wz[FP_TILE];
+                float dox[FP_TILE], doy[FP_TILE], doz[FP_TILE];
+                float val[FP_TILE];
+                int   tile_s_lo = n_samples, tile_s_hi = 0;
 
-                float rd_norm  = sqrtf(rdx*rdx + rdy*rdy + rdz*rdz);
-                float step_val = dt * rd_norm;   /* accumulated outside sample loop */
+                for (int t = 0; t < tile_n; t++) {
+                    int iv = iv0 + t;
+                    float vv = ((float)iv + 0.5f - H * 0.5f) * pxsz;
+                    float d1 = vv / SDD;
 
-                /* AABB slab clipping: tighten sample range for large detectors
-                 * (many edge rays miss the volume entirely). Same gate (W>512)
-                 * and math as fp_image.cl / fp_buffer.cl so CPU does the same
-                 * work as GPU — ported here for both speed and MSE parity. */
-                int s_start = 0, s_end = n_samples;
-                if (W > 512) {
-                    float hxz = 0.5f * Nxz * vs;
-                    float hy  = 0.5f * Ny  * vs;
-                    float tmin = near_t, tmax = far_t;
-                    if (fabsf(rdx) > 1e-6f) {
-                        float t1 = (-hxz - T[0]) / rdx, t2 = (hxz - T[0]) / rdx;
-                        if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
-                        tmin = fmaxf(tmin, t1); tmax = fminf(tmax, t2);
+                    float rdx = R[0][0]*d0 + R[0][1]*d1 + R[0][2]*d2;
+                    float rdy = R[1][0]*d0 + R[1][1]*d1 + R[1][2]*d2;
+                    float rdz = R[2][0]*d0 + R[2][1]*d1 + R[2][2]*d2;
+
+                    float rd_norm = sqrtf(rdx*rdx + rdy*rdy + rdz*rdz);
+                    step_val[t] = dt * rd_norm;
+
+                    /* AABB slab clipping: tighten sample range for large
+                     * detectors (many edge rays miss the volume entirely).
+                     * Same gate (W>512) and math as fp_image.cl/fp_buffer.cl
+                     * so CPU does the same work as GPU. */
+                    int s0 = 0, s1 = n_samples;
+                    if (W > 512) {
+                        float hxz = 0.5f * Nxz * vs;
+                        float hy  = 0.5f * Ny  * vs;
+                        float tmin = near_t, tmax = far_t;
+                        if (fabsf(rdx) > 1e-6f) {
+                            float t1v = (-hxz - T[0]) / rdx, t2v = (hxz - T[0]) / rdx;
+                            if (t1v > t2v) { float tmp=t1v; t1v=t2v; t2v=tmp; }
+                            tmin = fmaxf(tmin, t1v); tmax = fminf(tmax, t2v);
+                        }
+                        if (fabsf(rdy) > 1e-6f) {
+                            float t1v = (-hxz - T[1]) / rdy, t2v = (hxz - T[1]) / rdy;
+                            if (t1v > t2v) { float tmp=t1v; t1v=t2v; t2v=tmp; }
+                            tmin = fmaxf(tmin, t1v); tmax = fminf(tmax, t2v);
+                        }
+                        if (fabsf(rdz) > 1e-6f) {
+                            float t1v = (-hy - T[2]) / rdz, t2v = (hy - T[2]) / rdz;
+                            if (t1v > t2v) { float tmp=t1v; t1v=t2v; t2v=tmp; }
+                            tmin = fmaxf(tmin, t1v); tmax = fminf(tmax, t2v);
+                        }
+                        if (tmin >= tmax) {
+                            s0 = s1 = 0;  /* empty range: ray misses volume */
+                        } else {
+                            s0 = (int)fmaxf(0.f,        (tmin - near_t) / dt);
+                            s1 = (int)fminf((float)n_samples, (tmax - near_t) / dt + 1.f);
+                        }
                     }
-                    if (fabsf(rdy) > 1e-6f) {
-                        float t1 = (-hxz - T[1]) / rdy, t2 = (hxz - T[1]) / rdy;
-                        if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
-                        tmin = fmaxf(tmin, t1); tmax = fminf(tmax, t2);
+                    s_start[t] = s0; s_end[t] = s1;
+                    if (s0 < s1) {
+                        if (s0 < tile_s_lo) tile_s_lo = s0;
+                        if (s1 > tile_s_hi) tile_s_hi = s1;
                     }
-                    if (fabsf(rdz) > 1e-6f) {
-                        float t1 = (-hy - T[2]) / rdz, t2 = (hy - T[2]) / rdz;
-                        if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
-                        tmin = fmaxf(tmin, t1); tmax = fminf(tmax, t2);
-                    }
-                    if (tmin >= tmax) {
-                        proj[ip*H*W + iv*W + iu] = 0.f;
-                        continue;
-                    }
-                    s_start = (int)fmaxf(0.f,        (tmin - near_t) / dt);
-                    s_end   = (int)fminf((float)n_samples, (tmax - near_t) / dt + 1.f);
+
+                    wx[t] = T[0] + rdx * (near_t + s0 * dt);
+                    wy[t] = T[1] + rdy * (near_t + s0 * dt);
+                    wz[t] = T[2] + rdz * (near_t + s0 * dt);
+                    dox[t] = rdx * dt; doy[t] = rdy * dt; doz[t] = rdz * dt;
+                    val[t] = 0.f;
                 }
 
-                /* ray start in world space at (near_t + s_start*dt) */
-                float ox = T[0] + rdx * (near_t + s_start * dt);
-                float oy = T[1] + rdy * (near_t + s_start * dt);
-                float oz = T[2] + rdz * (near_t + s_start * dt);
-                /* incremental step — avoids multiply per sample */
-                float dox = rdx * dt, doy = rdy * dt, doz = rdz * dt;
+                /* Outer loop over the union of the tile's sample ranges;
+                 * each ray only accumulates while s is within its own
+                 * [s_start,s_end) — same per-ray sample count as before,
+                 * just interleaved with its tile neighbors' reads instead
+                 * of run sequentially to completion one ray at a time. */
+                for (int s = tile_s_lo; s < tile_s_hi; s++) {
+                    for (int t = 0; t < tile_n; t++) {
+                        if (s < s_start[t] || s >= s_end[t]) continue;
 
-                float val = 0.f;
-                float wx = ox, wy = oy, wz = oz;
+                        float xi = wx[t] * inv_sv_xz + shift_xz;
+                        float yi = wy[t] * inv_sv_y  + shift_y;
+                        float zi = wz[t] * inv_sv_xz + shift_xz;
 
-                for (int s = s_start; s < s_end; s++) {
-                    float xi = wx * inv_sv_xz + shift_xz;
-                    float yi = wy * inv_sv_y  + shift_y;
-                    float zi = wz * inv_sv_xz + shift_xz;
-
-                    /* floorf, not (int) truncation: (int)xi truncates toward
-                     * zero, so for xi in (-1,0) it gives x0=0 instead of -1,
-                     * which then WRONGLY PASSES the unsigned bounds check
-                     * below (0 < Nxz-1 is true) and samples volume[0] with a
-                     * bogus interpolation weight instead of being rejected
-                     * as out-of-bounds. This was the actual source of the
-                     * fp divergence from the Python reference (confirmed via
-                     * diag_fp.py: pixel where C=1.107, Python=0.0, both use
-                     * n_samples=Nxz and no jitter). */
-                    int x0 = (int)floorf(xi), y0 = (int)floorf(yi), z0 = (int)floorf(zi);
-                    /* single bounds check — no branch inside interpolation */
-                    if ((unsigned)x0 < (unsigned)(Nxz-1) &&
-                        (unsigned)y0 < (unsigned)(Ny -1) &&
-                        (unsigned)z0 < (unsigned)(Nxz-1)) {
-                        float dx = xi-x0, dy = yi-y0, dz = zi-z0;
-                        float nx = 1.f-dx, ny_ = 1.f-dy, nz_ = 1.f-dz;
-                        int base = x0*(Nxz*Ny) + y0*Ny + z0;
-                        int sNy  = Nxz*Ny;
-                        val += volume[base]         * nx * ny_ * nz_
-                             + volume[base+sNy]     * dx * ny_ * nz_
-                             + volume[base+Ny]      * nx * dy  * nz_
-                             + volume[base+sNy+Ny]  * dx * dy  * nz_
-                             + volume[base+1]       * nx * ny_ * dz
-                             + volume[base+sNy+1]   * dx * ny_ * dz
-                             + volume[base+Ny+1]    * nx * dy  * dz
-                             + volume[base+sNy+Ny+1]* dx * dy  * dz;
+                        /* floorf, not (int) truncation — see fp_cpu bug fix
+                         * note: (int)xi truncates toward zero, wrongly
+                         * passing the bounds check for xi in (-1,0). */
+                        int x0 = (int)floorf(xi), y0 = (int)floorf(yi), z0 = (int)floorf(zi);
+                        if ((unsigned)x0 < (unsigned)(Nxz-1) &&
+                            (unsigned)y0 < (unsigned)(Ny -1) &&
+                            (unsigned)z0 < (unsigned)(Nxz-1)) {
+                            float dx = xi-x0, dy = yi-y0, dz = zi-z0;
+                            float nx = 1.f-dx, ny_ = 1.f-dy, nz_ = 1.f-dz;
+                            int base = x0*(Nxz*Ny) + y0*Ny + z0;
+                            int sNy  = Nxz*Ny;
+                            val[t] += volume[base]         * nx * ny_ * nz_
+                                    + volume[base+sNy]     * dx * ny_ * nz_
+                                    + volume[base+Ny]      * nx * dy  * nz_
+                                    + volume[base+sNy+Ny]  * dx * dy  * nz_
+                                    + volume[base+1]       * nx * ny_ * dz
+                                    + volume[base+sNy+1]   * dx * ny_ * dz
+                                    + volume[base+Ny+1]    * nx * dy  * dz
+                                    + volume[base+sNy+Ny+1]* dx * dy  * dz;
+                        }
+                        wx[t] += dox[t]; wy[t] += doy[t]; wz[t] += doz[t];
                     }
-                    wx += dox; wy += doy; wz += doz;
                 }
-                proj[ip*H*W + iv*W + iu] = val * step_val;
+
+                for (int t = 0; t < tile_n; t++)
+                    proj[ip*H*W + (iv0+t)*W + iu] = val[t] * step_val[t];
             }
         }
     }
+#undef FP_TILE
     free(R_all); free(T_all);
 }
 
