@@ -76,14 +76,17 @@ run-python:
 	python3 run_python_reference.py --data $(DATA256) --out output_python.hdf5 --epochs $(EPOCHS)
 
 # Component tests: isolate fp/bp correctness from accumulated MLEM iteration.
+# OMP_NUM_THREADS/PROC_BIND/PLACES matches run-cpu/run-cpu-512 — without
+# these, fp_cpu still runs OpenMP-parallel (defaults to all cores) but loses
+# thread pinning, which matters most on fp's 512^3 workload.
 run-op-fp:
-	$(TARGET) --data $(DATA256) --out fp_cpu.hdf5 --mode cpu --op fp --kernels $(KERNEL_DIR)
+	OMP_NUM_THREADS=$(OMP_THREADS) OMP_PROC_BIND=close OMP_PLACES=cores $(TARGET) --data $(DATA256) --out fp_cpu.hdf5 --mode cpu --op fp --kernels $(KERNEL_DIR)
 run-op-bp:
-	$(TARGET) --data $(DATA256) --out bp_cpu.hdf5 --mode cpu --op bp --kernels $(KERNEL_DIR)
+	OMP_NUM_THREADS=$(OMP_THREADS) OMP_PROC_BIND=close OMP_PLACES=cores $(TARGET) --data $(DATA256) --out bp_cpu.hdf5 --mode cpu --op bp --kernels $(KERNEL_DIR)
 run-op-fp-512:
-	$(TARGET) --data $(DATA512) --out fp_cpu_512.hdf5 --mode cpu --op fp --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
+	OMP_NUM_THREADS=$(OMP_THREADS) OMP_PROC_BIND=close OMP_PLACES=cores $(TARGET) --data $(DATA512) --out fp_cpu_512.hdf5 --mode cpu --op fp --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 run-op-bp-512:
-	$(TARGET) --data $(DATA512) --out bp_cpu_512.hdf5 --mode cpu --op bp --kernels $(KERNEL_DIR)
+	OMP_NUM_THREADS=$(OMP_THREADS) OMP_PROC_BIND=close OMP_PLACES=cores $(TARGET) --data $(DATA512) --out bp_cpu_512.hdf5 --mode cpu --op bp --kernels $(KERNEL_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR)
