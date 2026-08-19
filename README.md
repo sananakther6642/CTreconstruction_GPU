@@ -25,19 +25,20 @@ Measured on `pool15-01`, **EPOCHS=100**, current code (post all fixes):
 | `cpu` (12-thread OpenMP) | 26.06 s | 2605.5 s | 1× |
 | `gpu-buf` (chunked) | 56.93 s | 5693.2 s | **0.46× (slower than CPU)** |
 | `gpu-img` | 0.930 s | 93.0 s | **28.0×** |
-| `gpu-opt` | ~0.925 s (10-epoch, see note) | ~92.5 s (extrapolated) | **~28.2×** |
+| `gpu-opt` | 0.932 s | 93.2 s | **27.96×** |
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (12 logical cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
-> **`gpu-opt` row is a 10-epoch measurement, not 100**: after removing the
-> unroll-x2 path (see "gpu-opt vs gpu-img" below), two separate 10-epoch
-> runs confirmed **0.922-0.930s/epoch** consistently — now genuinely
-> faster than `gpu-img`'s 0.930s instead of marginally slower, as
-> intended. 100-epoch confirmation not run yet; re-run
-> `make run-gpu-opt-512 EPOCHS=100` for the final number (extrapolation
-> above assumes the same per-epoch cost holds at 100, which prior modes'
-> 10-vs-100-epoch numbers in this table have shown to be a reasonable but
-> not perfect assumption).
+> **`gpu-opt` after removing unroll-x2**: essentially tied with `gpu-img`
+> (93.18s vs 93.02s over 100 epochs, a 0.17% gap — within measurement
+> noise, not a meaningful difference either way). This is down from
+> `gpu-opt` being measurably *slower* than `gpu-img` before the fix
+> (94.5s), so the removal was still the right call — it just didn't turn
+> into a clear win, it turned a real regression into a wash. `gpu-opt`'s
+> only remaining edge over `gpu-img` (LUT + local-mem cos/sin caching) is
+> a small ALU-side saving that doesn't show up much when the kernel is
+> texture/memory-bound rather than ALU-bound, which is the case here. See
+> "gpu-opt vs gpu-img" below for the full investigation.
 
 > **`gpu-buf` on 512³ is slower than CPU** — genuinely, not a bug. It
 > previously caused a driver hang from one oversized kernel launch
@@ -187,10 +188,19 @@ GCN 1.1) it did the opposite: the doubled live register set (two
 more in work-group occupancy than the ILP saves in latency-hiding — the
 code's original comment gated this "for large volumes" as an assumption,
 never actually measured on this GPU. Removed permanently; `bp_opt` is now
-unconditionally scalar. Confirmed with two independent 10-epoch runs after
-removal — **0.923-0.927s** and **0.922-0.930s** — consistently faster
-than `gpu-img`'s 0.930s, as the LUT/local-mem work was always meant to
-deliver. 100-epoch confirmation still needed (see Performance Results note).
+unconditionally scalar.
+
+**Final 100-epoch result**: `gpu-opt` 93.18s vs `gpu-img` 93.02s — a
+0.17% gap, within measurement noise. Two 10-epoch spot-checks after the
+fix (`0.923-0.927s`, `0.922-0.930s`) had suggested `gpu-opt` would come
+out ahead; at full 100-epoch scale it landed essentially tied instead.
+The fix was still correct and worth keeping — it closed a real, measured
+1.6% regression (`gpu-opt` used to be *slower* than `gpu-img` by design
+flaw, not just by chance) — but `gpu-opt`'s remaining edge (LUT +
+local-mem cos/sin caching) turns out to be a small ALU-side saving that
+doesn't move the needle much on a kernel this texture/memory-bound.
+Reported honestly here rather than rounding the 10-epoch numbers up to a
+"win" that the full run didn't confirm.
 
 ### Known gaps
 - CPU-vs-Python sampling mismatch (n_samples=256 vs Python `fp_func`'s
@@ -199,8 +209,6 @@ deliver. 100-epoch confirmation still needed (see Performance Results note).
   same n_samples), but means "MSE vs Python" isn't apples-to-apples yet.
   `MSE vs Python` at 512³ is also not shown above: 512³'s C output and the
   Python reference (which only ran at 256³) have different shapes.
-- `gpu-opt` 512³ Performance Results row needs a 100-epoch re-run to
-  replace the pre-unroll-removal number (see above).
 
 ## Modes
 
