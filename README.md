@@ -7,54 +7,47 @@ Supports 256³ and 512³ datasets. All GPU modes validated: no NaN/Inf, MSE vs C
 
 ### 256³ dataset (512×512 detector, 75 angles, n\_samples=256)
 
-Measured on `pool15-01`, **EPOCHS=100**, current code except `gpu-img`/
-`gpu-opt` which are 10-epoch numbers after the `{8,32,1}` work-group change
-(see note):
+Measured on `pool15-01`, **EPOCHS=100**, current code (post `{8,32,1}`
+work-group change):
 
 | Mode | Time/epoch | Total (100ep) | Speedup vs CPU |
 |------|-----------|--------------|----------------|
 | `cpu` (12-thread OpenMP) | 2.73 s | 273.1 s | 1× |
 | `gpu-buf` (chunked) | 0.57 s | 57.4 s | **4.8×** |
-| `gpu-img` | ~0.095 s (10ep) | ~9.5 s (extrap.) | **~28.7×** |
-| `gpu-opt` | ~0.095 s (10ep) | ~9.5 s (extrap.) | **~28.7×** |
+| `gpu-img` | 0.0963 s | 9.63 s | **28.3×** |
+| `gpu-opt` | **0.0940 s** | **9.40 s** | **29.0×** |
 
 ### 512³ dataset (1120×1184 detector, 75 angles, n\_samples=512)
 
-Measured on `pool15-01`, **EPOCHS=100** except `gpu-img`/`gpu-opt` which
-are 10-epoch numbers after the `{8,32,1}` work-group change (see note):
+Measured on `pool15-01`, **EPOCHS=100**, current code (post `{8,32,1}`
+work-group change):
 
 | Mode | Time/epoch | Total (100ep) | Speedup vs CPU |
 |------|-----------|--------------|----------------|
 | `cpu` (12-thread OpenMP) | 26.06 s | 2605.5 s | 1× |
 | `gpu-buf` (chunked) | 56.93 s | 5693.2 s | **0.46× (slower than CPU)** |
-| `gpu-img` | ~0.876 s (10ep) | ~87.6 s (extrap.) | **~29.7×** |
-| `gpu-opt` | ~0.877 s (10ep) | ~87.7 s (extrap.) | **~29.7×** |
+| `gpu-img` | 0.8858 s | 88.58 s | **29.4×** |
+| `gpu-opt` | **0.8838 s** | **88.38 s** | **29.5×** |
 
-> **`gpu-img`/`gpu-opt` rows are 10-epoch, not 100.** `fp_image`'s
-> work-group shape was swept and changed from `{16,16,1}` to `{8,32,1}`,
-> a confirmed **~5-7% win** at both scales (512³: 0.930s→0.876s for
-> `gpu-img`, 0.932s→0.877s for `gpu-opt`; 256³: 0.101s→~0.095s). Verified
-> at matched 10-epoch runs with correct baselines on disk — MSE identical
-> to the pre-change 100-epoch reference (`7.935e-12`/`max=0.0003` at 512³),
-> confirming the work-group shape change is speed-only. 100-epoch
-> confirmation not run yet; re-run `make run-gpu-img EPOCHS=100` /
-> `run-gpu-opt` / `run-gpu-img-512` / `run-gpu-opt-512` for the final
-> numbers. See "Work-group sweep" below for the full sweep data (10
-> candidates tested, `{8,32,1}` won by a clear margin over every
-> alternative).
+> **`fp_image` work-group `{16,16,1}→{8,32,1}`**: confirmed at full
+> 100-epoch scale at both resolutions — 256³ `gpu-img/opt` up from 27.2×/
+> 27.9× to **28.3×/29.0×**; 512³ up from 28.0×/27.96× to **29.4×/29.5×**.
+> MSE identical to the pre-change 100-epoch reference at both scales
+> (256³ `1.949e-07`/`max=1.1490`, 512³ `6.849e-10`/`max=0.0169`) —
+> confirms the work-group shape change is speed-only, exactly as expected
+> since `fp_image` has no local memory or cross-work-item state. See
+> "Work-group sweep" below for the full sweep data (10 candidates tested,
+> `{8,32,1}` won by a clear margin over every alternative).
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (12 logical cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
-> **`gpu-opt` after removing unroll-x2**: essentially tied with `gpu-img`
-> (93.18s vs 93.02s over 100 epochs, a 0.17% gap — within measurement
-> noise, not a meaningful difference either way). This is down from
-> `gpu-opt` being measurably *slower* than `gpu-img` before the fix
-> (94.5s), so the removal was still the right call — it just didn't turn
-> into a clear win, it turned a real regression into a wash. `gpu-opt`'s
-> only remaining edge over `gpu-img` (LUT + local-mem cos/sin caching) is
-> a small ALU-side saving that doesn't show up much when the kernel is
-> texture/memory-bound rather than ALU-bound, which is the case here. See
-> "gpu-opt vs gpu-img" below for the full investigation.
+> **`gpu-opt` vs `gpu-img`**: after the unroll-x2 removal and the
+> work-group sweep (both below), `gpu-opt` is now consistently a little
+> *faster* than `gpu-img` at both scales (88.38s vs 88.58s at 512³;
+> 9.40s vs 9.63s at 256³) — a small, real edge from its LUT + local-mem
+> cos/sin caching. Immediately after the unroll-x2 fix alone this edge
+> measured as a 0.17% wash (see "gpu-opt vs gpu-img" below); the
+> work-group sweep numbers above supersede that intermediate result.
 
 > **`gpu-buf` on 512³ is slower than CPU** — genuinely, not a bug. It
 > previously caused a driver hang from one oversized kernel launch
@@ -68,7 +61,7 @@ are 10-epoch numbers after the `{8,32,1}` work-group change (see note):
 > scale, and the CPU's much smaller memory footprint plus the ray-tiling
 > speedup (below) now beats it outright. Not chased further: `gpu-img`/
 > `gpu-opt` exist specifically to avoid this cost via hardware texture
-> sampling, and they deliver the real ~28× speedup.
+> sampling, and they deliver the real ~29-30× speedup.
 
 > At 256³, `gpu-buf` is a legitimate (if modest) 4.8× win — the same
 > kernel, just at a scale where the memory traffic fits within what the
@@ -180,6 +173,14 @@ the same kind of gather, just at a fraction of fp's time budget) — the win
 is entirely from fp_cpu.
 
 ### gpu-opt vs gpu-img: unroll-x2 was measured harmful, removed
+
+> This section's numbers are a checkpoint taken immediately after the
+> unroll-x2 fix, *before* the work-group sweep below. They're kept as-is
+> because they isolate what unroll-x2 alone was costing. The Performance
+> Results table at the top of this README reflects both fixes together
+> and is the current, correct number — `gpu-opt` there (88.38s) is now a
+> little faster than `gpu-img` (88.58s), not tied.
+
 `gpu-opt` (`bp_opt` in `bp_buffer_opt.cl`) layers a float2 cos/sin LUT,
 cooperative local-memory caching, and (previously) an unroll-x2 loop on
 top of the same hardware texture sampler `gpu-img` uses. It should
@@ -300,7 +301,12 @@ never have caught it (both would agree while both were wrong). Confirmed
 | CPU | `--mode cpu` | C + OpenMP, `-ffast-math`, incremental ray stepping |
 | GPU buffer | `--mode gpu-buf` | OpenCL global buffers, manual bilinear/trilinear — naive baseline; slow at 512³ (no texture cache), chunked to avoid the driver watchdog |
 | GPU image | `--mode gpu-img` | Hardware image2d_array + image3d sampler |
-| GPU opt | `--mode gpu-opt` | Hardware sampler + float2 LUT + local mem + AABB clipping |
+| GPU opt | `--mode gpu-opt` | Hardware sampler + float2 LUT + local mem (`bp_opt`); fp shared with `gpu-img` via `fp_image.cl` |
+
+Both `gpu-img` and `gpu-opt` share the same `fp_image.cl` forward-projection
+kernel (only their bp kernel differs — `bp_image.cl` vs `bp_opt`), so AABB
+clipping (gated `W>512`, see "Two negative results" below) applies to both
+equally, not just `gpu-opt`.
 
 `vol_img` precision (`gpu-img`/`gpu-opt`) defaults to **float32**; pass
 `--half` to opt into `CL_HALF_FLOAT` for lower texture bandwidth at the cost
