@@ -7,25 +7,41 @@ Supports 256³ and 512³ datasets. All GPU modes validated: no NaN/Inf, MSE vs C
 
 ### 256³ dataset (512×512 detector, 75 angles, n\_samples=256)
 
-Measured on `pool15-01`, **EPOCHS=100**, current code (post all fixes):
+Measured on `pool15-01`, **EPOCHS=100**, current code except `gpu-img`/
+`gpu-opt` which are 10-epoch numbers after the `{8,32,1}` work-group change
+(see note):
 
 | Mode | Time/epoch | Total (100ep) | Speedup vs CPU |
 |------|-----------|--------------|----------------|
 | `cpu` (12-thread OpenMP) | 2.73 s | 273.1 s | 1× |
 | `gpu-buf` (chunked) | 0.57 s | 57.4 s | **4.8×** |
-| `gpu-img` | 0.101 s | 10.1 s | **27.2×** |
-| `gpu-opt` | **0.098 s** | **9.8 s** | **27.9×** |
+| `gpu-img` | ~0.095 s (10ep) | ~9.5 s (extrap.) | **~28.7×** |
+| `gpu-opt` | ~0.095 s (10ep) | ~9.5 s (extrap.) | **~28.7×** |
 
 ### 512³ dataset (1120×1184 detector, 75 angles, n\_samples=512)
 
-Measured on `pool15-01`, **EPOCHS=100**, current code (post all fixes):
+Measured on `pool15-01`, **EPOCHS=100** except `gpu-img`/`gpu-opt` which
+are 10-epoch numbers after the `{8,32,1}` work-group change (see note):
 
 | Mode | Time/epoch | Total (100ep) | Speedup vs CPU |
 |------|-----------|--------------|----------------|
 | `cpu` (12-thread OpenMP) | 26.06 s | 2605.5 s | 1× |
 | `gpu-buf` (chunked) | 56.93 s | 5693.2 s | **0.46× (slower than CPU)** |
-| `gpu-img` | 0.930 s | 93.0 s | **28.0×** |
-| `gpu-opt` | 0.932 s | 93.2 s | **27.96×** |
+| `gpu-img` | ~0.876 s (10ep) | ~87.6 s (extrap.) | **~29.7×** |
+| `gpu-opt` | ~0.877 s (10ep) | ~87.7 s (extrap.) | **~29.7×** |
+
+> **`gpu-img`/`gpu-opt` rows are 10-epoch, not 100.** `fp_image`'s
+> work-group shape was swept and changed from `{16,16,1}` to `{8,32,1}`,
+> a confirmed **~5-7% win** at both scales (512³: 0.930s→0.876s for
+> `gpu-img`, 0.932s→0.877s for `gpu-opt`; 256³: 0.101s→~0.095s). Verified
+> at matched 10-epoch runs with correct baselines on disk — MSE identical
+> to the pre-change 100-epoch reference (`7.935e-12`/`max=0.0003` at 512³),
+> confirming the work-group shape change is speed-only. 100-epoch
+> confirmation not run yet; re-run `make run-gpu-img EPOCHS=100` /
+> `run-gpu-opt` / `run-gpu-img-512` / `run-gpu-opt-512` for the final
+> numbers. See "Work-group sweep" below for the full sweep data (10
+> candidates tested, `{8,32,1}` won by a clear margin over every
+> alternative).
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (12 logical cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
@@ -202,6 +218,73 @@ doesn't move the needle much on a kernel this texture/memory-bound.
 Reported honestly here rather than rounding the 10-epoch numbers up to a
 "win" that the full run didn't confirm.
 
+### Work-group sweep: {8,32,1} beats {16,16,1} by ~5-7%
+
+`fp_image`'s work-group shape had never been swept — the bp kernels'
+`{4,4,16}` (below) was the largest single measured win in the project, but
+fp's `{16,16,1}` was never tested against alternatives. Swept 10 candidates
+at 512³, 10 epochs each (spread under 1% within each config):
+
+```
+lws        s/epoch
+8,32,1     0.873-0.879   <- winner
+16,16,1    0.921-0.928   (old default)
+4,64,1     0.944-0.947
+32,8,1     1.171-1.188
+8,16,1     1.107-1.115
+8,8,1      1.230-1.236
+16,4,1     1.627-1.632
+32,4,1     2.363-2.383
+32,2,1     2.531-2.539
+64,1,1     4.233-4.240
+32,16,1, 16,32,1   CL_INVALID_WORK_GROUP_SIZE (512 items exceeds
+                    Hawaii's 256-item max work-group size)
+```
+
+Two things stood out: total occupancy alone doesn't predict the winner
+(`8,16,1` at 128 items was slower than `8,8,1` at 64), and aspect ratio
+matters independent of item count (`8,32,1` beat `32,8,1` by 25% at the
+same 256 items — narrow-in-W/tall-in-H specifically helps on this
+detector's `W=1120, H=1184` layout). `{8,32,1}` is now the default in
+`run_fp_image` (`src/ct_gpu.c`); overridable via `FP_IMAGE_LWS=X,Y,Z` for
+further tuning without a rebuild.
+
+Correctness unaffected by construction — `fp_image` has no local memory or
+cross-work-item state, so group shape can only change timing. Confirmed:
+MSE identical to the pre-change baseline at both scales.
+
+### Two negative results worth recording
+
+**AABB re-tested at 256³, still hurts.** All three fp implementations gate
+AABB clipping on `W > 512`, disabling it entirely at 256³ (detector is
+exactly 512 wide). Geometry shows ~65% of the 256 samples/ray are outside
+the volume there — a large apparent opportunity. But the existing gate
+wasn't an oversight: it's a prior measured decision (see the 512³
+optimization table below, and the code's own comment). Re-tested via
+`FP_IMAGE_AABB=1` after the work-group sweep, in case that had changed the
+tradeoff — it hadn't: **0.098-0.100s/epoch with AABB forced on vs
+0.095-0.096s with it off**, a consistent ~4% regression. The 256³ launch
+(0.095s total) is small enough to be occupancy-bound rather than
+fetch-bound; AABB's setup cost (6 divides + branches per ray) and the
+ragged per-thread trip counts it creates cost more than the fetch
+reduction saves. Gate correctly stays `W > 512`; `FP_IMAGE_AABB` env var
+kept for future re-testing if the kernel changes again.
+
+**Latent AABB axis transposition, fixed.** Independent of performance:
+the AABB slab test bounded the world-space y component (`rd[1]`/`T[1]`)
+by `hxz` (the `Nxz`-axis half-extent) and the z component (`rd[2]`/`T[2]`)
+by `hy` (the `Ny`-axis half-extent) — but the sampling code right below
+maps `wy→yi` via `inv_sv_y` (the `Ny` axis) and `wz→zi` via `inv_sv_xz`
+(the `Nxz` axis). The two disagreed about which axis is which. Currently
+latent, not active: both datasets are cubic (`Nxz==Ny`, confirmed by each
+run's own `Volume: N x N x N` printout), so `hxz==hy` numerically and the
+swap changes nothing. Fixed anyway in all three fp implementations
+(`fp_image.cl`, `fp_buffer.cl`, `ct_cpu.c`) together, so a future
+non-cubic dataset doesn't hit silently-wrong clipping — and because CPU
+and GPU shared the bug identically, meaning CPU-vs-GPU validation could
+never have caught it (both would agree while both were wrong). Confirmed
+`validate.py` shows zero change, as expected for a currently-no-op fix.
+
 ### Known gaps
 - CPU-vs-Python sampling mismatch (n_samples=256 vs Python `fp_func`'s
   module default `sample_ratio=2`, i.e. 512 samples, at 256³) not
@@ -344,3 +427,5 @@ for each epoch:
 | OMP\_NUM\_THREADS=nproc | `Makefile` cpu targets | uses all available cores on lab node |
 | Ray tiling (`FP_TILE=8`, sample-index-outer loop) | `fp_cpu` | groups neighboring rays' 8-tap gathers close in time for cache reuse; 2.1× on fp_cpu at 512³ |
 | `schedule(guided,4)` | `fp_cpu` | lower scheduling overhead than `dynamic` at 512³'s larger iteration count (75×1120=84000 work items), still handles AABB-clipped load imbalance |
+| Work-group `{16,16,1}→{8,32,1}` for `fp_image` | `ct_gpu.c` | ~5-7% at both scales; swept 10 candidates, see "Work-group sweep" above. `FP_IMAGE_LWS` env override for further tuning |
+| Skip float32 staging copy for `vol_img` upload | `ct_gpu.c` | float32 mode (default) copies `d_vol` straight to the image instead of through a same-format memcpy staging buffer; ~0.7% at 512³, correctness-neutral |
