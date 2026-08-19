@@ -441,13 +441,21 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,14, sizeof(int), &use_aabb);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
-    size_t lws[3] = {16, 16, 1};
-    /* FP_IMAGE_LWS=X,Y,Z overrides the work-group shape for sweeping
-     * without a rebuild — never swept before, unlike bp's {4,4,16} which
-     * was the single largest measured win in this project (718->290ms). */
+    /* {8,32,1} measured ~5% faster than the previous {16,16,1} at 512^3 on
+     * this hardware (AMD Hawaii): 0.873-0.879s/epoch vs 0.921-0.928s over
+     * a 10-candidate sweep (64,1,1 through 32,16,1; the latter and
+     * {16,32,1} exceed the device's 256-item max work-group size and fail
+     * with CL_INVALID_WORK_GROUP_SIZE). Aspect ratio matters independent
+     * of total group size: {8,32,1} beat {32,8,1} by 25%, and {8,16,1}
+     * (half the items, same 1:4 ratio) was 20% slower than {8,32,1} — so
+     * this is not just "more occupancy wins", the W-narrow/H-tall shape
+     * specifically helps on this detector layout (W=1120, H=1184). */
+    size_t lws[3] = {8, 32, 1};
+    /* FP_IMAGE_LWS=X,Y,Z overrides the work-group shape for further
+     * sweeping without a rebuild. */
     const char *lws_env = getenv("FP_IMAGE_LWS");
     if (lws_env) {
-        unsigned long a=16, b=16, c=1;
+        unsigned long a=8, b=32, c=1;
         if (sscanf(lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
             lws[0]=a; lws[1]=b; lws[2]=c;
         }
