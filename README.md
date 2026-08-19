@@ -25,9 +25,15 @@ Measured on `pool15-01`, **EPOCHS=100**, current code (post all fixes):
 | `cpu` (12-thread OpenMP) | 26.06 s | 2605.5 s | 1× |
 | `gpu-buf` (chunked) | 56.93 s | 5693.2 s | **0.46× (slower than CPU)** |
 | `gpu-img` | 0.930 s | 93.0 s | **28.0×** |
-| `gpu-opt` | 0.945 s | 94.5 s | **27.6×** |
+| `gpu-opt` | 0.945 s (stale, see note) | 94.5 s | **27.6×** |
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (12 logical cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
+
+> **`gpu-opt` row is stale**: measured before removing the unroll-x2 path
+> (see "gpu-opt vs gpu-img" below) — a 10-epoch spot-check after removal
+> showed **0.923-0.927s/epoch**, now genuinely faster than `gpu-img`
+> instead of marginally slower. 100-epoch confirmation not run yet;
+> re-run `make run-gpu-opt-512 EPOCHS=100` to get the real number.
 
 > **`gpu-buf` on 512³ is slower than CPU** — genuinely, not a bug. It
 > previously caused a driver hang from one oversized kernel launch
@@ -152,6 +158,35 @@ optimization there had negligible effect since bp's cost is dominated by
 the same kind of gather, just at a fraction of fp's time budget) — the win
 is entirely from fp_cpu.
 
+### gpu-opt vs gpu-img: unroll-x2 was measured harmful, removed
+`gpu-opt` (`bp_opt` in `bp_buffer_opt.cl`) layers a float2 cos/sin LUT,
+cooperative local-memory caching, and (previously) an unroll-x2 loop on
+top of the same hardware texture sampler `gpu-img` uses. It should
+therefore always be at least as fast as `gpu-img` — but the 100-epoch
+512³ run showed `gpu-opt` at **0.945s/epoch, slightly slower** than
+`gpu-img`'s 0.930s. Investigated properly instead of accepting a "close
+enough" 1.6% gap:
+
+1. Ruled out redundant `floor()` calls in `bp_opt`'s bounds check (it
+   called `floor(u)`/`floor(v)` twice each vs `bp_image.cl`'s once) —
+   fixed this regardless (unconditionally correct cleanup), re-measured:
+   **no change** (0.934-0.940s), so this wasn't the cause.
+2. Tested the unroll-x2 path in isolation by disabling its gate
+   (`Nxz>=512` → an always-false condition) to force the scalar-only loop
+   at 512³: **0.923-0.927s/epoch — faster than `gpu-img`**, confirming
+   unroll-x2 was the actual cause of the regression, not masking it.
+
+Unroll-x2's theory was that overlapping two texture fetches would hide
+latency via instruction-level parallelism. On this hardware (AMD Hawaii,
+GCN 1.1) it did the opposite: the doubled live register set (two
+`float2`/`float4`/etc. sets in flight instead of one) apparently costs
+more in work-group occupancy than the ILP saves in latency-hiding — the
+code's original comment gated this "for large volumes" as an assumption,
+never actually measured on this GPU. Removed permanently; `bp_opt` is now
+unconditionally scalar. 10-epoch spot-check after removal: **0.923-0.927s**,
+faster than `gpu-img` as the LUT/local-mem work was always meant to
+deliver. 100-epoch confirmation still needed (see Performance Results note).
+
 ### Known gaps
 - CPU-vs-Python sampling mismatch (n_samples=256 vs Python `fp_func`'s
   module default `sample_ratio=2`, i.e. 512 samples, at 256³) not
@@ -159,6 +194,8 @@ is entirely from fp_cpu.
   same n_samples), but means "MSE vs Python" isn't apples-to-apples yet.
   `MSE vs Python` at 512³ is also not shown above: 512³'s C output and the
   Python reference (which only ran at 256³) have different shapes.
+- `gpu-opt` 512³ Performance Results row needs a 100-epoch re-run to
+  replace the pre-unroll-removal number (see above).
 
 ## Modes
 
@@ -187,7 +224,7 @@ kernels/
   fp_buffer.cl        — fp (buffer): ray march + manual trilinear + AABB clipping
   bp_image.cl         — bp (image): hardware bilinear on image2d_array_t + float2 LUT
   fp_image.cl         — fp (image): hardware trilinear on image3d_t + AABB clipping
-  bp_buffer_opt.cl    — bp_opt: image2d_array_t + float2 LUT + local mem + unroll-x2
+  bp_buffer_opt.cl    — bp_opt: image2d_array_t + float2 LUT + local mem
   fp_buffer_opt.cl    — dead code: never loaded by gpu_init, not wired to any dispatch
 validate.py           — load HDF5 outputs, print MSE + outlier-location diagnostics (supports 256/512)
 validate_ops.py       — per-operator fp/bp comparison vs Python reference, isolated from MLEM iteration
@@ -290,7 +327,7 @@ for each epoch:
 | Half-precision `vol_img` (`CL_HALF_FLOAT`, opt-in via `--half`) | `fp_image.cl`, `ct_gpu.c` | halves texture bandwidth for volume reads; float\_to\_half kernel on GPU, no PCIe roundtrip; ~3-decimal-digit accuracy cost, so off by default |
 | AABB slab ray clipping (gated W>512) | `fp_image.cl`, `fp_buffer.cl` | tightens per-ray sample range on large detectors; skips empty cone-beam edge rays |
 | `native_recip` in bp kernels | `bp_buffer_opt.cl`, `bp_buffer.cl`, `bp_image.cl` | hardware SFU reciprocal, ~4× faster than IEEE division |
-| Unroll-x2 gated Nxz≥512 | `bp_buffer_opt.cl` | ILP across two texture fetches; gated to avoid register pressure on 256³ |
+| ~~Unroll-x2 gated Nxz≥512~~ (removed) | `bp_buffer_opt.cl` | tried, measured harmful on this GPU — see "gpu-opt vs gpu-img" below |
 | OMP\_NUM\_THREADS=nproc | `Makefile` cpu targets | uses all available cores on lab node |
 | Ray tiling (`FP_TILE=8`, sample-index-outer loop) | `fp_cpu` | groups neighboring rays' 8-tap gathers close in time for cache reuse; 2.1× on fp_cpu at 512³ |
 | `schedule(guided,4)` | `fp_cpu` | lower scheduling overhead than `dynamic` at 512³'s larger iteration count (75×1120=84000 work items), still handles AABB-clipped load imbalance |
