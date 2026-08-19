@@ -69,9 +69,16 @@ __kernel void bp_opt(
      * each inside the OOB test. */
 
     /* Large volumes (>=512): unroll x2 hides texture latency with acceptable register cost.
-     * Small volumes (<512): scalar loop — occupancy more valuable than ILP. */
+     * Small volumes (<512): scalar loop — occupancy more valuable than ILP.
+     * TEMPORARY TEST: gate changed to Nxz >= 99999 (never true) to force
+     * the scalar-only path at 512^3 and measure whether unroll-x2 is
+     * actually helping or hurting on this GPU — gpu-opt (0.930-0.945s)
+     * was found to be marginally SLOWER than plain gpu-img (0.930s) at
+     * 512^3 despite having this "optimization", which the code's own
+     * comment admits was a gated assumption, not a measured one. Revert
+     * this gate back to `Nxz >= 512` after measuring. */
     int ip = 0;
-    if (Nxz >= 512) {
+    if (Nxz >= 99999) {
         for (; ip <= num_projs - 2; ip += 2) {
             float2 cs0 = lcs[ip+0], cs1 = lcs[ip+1];
 
