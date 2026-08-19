@@ -144,7 +144,7 @@ int main(int argc, char **argv)
         gpu_cleanup(&cl);
 
     } else if (!strcmp(mode_str, "gpu-opt")) {
-        printf("\n=== GPU-OPT mode (LUT+local+float4+unroll), %d epochs ===\n", epochs);
+        printf("\n=== GPU-OPT mode (LUT+local+float4), %d epochs ===\n", epochs);
 
         CLState cl;
         if (gpu_init(&cl, GPU_MODE_OPT, kernel_dir) != 0) return 1;

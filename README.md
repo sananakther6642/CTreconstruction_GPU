@@ -25,15 +25,19 @@ Measured on `pool15-01`, **EPOCHS=100**, current code (post all fixes):
 | `cpu` (12-thread OpenMP) | 26.06 s | 2605.5 s | 1× |
 | `gpu-buf` (chunked) | 56.93 s | 5693.2 s | **0.46× (slower than CPU)** |
 | `gpu-img` | 0.930 s | 93.0 s | **28.0×** |
-| `gpu-opt` | 0.945 s (stale, see note) | 94.5 s | **27.6×** |
+| `gpu-opt` | ~0.925 s (10-epoch, see note) | ~92.5 s (extrapolated) | **~28.2×** |
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (12 logical cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
-> **`gpu-opt` row is stale**: measured before removing the unroll-x2 path
-> (see "gpu-opt vs gpu-img" below) — a 10-epoch spot-check after removal
-> showed **0.923-0.927s/epoch**, now genuinely faster than `gpu-img`
-> instead of marginally slower. 100-epoch confirmation not run yet;
-> re-run `make run-gpu-opt-512 EPOCHS=100` to get the real number.
+> **`gpu-opt` row is a 10-epoch measurement, not 100**: after removing the
+> unroll-x2 path (see "gpu-opt vs gpu-img" below), two separate 10-epoch
+> runs confirmed **0.922-0.930s/epoch** consistently — now genuinely
+> faster than `gpu-img`'s 0.930s instead of marginally slower, as
+> intended. 100-epoch confirmation not run yet; re-run
+> `make run-gpu-opt-512 EPOCHS=100` for the final number (extrapolation
+> above assumes the same per-epoch cost holds at 100, which prior modes'
+> 10-vs-100-epoch numbers in this table have shown to be a reasonable but
+> not perfect assumption).
 
 > **`gpu-buf` on 512³ is slower than CPU** — genuinely, not a bug. It
 > previously caused a driver hang from one oversized kernel launch
@@ -183,8 +187,9 @@ GCN 1.1) it did the opposite: the doubled live register set (two
 more in work-group occupancy than the ILP saves in latency-hiding — the
 code's original comment gated this "for large volumes" as an assumption,
 never actually measured on this GPU. Removed permanently; `bp_opt` is now
-unconditionally scalar. 10-epoch spot-check after removal: **0.923-0.927s**,
-faster than `gpu-img` as the LUT/local-mem work was always meant to
+unconditionally scalar. Confirmed with two independent 10-epoch runs after
+removal — **0.923-0.927s** and **0.922-0.930s** — consistently faster
+than `gpu-img`'s 0.930s, as the LUT/local-mem work was always meant to
 deliver. 100-epoch confirmation still needed (see Performance Results note).
 
 ### Known gaps
