@@ -436,8 +436,13 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,12, sizeof(float),  &vs);
     clSetKernelArg(k,13, sizeof(float),  &px);
     /* AABB ray clipping helps on large detectors (many edge pixels miss volume);
-     * hurts on small detectors where overhead exceeds savings. */
+     * measured to hurt at 256^3 (W==512, gate false) when originally tuned —
+     * FP_IMAGE_AABB env var lets that be re-tested without a rebuild, since
+     * that measurement predates several other fp_image changes (work-group
+     * shape, bug fixes) and may no longer hold. */
     int use_aabb = (W > 512) ? 1 : 0;
+    const char *aabb_env = getenv("FP_IMAGE_AABB");
+    if (aabb_env) use_aabb = atoi(aabb_env);
     clSetKernelArg(k,14, sizeof(int), &use_aabb);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
