@@ -442,6 +442,16 @@ static void run_fp_image(CLState *cl, const CBpara *p,
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
     size_t lws[3] = {16, 16, 1};
+    /* FP_IMAGE_LWS=X,Y,Z overrides the work-group shape for sweeping
+     * without a rebuild — never swept before, unlike bp's {4,4,16} which
+     * was the single largest measured win in this project (718->290ms). */
+    const char *lws_env = getenv("FP_IMAGE_LWS");
+    if (lws_env) {
+        unsigned long a=16, b=16, c=1;
+        if (sscanf(lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+            lws[0]=a; lws[1]=b; lws[2]=c;
+        }
+    }
     for (int d=0;d<3;d++) {
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     }
