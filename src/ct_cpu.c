@@ -333,13 +333,18 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
                             if (t1v > t2v) { float tmp=t1v; t1v=t2v; t2v=tmp; }
                             tmin = fmaxf(tmin, t1v); tmax = fminf(tmax, t2v);
                         }
+                        /* rdy/T[1] maps to yi via inv_sv_y (Ny axis, see
+                         * below) so its half-extent must be hy, not hxz;
+                         * rdz/T[2] maps to zi via inv_sv_xz so it needs
+                         * hxz, not hy. Was transposed — matching fix in
+                         * fp_image.cl and fp_buffer.cl. */
                         if (fabsf(rdy) > 1e-6f) {
-                            float t1v = (-hxz - T[1]) / rdy, t2v = (hxz - T[1]) / rdy;
+                            float t1v = (-hy - T[1]) / rdy, t2v = (hy - T[1]) / rdy;
                             if (t1v > t2v) { float tmp=t1v; t1v=t2v; t2v=tmp; }
                             tmin = fmaxf(tmin, t1v); tmax = fminf(tmax, t2v);
                         }
                         if (fabsf(rdz) > 1e-6f) {
-                            float t1v = (-hy - T[2]) / rdz, t2v = (hy - T[2]) / rdz;
+                            float t1v = (-hxz - T[2]) / rdz, t2v = (hxz - T[2]) / rdz;
                             if (t1v > t2v) { float tmp=t1v; t1v=t2v; t2v=tmp; }
                             tmin = fmaxf(tmin, t1v); tmax = fminf(tmax, t2v);
                         }
