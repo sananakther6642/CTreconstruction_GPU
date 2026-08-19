@@ -601,13 +601,17 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         CL_CHECK(err,"vol_img persistent");
     }
 
-    /* staging buffer for vol_img upload (gpu-img mode); half or float32 per --half flag */
+    /* staging buffer for vol_img upload (gpu-img mode); only needed for
+     * --half, since float_to_half must write somewhere before the image
+     * copy. In float32 mode d_vol is copied straight into vol_img below —
+     * the old code copied d_vol into this buffer first via a same-format
+     * clEnqueueCopyBuffer memcpy that did nothing but add ~1.07GB/epoch of
+     * redundant traffic at 512^3 (~0.7% of a 930ms epoch — real but small). */
     cl_mem d_vol_half_img = NULL;
-    if (cl->mode == GPU_MODE_IMAGE) {
+    if (cl->mode == GPU_MODE_IMAGE && p->use_half_vol) {
         int vol_n_img = Nxz * Nxz * Ny;
-        size_t elem_sz = p->use_half_vol ? sizeof(cl_half) : sizeof(cl_float);
         d_vol_half_img = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE,
-                                        (size_t)vol_n_img * elem_sz, NULL, &err);
+                                        (size_t)vol_n_img * sizeof(cl_half), NULL, &err);
         CL_CHECK(err,"d_vol_half_img");
     }
 
@@ -634,7 +638,8 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         if (cl->mode == GPU_MODE_BUFFER) {
             run_fp_buffer(cl, p, d_vol, d_proj_b);
         } else {
-            /* float d_vol → staging buffer (half or float32 per --half) → vol_img */
+            size_t vorigin[3]={0,0,0};
+            size_t vregion[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
             if (p->use_half_vol) {
                 cl_kernel k = cl->k_f2h;
                 clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
@@ -644,16 +649,16 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                 size_t lws = 256;
                 err = clEnqueueNDRangeKernel(cl->queue, k, 1, NULL, &gws, &lws, 0, NULL, NULL);
                 CL_CHECK(err,"float_to_half vol img");
+                err=clEnqueueCopyBufferToImage(cl->queue, d_vol_half_img, vol_img,
+                                               0, vorigin, vregion, 0,NULL,NULL);
+                CL_CHECK(err,"CopyBufferToImage vol img");
             } else {
-                err = clEnqueueCopyBuffer(cl->queue, d_vol, d_vol_half_img, 0, 0,
-                                          (size_t)vol_n * sizeof(cl_float), 0, NULL, NULL);
-                CL_CHECK(err,"copy vol img float32");
+                /* float32: copy d_vol straight into vol_img, skipping the
+                 * same-format staging buffer entirely. */
+                err=clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img,
+                                               0, vorigin, vregion, 0,NULL,NULL);
+                CL_CHECK(err,"CopyBufferToImage vol img float32");
             }
-            size_t vorigin[3]={0,0,0};
-            size_t vregion[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
-            err=clEnqueueCopyBufferToImage(cl->queue, d_vol_half_img, vol_img,
-                                           0, vorigin, vregion, 0,NULL,NULL);
-            CL_CHECK(err,"CopyBufferToImage vol img");
             run_fp_image(cl, p, vol_img, d_proj_b);
         }
 
@@ -874,16 +879,26 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     cl_mem vol_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &vol_fmt, &vdesc, NULL, &err);
     CL_CHECK(err,"vol_img persistent");
 
-    /* Staging buffer: float d_vol → (half or float32) d_vol_half → vol_img */
-    size_t vol_half_elem_sz = p->use_half_vol ? sizeof(cl_half) : sizeof(cl_float);
-    cl_mem d_vol_half = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE,
-                                       (size_t)vol_n * vol_half_elem_sz, NULL, &err);
-    CL_CHECK(err,"d_vol_half");
+    /* Staging buffer: only needed for --half (float_to_half must write
+     * somewhere before the image copy). In float32 mode d_vol is copied
+     * straight into vol_img in the epoch loop below — no staging buffer,
+     * no allocation. The old unconditional allocation + same-format
+     * clEnqueueCopyBuffer memcpy did nothing in float32 mode but add
+     * ~1.07GB/epoch of redundant traffic at 512^3 (~0.7% of a 930ms
+     * epoch — real but small). */
+    cl_mem d_vol_half = NULL;
+    if (p->use_half_vol) {
+        d_vol_half = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE,
+                                    (size_t)vol_n * sizeof(cl_half), NULL, &err);
+        CL_CHECK(err,"d_vol_half");
+    }
 
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
 
-        /* ── float d_vol → staging → vol_img (GPU-side, no PCIe) ── */
+        /* ── float d_vol → vol_img (GPU-side, no PCIe) ── */
+        size_t origin[3]={0,0,0};
+        size_t region[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
         if (p->use_half_vol) {
             cl_kernel k = cl->k_f2h;
             clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
@@ -893,17 +908,13 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             size_t lws = 256;
             err = clEnqueueNDRangeKernel(cl->queue, k, 1, NULL, &gws, &lws, 0, NULL, NULL);
             CL_CHECK(err,"float_to_half vol");
-        } else {
-            err = clEnqueueCopyBuffer(cl->queue, d_vol, d_vol_half, 0, 0,
-                                      (size_t)vol_n * sizeof(cl_float), 0, NULL, NULL);
-            CL_CHECK(err,"copy vol float32");
-        }
-        {
-            size_t origin[3]={0,0,0};
-            size_t region[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
             err=clEnqueueCopyBufferToImage(cl->queue, d_vol_half, vol_img,
                                            0, origin, region, 0,NULL,NULL);
             CL_CHECK(err,"CopyBufferToImage vol half");
+        } else {
+            err=clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img,
+                                           0, origin, region, 0,NULL,NULL);
+            CL_CHECK(err,"CopyBufferToImage vol float32");
         }
         run_fp_image(cl, p, vol_img, d_proj_b);
 
@@ -967,7 +978,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
     }
     clReleaseMemObject(vol_img);
-    clReleaseMemObject(d_vol_half);
+    if (d_vol_half) clReleaseMemObject(d_vol_half);
     clReleaseMemObject(ratio_img);
 
     clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
