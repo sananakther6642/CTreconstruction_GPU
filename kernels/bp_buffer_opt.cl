@@ -68,45 +68,20 @@ __kernel void bp_opt(
      * single-floor pattern) instead of calling floor(u)/floor(v) twice
      * each inside the OOB test. */
 
-    /* Large volumes (>=512): unroll x2 hides texture latency with acceptable register cost.
-     * Small volumes (<512): scalar loop — occupancy more valuable than ILP.
-     * TEMPORARY TEST: gate changed to Nxz >= 99999 (never true) to force
-     * the scalar-only path at 512^3 and measure whether unroll-x2 is
-     * actually helping or hurting on this GPU — gpu-opt (0.930-0.945s)
-     * was found to be marginally SLOWER than plain gpu-img (0.930s) at
-     * 512^3 despite having this "optimization", which the code's own
-     * comment admits was a gated assumption, not a measured one. Revert
-     * this gate back to `Nxz >= 512` after measuring. */
-    int ip = 0;
-    if (Nxz >= 99999) {
-        for (; ip <= num_projs - 2; ip += 2) {
-            float2 cs0 = lcs[ip+0], cs1 = lcs[ip+1];
-
-            float U0 = SOD + ypr*cs0.y + xpr*cs0.x;
-            float U1 = SOD + ypr*cs1.y + xpr*cs1.x;
-
-            float inv_U0 = native_recip(U0), inv_U1 = native_recip(U1);
-
-            float uf0 = -(SDD*(ypr*cs0.x - xpr*cs0.y)*inv_U0)*inv_px + half_W;
-            float uf1 = -(SDD*(ypr*cs1.x - xpr*cs1.y)*inv_U1)*inv_px + half_W;
-
-            float vf0 = (zpr*SDD*inv_U0)*inv_px + half_H;
-            float vf1 = (zpr*SDD*inv_U1)*inv_px + half_H;
-
-            int u0_0 = (int)floor(uf0), v0_0 = (int)floor(vf0);
-            int u0_1 = (int)floor(uf1), v0_1 = (int)floor(vf1);
-
-            if (!(u0_0 < 0 || u0_0+1 >= W || v0_0 < 0 || v0_0+1 >= H)) {
-                float4 v0 = read_imagef(proj_images, samp, (float4)(vf0+.5f, uf0+.5f, (float)(ip+0), 0.f));
-                sum += v0.x * sod2 * inv_U0 * inv_U0;
-            }
-            if (!(u0_1 < 0 || u0_1+1 >= W || v0_1 < 0 || v0_1+1 >= H)) {
-                float4 v1 = read_imagef(proj_images, samp, (float4)(vf1+.5f, uf1+.5f, (float)(ip+1), 0.f));
-                sum += v1.x * sod2 * inv_U1 * inv_U1;
-            }
-        }
-    }
-    for (; ip < num_projs; ip++) {
+    /* Unroll-x2 was tried here (gated Nxz>=512) on the theory that hiding
+     * texture latency across two overlapped fetches would help large
+     * volumes. Measured on this hardware (AMD Hawaii, pool15-01) it did
+     * the opposite: gpu-opt at 512^3 (0.930-0.945s/epoch, unrolled) was
+     * marginally SLOWER than plain gpu-img (0.930s, scalar bp_image.cl),
+     * despite gpu-opt otherwise having strictly more optimizations
+     * layered on (LUT + local mem). Disabling unroll-x2 dropped gpu-opt
+     * to 0.923-0.927s — faster than gpu-img, as the LUT/local-mem win was
+     * supposed to deliver. The extra registers from unrolling (two live
+     * float2/float4/etc sets instead of one) apparently cost more in
+     * occupancy than the ILP saved in latency-hiding on GCN 1.1's
+     * register file — confirmed by isolated before/after measurement,
+     * not assumed. Kept as scalar-only unconditionally now. */
+    for (int ip = 0; ip < num_projs; ip++) {
         float2 cs = lcs[ip];
         float U = SOD + ypr*cs.y + xpr*cs.x;
         float inv_U = native_recip(U);
