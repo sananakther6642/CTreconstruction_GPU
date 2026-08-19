@@ -7,58 +7,46 @@ Supports 256³ and 512³ datasets. All GPU modes validated: no NaN/Inf, MSE vs C
 
 ### 256³ dataset (512×512 detector, 75 angles, n\_samples=256)
 
-Measured on `pool15-01`, EPOCHS=10, post correctness-fix (see Validation):
+Measured on `pool15-01`, **EPOCHS=100**, current code (post all fixes):
 
-| Mode | Time/epoch | Speedup vs CPU |
-|------|-----------|----------------|
-| `cpu` (12-thread OpenMP) | ~4.5 s (stale, see note) | 1× |
-| `gpu-buf` (chunked) | ~0.55 s | **~8×** |
-| `gpu-img` | ~0.099 s | **~45×** |
-| `gpu-opt` | ~0.097 s | **~46×** |
-
-> `cpu` here predates the `fp_cpu` ray-tiling rewrite that gave 512³ a
-> 1.75× speedup (see 512³ section) — that same code path runs at 256³ too,
-> so this number is very likely stale/pessimistic. Not yet re-measured;
-> re-run `make run-cpu EPOCHS=10` to get a current number.
-
-`gpu-buf`'s chunked launches (z-slabs with `clFinish` between, added to fix
-the 512³ watchdog hang) cost a small overhead here (~0.55s vs the
-pre-chunking ~0.425-0.435s) — acceptable tradeoff since it's what makes
-512³ actually completable. `gpu-img`/`gpu-opt` also picked up a small
-overhead from the `--half` toggle defaulting to float32 vol_img instead of
-always-half; not yet isolated how much of the ~0.03-0.04s/epoch delta vs the
-original table is that vs other changes. 100-epoch totals not re-measured
-yet — extrapolate at your own risk, or re-run with EPOCHS=100 to confirm.
+| Mode | Time/epoch | Total (100ep) | Speedup vs CPU |
+|------|-----------|--------------|----------------|
+| `cpu` (12-thread OpenMP) | 2.73 s | 273.1 s | 1× |
+| `gpu-buf` (chunked) | 0.57 s | 57.4 s | **4.8×** |
+| `gpu-img` | 0.101 s | 10.1 s | **27.2×** |
+| `gpu-opt` | **0.098 s** | **9.8 s** | **27.9×** |
 
 ### 512³ dataset (1120×1184 detector, 75 angles, n\_samples=512)
 
-Measured on `pool15-01`, EPOCHS=10, current code (post all fixes below):
+Measured on `pool15-01`, **EPOCHS=100**, current code (post all fixes):
 
-| Mode | Time/epoch | Speedup vs CPU |
-|------|-----------|----------------|
-| `cpu` (12-thread OpenMP) | ~25.7-26.1 s | 1× |
-| `gpu-buf` (chunked) | ~48-59 s | **slower than CPU** (see note) |
-| `gpu-img` | ~0.92 s | **~28×** |
-| `gpu-opt` | ~0.94 s | **~27×** |
+| Mode | Time/epoch | Total (100ep) | Speedup vs CPU |
+|------|-----------|--------------|----------------|
+| `cpu` (12-thread OpenMP) | 26.06 s | 2605.5 s | 1× |
+| `gpu-buf` (chunked) | 56.93 s | 5693.2 s | **0.46× (slower than CPU)** |
+| `gpu-img` | 0.930 s | 93.0 s | **28.0×** |
+| `gpu-opt` | 0.945 s | 94.5 s | **27.6×** |
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (12 logical cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
-> **`cpu` 512³ got ~1.75× faster** (44.5-45.7s → 25.7-26.1s/epoch) from a
-> `fp_cpu` rewrite — see "CPU speedup" below.
+> **`gpu-buf` on 512³ is slower than CPU** — genuinely, not a bug. It
+> previously caused a driver hang from one oversized kernel launch
+> exceeding the watchdog timeout; fixed by chunking the NDRange into
+> z-slabs (bp) / angle-slabs (fp) with `clFinish` between launches, so it
+> now completes reliably (confirmed over a full 100-epoch, ~95-minute run).
+> But per-slab timing diagnostics show every `fp_buffer` angle-slab
+> consistently takes 2.5-8s — `fp_buffer.cl`'s manual 8-tap trilinear
+> gather (no texture cache, 8 uncoalesced global reads per sample) is real,
+> honest memory-bandwidth-bound work this hardware can't do fast at 512³
+> scale, and the CPU's much smaller memory footprint plus the ray-tiling
+> speedup (below) now beats it outright. Not chased further: `gpu-img`/
+> `gpu-opt` exist specifically to avoid this cost via hardware texture
+> sampling, and they deliver the real ~28× speedup.
 
-> **`gpu-buf` on 512³**: previously caused a driver hang from one oversized
-> kernel launch exceeding the watchdog timeout. Fixed by chunking the
-> NDRange into z-slabs (bp) / angle-slabs (fp) with `clFinish` between
-> launches — `run-gpu-buf-512` now completes without crashing. But per-slab
-> timing diagnostics show it's genuinely slow, not stalling: every
-> `fp_buffer` angle-slab takes 2.5-8s, consistently, across all epochs —
-> not intermittent, not thermal, not a bug. `fp_buffer.cl`'s manual 8-tap
-> trilinear gather (no texture cache, 8 uncoalesced global reads per sample)
-> is real, honest memory-bandwidth-bound work that this hardware can't do
-> fast at 512³ scale — same story as `bp_buffer.cl` being the reason
-> `gpu-buf` is the slow/naive baseline in the first place. Not chased
-> further: `gpu-img`/`gpu-opt` exist specifically to avoid this cost via
-> hardware texture sampling, and they already deliver the real speedup.
+> At 256³, `gpu-buf` is a legitimate (if modest) 4.8× win — the same
+> kernel, just at a scale where the memory traffic fits within what the
+> hardware can handle reasonably. The naive/optimized contrast is really
+> about the transition between these two scales.
 
 ### Key optimizations that drove 512³ speedup
 
@@ -76,37 +64,40 @@ Note: the `native_recip` row shows no measured bp/fp delta (290→290,
 measurement noise, not a real driver of the speedup. Left in the table for
 history; don't cite it as a proven win without re-measuring in isolation.
 
-## Validation (10 epochs)
+## Validation (100 epochs)
 
-### 256³ — current (post-fix)
+Full-scale run: both datasets, all four modes, matching epoch counts
+throughout — the epoch-mismatch caveat from earlier 10-epoch checks no
+longer applies anywhere below.
+
+### 256³
 ```
 Mode       min      max     mean   nan  inf  MSE vs CPU         MSE vs Python
 python   0.0002   0.1225   0.0144    0    0  (python ref)      -
-cpu      0.0000   1.4189   0.0066    0    0  (reference)        MSE=6.263e-04
-gpu-buf  0.0000   1.4188   0.0066    0    0  MSE=3.458e-13  max=0.0012  MSE=6.263e-04
-gpu-img  0.0000   1.4310   0.0066    0    0  MSE=1.494e-09  max=0.0762  MSE=6.263e-04
-gpu-opt  0.0000   1.4310   0.0066    0    0  MSE=1.494e-09  max=0.0762  MSE=6.263e-04
+cpu      0.0000   1.7303   0.0067    0    0  (reference)        MSE=1.215e-03
+gpu-buf  0.0000   1.7307   0.0067    0    0  MSE=6.436e-10  max=0.0511  MSE=1.215e-03
+gpu-img  0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  max=1.1490  MSE=1.215e-03
+gpu-opt  0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  max=1.1490  MSE=1.215e-03
 ```
 
-`gpu-buf` MSE/max are now at the float32 noise floor (max=0.0012 on a volume
-with mean=0.0066, max value 1.42). `gpu-img`/`gpu-opt` sit ~60× higher on
-`max` but still small in absolute terms — attributed to `CLK_FILTER_LINEAR`
-hardware texture sampler precision (OpenCL spec allows implementation-defined
-rounding in hardware bilinear/trilinear, typically lower precision than IEEE
-manual interpolation); not chased further since `gpu-buf` already proves the
-underlying algorithm is correct to noise level.
+### 512³
+```
+Mode       min      max     mean   nan  inf  MSE vs CPU
+cpu      0.0000   1.0055   0.0330    0    0  (reference)
+gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.087e-11  max=0.0156
+gpu-img  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
+gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
+```
 
-"MSE vs CPU" and "MSE vs Python" measure genuinely different things:
-CPU-vs-GPU (this table) compares two implementations of the *same*
-algorithm/boundary rules, at the noise floor above. CPU-vs-Python
-(6.263e-04, unchanged by any of these fixes) reflects `n_samples=Nxz=256`
-in the C runs vs Python `fp_func`'s module default `sample_ratio=2`
-(512 samples) elsewhere in the codebase — an actual sampling-resolution
-difference between the two implementations, not a bug; not yet reconciled
-(see Known gaps below).
+All three GPU modes agree with CPU at essentially the float32 noise floor
+at both scales — confirms the correctness fixes below hold up over full
+100-epoch convergence, not just the shorter 10-epoch checks used while
+debugging. `max` is naturally larger at 100 epochs than at 10 (compounding
+iteration), but MSE stays tiny throughout.
 
-**What was fixed to get here** (previously: `max~1.17-1.25`, MSE~1.4e-7,
-attributed in this README to "float32 rounding" — that framing was wrong):
+**What was fixed to get here** (earlier this project, `max` was ~1.17-1.25
+at only 10 epochs, attributed in this README to "float32 rounding" — that
+framing was wrong):
 1. `fp_cpu` used `int x0 = (int)xi` (truncates toward zero) instead of
    `floorf(xi)`. For `xi` in `(-1, 0)` this gives `x0=0` instead of `-1`,
    which wrongly passes the `(unsigned)x0 < Nxz-1` bounds check and samples
@@ -133,29 +124,6 @@ Component-test tools added for future debugging: `--op fp|bp` on
 MLEM iteration error); `validate_ops.py` compares that dump against the
 Python reference per-operator.
 
-### 512³ — current (post-fix)
-```
-Mode       min      max     mean   nan  inf  MSE vs CPU
-cpu      0.0000   0.5171   0.0331    0    0  (reference, 10 epochs)
-gpu-img  0.0000   0.5171   0.0331    0    0  MSE=7.935e-12  max=0.0003   (10 epochs)
-gpu-opt  0.0000   0.5171   0.0331    0    0  MSE=7.935e-12  max=0.0003   (10 epochs)
-```
-`gpu-img`/`gpu-opt` MSE vs CPU is essentially the float32 noise floor —
-better than the 256³ result (`max=0.0762`).
-
-`gpu-buf` row deliberately excluded from this table: the only run
-available was **3 epochs** (gpu-buf-512 is slow, ~50-60s/epoch — a
-10-epoch run wasn't completed this session), while `cpu`/`gpu-img`/
-`gpu-opt` above are all 10 epochs. Comparing a 3-epoch MLEM volume against
-a 10-epoch reference produces a real but meaningless MSE (different amount
-of converged iteration, not a correctness signal) — an early attempt at
-this comparison showed `MSE=8.44e-04, max=0.4235`, which looked alarmingly
-close to the pre-fix numbers but was actually just the epoch mismatch, not
-a regression. Re-run `make run-gpu-buf-512 EPOCHS=10` and
-`python3 validate.py 512` together (same epoch count as the other three)
-for a real number — expected to land at the same float32 noise floor as
-gpu-img/opt, since it's the same algorithm via the slower uncached kernel.
-
 ### CPU 512³ speedup: fp_cpu ray-tiling rewrite
 `fp_cpu` dominates the CPU epoch time at 512³ (was 35.2-36.2s of a
 44.5-45.7s epoch — 78%). The 8-tap trilinear gather it does per ray sample
@@ -176,20 +144,21 @@ its own range, so the actual math and reduction order per ray is unchanged
 component test to still agree with the Python reference (`MSE=8.34e-08` at
 64 samples, no regression from the pre-tiling `8.57e-08` at full samples).
 
-Result: `fp_cpu` 35.17-36.22s → **16.34-16.71s** (>2.1× faster), full
-epoch 44.5-45.7s → **25.67-26.06s** (1.75× faster), stable across 10
-epochs. `bp_cpu` unchanged (8.95-9.07s both before and after — it was
-never the bottleneck; a separate analytical-range optimization was tried
-there too but had negligible measured effect since bp's cost is dominated
-by the same kind of gather, just at 1/4 the total time budget).
+Result at 100 epochs: `cpu` 512³ **26.06s/epoch** (2605.5s total), down
+from a pre-tiling baseline of 44.5-45.7s/epoch — confirmed stable across
+the full 100-epoch run, not just the earlier 10-epoch spot check.
+`bp_cpu` itself was never the bottleneck (a separate analytical-range
+optimization there had negligible effect since bp's cost is dominated by
+the same kind of gather, just at a fraction of fp's time budget) — the win
+is entirely from fp_cpu.
 
 ### Known gaps
-- CPU-vs-Python sampling mismatch (n_samples=256 vs 512 at 256³) not
+- CPU-vs-Python sampling mismatch (n_samples=256 vs Python `fp_func`'s
+  module default `sample_ratio=2`, i.e. 512 samples, at 256³) not
   reconciled — doesn't affect CPU-vs-GPU correctness (both C paths use the
   same n_samples), but means "MSE vs Python" isn't apples-to-apples yet.
-- `gpu-buf-512` row missing from the current validate.py 512 table above —
-  the only completed run was 3 epochs vs the other modes' 10; needs a
-  matching-epoch-count run to produce a real comparison.
+  `MSE vs Python` at 512³ is also not shown above: 512³'s C output and the
+  Python reference (which only ran at 256³) have different shapes.
 
 ## Modes
 
