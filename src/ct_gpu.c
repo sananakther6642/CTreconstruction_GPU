@@ -435,11 +435,16 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &SDD);
     clSetKernelArg(k,12, sizeof(float),  &vs);
     clSetKernelArg(k,13, sizeof(float),  &px);
-    /* AABB ray clipping helps on large detectors (many edge pixels miss volume);
-     * measured to hurt at 256^3 (W==512, gate false) when originally tuned —
-     * FP_IMAGE_AABB env var lets that be re-tested without a rebuild, since
-     * that measurement predates several other fp_image changes (work-group
-     * shape, bug fixes) and may no longer hold. */
+    /* AABB ray clipping helps on large detectors (many edge pixels miss
+     * volume) but hurts at 256^3: re-measured after the work-group sweep
+     * above in case that changed the tradeoff (it didn't). Forcing AABB on
+     * at 256^3 via FP_IMAGE_AABB=1 gave 0.098-0.100s/epoch vs 0.095-0.096s
+     * with it off — a consistent ~4% regression despite geometry showing
+     * ~65% of samples per ray are outside the volume there. The kernel is
+     * small enough at this scale (0.095s launch) that AABB's setup cost
+     * (6 divides + branches before the march) and the ragged per-thread
+     * trip counts it creates cost more than the fetch reduction saves.
+     * Gate stays W>512; FP_IMAGE_AABB kept for future re-testing. */
     int use_aabb = (W > 512) ? 1 : 0;
     const char *aabb_env = getenv("FP_IMAGE_AABB");
     if (aabb_env) use_aabb = atoi(aabb_env);
