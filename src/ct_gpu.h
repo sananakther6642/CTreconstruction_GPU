@@ -58,14 +58,16 @@ void gpu_cleanup(CLState *cl);
  * Full iterative reconstruction on GPU.
  * proj_measured: [num_projs * H * W] host memory
  * volume:        [Nxz * Nxz * Ny]   host memory (init to 1, output here)
+ * conv_log: path for per-epoch convergence CSV (loglik/residual/rel_change),
+ *           or NULL to disable (default; no extra cost when NULL).
  */
 void reconstruct_gpu(CLState *cl, const CBpara *p,
                      const float *proj_measured, float *volume,
-                     int epochs);
+                     int epochs, const char *conv_log);
 
 /* Optimized reconstruction (LUT + local mem + float4 + loop unroll) */
 void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          const float *proj_measured, float *volume,
-                         int epochs);
+                         int epochs, const char *conv_log);
 
 #endif /* CT_GPU_H */

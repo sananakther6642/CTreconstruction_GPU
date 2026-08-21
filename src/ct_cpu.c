@@ -434,7 +434,7 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
 
 /* ── iterative reconstruction loop ────────────────────────────────────── */
 void reconstruct_cpu(const float *proj_measured, float *volume,
-                     const CBpara *p, int epochs)
+                     const CBpara *p, int epochs, const char *conv_log)
 {
     int Nxz = p->Volumen_num_xz;
     int Ny   = p->Volumen_num_y;
@@ -452,6 +452,10 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
     float *bp_ratio = (float *)malloc(vol_size    * sizeof(float));
     float *bp_ones  = (float *)malloc(vol_size    * sizeof(float));
 
+    /* v_prev scratch for --log-convergence's rel_change; unused if conv_log
+     * is NULL, so no extra allocation cost in the default (off) path. */
+    float *v_prev = conv_log ? (float *)malloc(vol_size * sizeof(float)) : NULL;
+
     float *ones_raw = (float *)malloc(proj_size * sizeof(float));
     float *ones_p   = (float *)malloc(proj_size_t * sizeof(float));
     for (size_t i = 0; i < proj_size; i++) ones_raw[i] = 1.f;
@@ -462,6 +466,8 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
 
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
+
+        if (conv_log) memcpy(v_prev, volume, vol_size * sizeof(float));
 
         double t0 = get_time_sec();
         fp_cpu(volume, b, p);
@@ -481,9 +487,16 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
             if (denom > 1e-10f)
                 volume[i] *= bp_ratio[i] / denom;
         }
+        double t_ep_total = get_time_sec() - t_ep;
         printf("  epoch %3d/%d  total=%.2fs  fp=%.2fs  bp=%.2fs\n",
-               epoch+1, epochs, get_time_sec()-t_ep, t1-t0, t3-t2);
+               epoch+1, epochs, t_ep_total, t1-t0, t3-t2);
+
+        if (conv_log)
+            log_convergence(conv_log, epoch, t_ep_total,
+                             proj_measured, b, proj_size,
+                             volume, (epoch == 0) ? NULL : v_prev, vol_size);
     }
 
     free(b); free(ratio); free(ratio_bp); free(bp_ratio); free(bp_ones);
+    if (v_prev) free(v_prev);
 }

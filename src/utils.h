@@ -33,4 +33,16 @@ int save_hdf5_proj(const char *path, const CBpara *para, const float *proj);
 /* Timing utility (seconds) */
 double get_time_sec(void);
 
+/* Append one convergence row to path (CSV, header written on first call
+ * per path via "w" vs "a" — caller passes epoch==0 to truncate/header).
+ * p0, b: measured / current-estimate projections, both [proj_n].
+ * v_cur, v_prev: current/previous volume, both [vol_n] (v_prev may be NULL
+ * on epoch 0, in which case rel_change is written as 0).
+ * Computes and logs: Poisson log-likelihood sum(p0*log(b)-b) (b>0 terms
+ * only), data-fidelity residual norm(p0-b)/norm(p0), and relative volume
+ * change norm(v_cur-v_prev)/norm(v_cur). */
+void log_convergence(const char *path, int epoch, double epoch_time_s,
+                      const float *p0, const float *b, size_t proj_n,
+                      const float *v_cur, const float *v_prev, size_t vol_n);
+
 #endif /* UTILS_H */
