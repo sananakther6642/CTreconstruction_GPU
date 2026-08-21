@@ -458,6 +458,103 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     }
 }
 
+/*
+ * ── Diagnostic: repeat one fp_buffer angle-slab N times ─────────────────
+ *
+ * perf-v2 plan Phase A2/A3: the README's "thermal throttling" explanation
+ * for gpu-buf's run-to-run variance is disputed (6.6x discrete jump is
+ * beyond Hawaii's ~3.2x DVFS range, and gpu-img/gpu-opt stay stable in the
+ * same sessions gpu-buf goes slow -- device-wide throttling can't be
+ * mode-selective). This isolates ONE fixed angle-slab and launches it N
+ * times back-to-back, timing each with GPU-side event profiling:
+ *
+ *   - Throttling predicts MONOTONE degradation (die heating under load).
+ *   - TLB/page-residency predicts BIMODAL switching between two cost levels.
+ *   - Memory-channel camping predicts UNIFORMLY slow, every time (fully
+ *     deterministic for that angle set).
+ *
+ * angle_offset lets the same test be re-run with a different angle range
+ * in the same slab-index slot (A3: does slowness follow slab INDEX or
+ * ANGLE VALUE?) without changing which position in the launch sequence it
+ * occupies.
+ */
+static void run_diag_repeat_slab(CLState *cl, const CBpara *p, cl_mem d_vol,
+                                  int angle_offset, int slab_size, int n_repeats)
+{
+    cl_int err;
+    cl_kernel k = cl->k_fp_buf;
+    int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
+    int W = p->detector_width,   H  = p->detector_height;
+    int np = p->num_projs;
+    int n_samples = p->n_samples;
+    float SOD=(float)p->SOD, SDD=(float)p->SDD;
+    float vs=(float)p->voxelSize, px=(float)p->pixelSize;
+
+    if (angle_offset < 0 || angle_offset + slab_size > np) {
+        fprintf(stderr, "run_diag_repeat_slab: angle range [%d,%d) out of "
+                        "bounds for np=%d\n", angle_offset, angle_offset+slab_size, np);
+        return;
+    }
+
+    size_t proj_bytes = (size_t)np * H * W * sizeof(float);
+    cl_mem d_proj_scratch = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+    CL_CHECK(err, "d_proj_scratch (diag)");
+
+    clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
+    clSetKernelArg(k, 1, sizeof(cl_mem), &cl->d_R_mats);
+    clSetKernelArg(k, 2, sizeof(cl_mem), &cl->d_T_vecs);
+    clSetKernelArg(k, 3, sizeof(cl_mem), &d_proj_scratch);
+    clSetKernelArg(k, 4, sizeof(int),    &Nxz);
+    clSetKernelArg(k, 5, sizeof(int),    &Ny);
+    clSetKernelArg(k, 6, sizeof(int),    &W);
+    clSetKernelArg(k, 7, sizeof(int),    &H);
+    clSetKernelArg(k, 8, sizeof(int),    &np);
+    clSetKernelArg(k, 9, sizeof(int),    &n_samples);
+    clSetKernelArg(k,10, sizeof(float),  &SOD);
+    clSetKernelArg(k,11, sizeof(float),  &SDD);
+    clSetKernelArg(k,12, sizeof(float),  &vs);
+    clSetKernelArg(k,13, sizeof(float),  &px);
+
+    size_t lws[3] = {4, 64, 1};
+    const char *lws_env = getenv("FP_BUFFER_LWS");
+    if (lws_env) {
+        unsigned long a=4, b=64, c=1;
+        if (sscanf(lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+            lws[0]=a; lws[1]=b; lws[2]=c;
+        }
+    }
+    size_t gws_full[3] = {(size_t)W, (size_t)H, (size_t)np};
+    for (int d=0; d<2; d++)
+        if (gws_full[d] % lws[d]) gws_full[d] += lws[d] - gws_full[d] % lws[d];
+
+    printf("=== diag repeat-slab: angles [%d,%d), %d repeats, lws={%zu,%zu,%zu} ===\n",
+           angle_offset, angle_offset + slab_size, n_repeats, lws[0], lws[1], lws[2]);
+
+    size_t offset[3] = {0, 0, (size_t)angle_offset};
+    size_t gws[3]     = {gws_full[0], gws_full[1], (size_t)slab_size};
+
+    for (int rep = 0; rep < n_repeats; rep++) {
+        cl_event evt;
+        double t0 = get_time_sec();
+        err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, &evt);
+        CL_CHECK(err, "diag repeat-slab enqueue");
+        err = clFinish(cl->queue);
+        CL_CHECK(err, "diag repeat-slab finish");
+        double dt = get_time_sec() - t0;
+
+        cl_ulong t_start = 0, t_end = 0;
+        double gpu_dt = -1.0;
+        if (clGetEventProfilingInfo(evt, CL_PROFILING_COMMAND_START, sizeof(t_start), &t_start, NULL) == CL_SUCCESS &&
+            clGetEventProfilingInfo(evt, CL_PROFILING_COMMAND_END,   sizeof(t_end),   &t_end,   NULL) == CL_SUCCESS) {
+            gpu_dt = (double)(t_end - t_start) * 1e-9;
+        }
+        printf("  rep %3d/%d  wall=%.4fs  gpu=%.4fs\n", rep+1, n_repeats, dt, gpu_dt);
+        clReleaseEvent(evt);
+    }
+
+    clReleaseMemObject(d_proj_scratch);
+}
+
 /* ── Internal: run backprojection (image mode) ──────────────────────────── */
 static void run_bp_image(CLState *cl, const CBpara *p,
                           cl_mem proj_img, cl_mem d_ang_cs, cl_mem d_vol)
@@ -568,6 +665,32 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     }
     err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0,NULL,NULL);
     CL_CHECK(err, "fp_image enqueue");
+}
+
+/*
+ * ── gpu_diag_repeat_slab ────────────────────────────────────────────────
+ * Public entry for the perf-v2 Phase A2/A3 diagnostic. Loads the volume
+ * once, builds R/T buffers, repeats one fixed angle-slab n_repeats times.
+ * Does not run any epoch loop and does not write output -- diagnostic only.
+ */
+void gpu_diag_repeat_slab(CLState *cl, const CBpara *p, const float *volume,
+                           int angle_offset, int slab_size, int n_repeats)
+{
+    cl_int err;
+    int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
+    size_t vol_bytes = (size_t)Nxz * Nxz * Ny * sizeof(float);
+
+    build_RT_buffers(cl, p);
+
+    cl_mem d_vol = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
+                                   vol_bytes, (void*)volume, &err);
+    CL_CHECK(err, "d_vol (diag)");
+
+    run_diag_repeat_slab(cl, p, d_vol, angle_offset, slab_size, n_repeats);
+
+    clReleaseMemObject(d_vol);
+    clReleaseMemObject(cl->d_R_mats);
+    clReleaseMemObject(cl->d_T_vecs);
 }
 
 /* ── reconstruct_gpu ─────────────────────────────────────────────────────── */
