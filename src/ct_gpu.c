@@ -178,8 +178,8 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "vol_update");
         cl->k_preproc  = clCreateKernel(cl->prog_buffer, "preprocess_proj", &err);
         CL_CHECK(err, "preprocess_proj");
-        cl->k_preproc_img = clCreateKernel(cl->prog_buffer, "preprocess_proj_img", &err);
-        CL_CHECK(err, "preprocess_proj_img");
+        cl->k_divide_preproc_img = clCreateKernel(cl->prog_buffer, "divide_preprocess_img", &err);
+        CL_CHECK(err, "divide_preprocess_img");
         cl->k_cone_hw  = clCreateKernel(cl->prog_buffer, "cone_weight_hw", &err);
         CL_CHECK(err, "cone_weight_hw");
     }
@@ -229,7 +229,8 @@ void gpu_cleanup(CLState *cl)
     if (cl->mode != GPU_MODE_OPT) {
         clReleaseKernel(cl->k_bp_buf); clReleaseKernel(cl->k_fp_buf);
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
-        clReleaseKernel(cl->k_preproc); clReleaseKernel(cl->k_preproc_img);
+        clReleaseKernel(cl->k_preproc);
+        clReleaseKernel(cl->k_divide_preproc_img);
         clReleaseKernel(cl->k_cone_hw);
         clReleaseProgram(cl->prog_buffer);
     }
@@ -241,7 +242,8 @@ void gpu_cleanup(CLState *cl)
     if (cl->mode == GPU_MODE_OPT) {
         clReleaseKernel(cl->k_bp_opt);
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
-        clReleaseKernel(cl->k_preproc); clReleaseKernel(cl->k_preproc_img);
+        clReleaseKernel(cl->k_preproc);
+        clReleaseKernel(cl->k_divide_preproc_img);
         clReleaseKernel(cl->k_cone_hw);
         clReleaseKernel(cl->k_fp_img); clReleaseKernel(cl->k_bp_img);
         clReleaseKernel(cl->k_f2h);
@@ -285,36 +287,44 @@ static void run_preprocess(CLState *cl, const CBpara *p,
 }
 
 /*
- * perf-v2 Phase B1: same as run_preprocess, but writes straight into an
- * image2d_array_t (ratio_img) instead of a buffer. Used by gpu-img/gpu-opt
- * in place of run_preprocess + clEnqueueCopyBufferToImage -- removes
- * ~0.80GB/epoch of copy traffic at 512^3 and one fewer host-enqueued step,
- * with no numerical change (same math, same values, different destination).
+ * perf-v2 Phase B1+B2: fuses proj_divide (ratio=p0/b) with cone_weight +
+ * flip + transpose, writing straight into an image2d_array_t (ratio_img)
+ * instead of a buffer. Replaces what was three steps (proj_divide into a
+ * d_ratio buffer, preprocess into a d_ratio_prep buffer,
+ * clEnqueueCopyBufferToImage into the image) with one kernel launch.
+ * d_ratio/d_ratio_prep were both write-once/read-once and never used
+ * elsewhere. An intermediate B1-only version that fused just the
+ * image-write step (without the divide) was tried first and superseded
+ * by this fully-fused version once B2 landed -- removed rather than kept
+ * as dead code. See divide_preprocess_img in kernels/bp_buffer.cl for the
+ * kernel and its math-equivalence note against the original two kernels.
  */
-static void run_preprocess_img(CLState *cl, const CBpara *p,
-                                cl_mem src, cl_mem dst_img)
+static void run_divide_preprocess_img(CLState *cl, const CBpara *p,
+                                       cl_mem d_proj_meas, cl_mem d_proj_b,
+                                       cl_mem dst_img)
 {
     cl_int err;
-    cl_kernel k = cl->k_preproc_img;
+    cl_kernel k = cl->k_divide_preproc_img;
     int W = p->detector_width, H = p->detector_height, np = p->num_projs;
     float vs  = (float)p->voxelSize;
     float SDD = (float)p->SDD;
     float px  = (float)p->pixelSize;
 
-    clSetKernelArg(k, 0, sizeof(cl_mem), &src);
-    clSetKernelArg(k, 1, sizeof(cl_mem), &dst_img);
-    clSetKernelArg(k, 2, sizeof(int),    &W);
-    clSetKernelArg(k, 3, sizeof(int),    &H);
-    clSetKernelArg(k, 4, sizeof(float),  &vs);
-    clSetKernelArg(k, 5, sizeof(float),  &SDD);
-    clSetKernelArg(k, 6, sizeof(float),  &px);
+    clSetKernelArg(k, 0, sizeof(cl_mem), &d_proj_meas);
+    clSetKernelArg(k, 1, sizeof(cl_mem), &d_proj_b);
+    clSetKernelArg(k, 2, sizeof(cl_mem), &dst_img);
+    clSetKernelArg(k, 3, sizeof(int),    &W);
+    clSetKernelArg(k, 4, sizeof(int),    &H);
+    clSetKernelArg(k, 5, sizeof(float),  &vs);
+    clSetKernelArg(k, 6, sizeof(float),  &SDD);
+    clSetKernelArg(k, 7, sizeof(float),  &px);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
     size_t lws[3] = {16, 16, 1};
     for (int d = 0; d < 3; d++)
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
-    CL_CHECK(err, "preprocess_proj_img enqueue");
+    CL_CHECK(err, "divide_preprocess_img enqueue");
 }
 
 
@@ -1037,8 +1047,17 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
                                  (size_t)proj_n * sizeof(float), b_host, 0, NULL, NULL);
 
-        /* ratio = p0 / b */
-        {
+        /* bp_ratio = bp(ratio_prep). No zero-fill needed: bp_buffer/bp_image
+         * kernels unconditionally overwrite every voxel in range (plain
+         * assignment, not accumulation), so pre-clearing is dead work.
+         *
+         * perf-v2 Phase B1+B2: image mode fuses proj_divide (ratio=p0/b)
+         * with preprocess (cone_weight+flip+transpose) into one kernel
+         * that writes straight into ratio_img_buf -- no d_ratio
+         * intermediate buffer, no buffer->image copy. Buffer mode is
+         * unaffected: it still needs proj_divide's plain-buffer output
+         * for run_preprocess/run_bp_buffer, which don't use an image. */
+        if (cl->mode == GPU_MODE_BUFFER) {
             cl_kernel k = cl->k_divide;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_proj_b);
@@ -1047,22 +1066,10 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             size_t gws=((size_t)proj_n + 3) / 4;
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"proj_divide");
-        }
-
-        /* bp_ratio = bp(ratio_prep). No zero-fill needed: bp_buffer/bp_image
-         * kernels unconditionally overwrite every voxel in range (plain
-         * assignment, not accumulation), so pre-clearing is dead work.
-         *
-         * perf-v2 Phase B1: image mode writes preprocess's output straight
-         * into ratio_img_buf via run_preprocess_img, skipping the
-         * buffer->image clEnqueueCopyBufferToImage this used to need
-         * (~0.80GB/epoch at 512^3). Buffer mode is unaffected -- it never
-         * used an image for the ratio, so it keeps run_preprocess as-is. */
-        if (cl->mode == GPU_MODE_BUFFER) {
             run_preprocess(cl, p, d_ratio, d_ratio_prep);  /* fused: cone_weight + flip + transpose */
             run_bp_buffer(cl, p, d_ratio_prep, d_ang_cs, d_bp_ratio);
         } else {
-            run_preprocess_img(cl, p, d_ratio, ratio_img_buf);
+            run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img_buf);
             run_bp_image(cl, p, ratio_img_buf, d_ang_cs, d_bp_ratio);
         }
 
@@ -1165,10 +1172,9 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
 
     cl_mem d_proj_b    = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
     CL_CHECK(err, "d_proj_b opt");
-    cl_mem d_ratio     = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
-    CL_CHECK(err, "d_ratio opt");
-    /* perf-v2 Phase B1: d_ratio_prep removed -- run_preprocess_img now
-     * writes straight into ratio_img, no intermediate buffer needed. */
+    /* perf-v2 Phase B1+B2: d_ratio and d_ratio_prep both removed --
+     * run_divide_preprocess_img now fuses divide+preprocess and writes
+     * straight into ratio_img, no intermediate buffers needed. */
     cl_mem d_proj_prep = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
     CL_CHECK(err, "d_proj_prep opt");
     cl_mem d_bp_ratio  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
@@ -1328,21 +1334,11 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
                                  (size_t)proj_n * sizeof(float), b_host, 0, NULL, NULL);
 
-        /* ── ratio = p0/b ── */
-        {
-            cl_kernel k = cl->k_divide;
-            clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
-            clSetKernelArg(k,1,sizeof(cl_mem),&d_proj_b);
-            clSetKernelArg(k,2,sizeof(cl_mem),&d_ratio);
-            clSetKernelArg(k,3,sizeof(int),&proj_n);
-            size_t gws=((size_t)proj_n + 3) / 4;
-            err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
-            CL_CHECK(err,"divide opt");
-        }
-        /* perf-v2 Phase B1: write straight into ratio_img, no intermediate
-         * buffer + clEnqueueCopyBufferToImage (was ~0.80GB/epoch at
-         * 512^3 plus a kernel launch). Same math, same values. */
-        run_preprocess_img(cl, p, d_ratio, ratio_img);
+        /* perf-v2 Phase B1+B2: fuses ratio=p0/b with cone_weight+flip+
+         * transpose+write-to-image into one kernel -- no d_ratio
+         * intermediate buffer, no buffer->image copy (was ~0.80GB/epoch
+         * at 512^3 plus two kernel launches). Same math, same values. */
+        run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img);
 
         /* ── bp_opt(ratio_img) ── */
         {
@@ -1415,7 +1411,6 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     clReleaseMemObject(d_proj_prep);
     clReleaseMemObject(d_vol);
     clReleaseMemObject(d_proj_b);
-    clReleaseMemObject(d_ratio);
     clReleaseMemObject(d_bp_ratio);
     clReleaseMemObject(d_bp_ones);
     clReleaseMemObject(cl->d_R_mats);

@@ -125,24 +125,34 @@ __kernel void preprocess_proj(
 }
 
 /*
- * preprocess_proj_img — same as preprocess_proj, but writes directly into
- * an image2d_array_t (width=H, height=W, depth=np) instead of a buffer.
+ * divide_preprocess_img — fuses three former steps into one kernel:
+ *   1. proj_divide:      ratio = p0/b (with the same b>1e-3 guard)
+ *   2. preprocess_proj:  cone_weight + flip(H-axis) + transpose + /voxelSize
+ *   3. clEnqueueCopyBufferToImage: buffer -> ratio_img
+ * into a single pass that reads p0/b and writes straight into an
+ * image2d_array_t (width=H, height=W, depth=np).
  *
- * perf-v2 Phase B1: gpu-img/gpu-opt's epoch loop previously wrote
- * preprocess_proj's output to a buffer, then did a separate
- * clEnqueueCopyBufferToImage (0.80GB/epoch traffic at 512^3, plus a
- * kernel launch) to get it into ratio_img for bp_image/bp_opt to read.
- * This kernel skips that copy entirely by writing straight into the
- * image with write_imagef -- same math, same coalescing (iw on dim 0),
- * one fewer buffer and one fewer host-enqueued step per epoch.
+ * perf-v2 Phase B1+B2: the intermediate d_ratio and d_ratio_prep buffers
+ * were each write-once/read-once and never used anywhere else -- classic
+ * fusable intermediates, plus the buffer->image copy was pure data
+ * movement (~0.80GB/epoch at 512^3) the GPU already had the values for.
+ * Projection-side traffic per epoch drops from the original three steps'
+ * combined ~2.8x proj_bytes to this kernel's 2x (read p0, read b) -- the
+ * image write isn't counted as host-visible buffer traffic. Same
+ * divide-by-zero guard and same cone-weight/flip/transpose math as the
+ * kernels it replaces; only the fusion point moved, no arithmetic changed
+ * (see ct_gpu.c's run_divide_preprocess_img for the index-equivalence
+ * derivation against the original two-kernel version).
  *
- * Texel coord convention matches bp_image.cl/bp_buffer_opt.cl's read:
- * they read (texel_u=vf+0.5, texel_v=uf+0.5, ip) where uf derives from
- * iw-space and vf from ih-space, i.e. texel dim0=ih, dim1=iw, dim2=ip --
- * exactly the (ih, iw, ip) coord written here.
+ * Not float4-vectorized like proj_divide was: this kernel is 3D-indexed
+ * (iw,ih,ip) to match the flip+transpose, and on GCN a 64-wide wavefront
+ * issuing 64 consecutive scalar 4-byte loads along iw coalesces into the
+ * same memory transactions vload4 would -- no loss from dropping the
+ * explicit vectorization.
  */
-__kernel void preprocess_proj_img(
-    __global const float *src,
+__kernel void divide_preprocess_img(
+    __global const float *p0,
+    __global const float *b,
     __write_only image2d_array_t dst,
     int   W,
     int   H,
@@ -156,11 +166,16 @@ __kernel void preprocess_proj_img(
     int ip = get_global_id(2);
     if (iw >= W || ih >= H) return;
 
+    int src_idx = ip * H * W + (H - 1 - ih) * W + iw;
+    float p0v = p0[src_idx];
+    float bv  = b[src_idx];
+    float ratio = (bv > 1e-3f) ? p0v / bv : 0.f;
+
     float u = (-(float)(iw - (W-1)*0.5f)) * pixelSize;
     float v = (  (float)(ih - (H-1)*0.5f)) * pixelSize;
     float cw = SDD / sqrt(SDD*SDD + u*u + v*v);
 
-    float val = src[ip * H * W + (H - 1 - ih) * W + iw] * cw / voxelSize;
+    float val = ratio * cw / voxelSize;
     write_imagef(dst, (int4)(ih, iw, ip, 0), (float4)(val, 0.f, 0.f, 0.f));
 }
 
