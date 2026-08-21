@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
+#include <math.h>
 
 static float read_float_scalar(hid_t file, const char *name)
 {
@@ -117,4 +118,38 @@ double get_time_sec(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+void log_convergence(const char *path, int epoch, double epoch_time_s,
+                      const float *p0, const float *b, size_t proj_n,
+                      const float *v_cur, const float *v_prev, size_t vol_n)
+{
+    double loglik = 0.0;
+    double res_num = 0.0, res_den = 0.0;
+    for (size_t i = 0; i < proj_n; i++) {
+        double p0i = (double)p0[i], bi = (double)b[i];
+        if (bi > 1e-12) loglik += p0i * log(bi) - bi;
+        double d = p0i - bi;
+        res_num += d * d;
+        res_den += p0i * p0i;
+    }
+    double residual = (res_den > 0.0) ? sqrt(res_num / res_den) : 0.0;
+
+    double rel_change = 0.0;
+    if (v_prev) {
+        double dnum = 0.0, dden = 0.0;
+        for (size_t i = 0; i < vol_n; i++) {
+            double d = (double)v_cur[i] - (double)v_prev[i];
+            dnum += d * d;
+            dden += (double)v_cur[i] * (double)v_cur[i];
+        }
+        rel_change = (dden > 0.0) ? sqrt(dnum / dden) : 0.0;
+    }
+
+    FILE *f = fopen(path, (epoch == 0) ? "w" : "a");
+    if (!f) { fprintf(stderr, "log_convergence: cannot open %s\n", path); return; }
+    if (epoch == 0) fprintf(f, "epoch,time_s,loglik,residual,rel_change\n");
+    fprintf(f, "%d,%.6f,%.10g,%.10g,%.10g\n",
+            epoch + 1, epoch_time_s, loglik, residual, rel_change);
+    fclose(f);
 }

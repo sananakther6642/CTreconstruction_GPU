@@ -125,6 +125,22 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
     clGetDeviceInfo(cl->device, CL_DEVICE_NAME, sizeof(dev_name), dev_name, NULL);
     printf("OpenCL device: %s\n", dev_name);
 
+    /* perf-v2 Phase A7: check cl_khr_3d_image_writes -- gates Phase B4
+     * (vol_update writing directly into vol_img instead of a separate
+     * clEnqueueCopyBufferToImage each epoch). OpenCL 1.2 has no 3D
+     * read-write images without this extension. Printed once at init,
+     * not gated behind an env var since it costs nothing. */
+    {
+        size_t ext_sz = 0;
+        clGetDeviceInfo(cl->device, CL_DEVICE_EXTENSIONS, 0, NULL, &ext_sz);
+        char *ext_str = (char *)malloc(ext_sz + 1);
+        clGetDeviceInfo(cl->device, CL_DEVICE_EXTENSIONS, ext_sz, ext_str, NULL);
+        ext_str[ext_sz] = '\0';
+        int has_3d_image_writes = (strstr(ext_str, "cl_khr_3d_image_writes") != NULL);
+        printf("  cl_khr_3d_image_writes: %s\n", has_3d_image_writes ? "yes" : "no");
+        free(ext_str);
+    }
+
     cl->ctx   = clCreateContext(NULL, 1, &cl->device, NULL, NULL, &err);
     CL_CHECK(err, "clCreateContext");
 #pragma GCC diagnostic push
@@ -162,6 +178,10 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "vol_update");
         cl->k_preproc  = clCreateKernel(cl->prog_buffer, "preprocess_proj", &err);
         CL_CHECK(err, "preprocess_proj");
+        cl->k_divide_preproc_img = clCreateKernel(cl->prog_buffer, "divide_preprocess_img", &err);
+        CL_CHECK(err, "divide_preprocess_img");
+        cl->k_update_img = clCreateKernel(cl->prog_buffer, "vol_update_img", &err);
+        CL_CHECK(err, "vol_update_img");
         cl->k_cone_hw  = clCreateKernel(cl->prog_buffer, "cone_weight_hw", &err);
         CL_CHECK(err, "cone_weight_hw");
     }
@@ -211,7 +231,9 @@ void gpu_cleanup(CLState *cl)
     if (cl->mode != GPU_MODE_OPT) {
         clReleaseKernel(cl->k_bp_buf); clReleaseKernel(cl->k_fp_buf);
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
-        clReleaseKernel(cl->k_preproc); clReleaseKernel(cl->k_cone_hw);
+        clReleaseKernel(cl->k_preproc);
+        clReleaseKernel(cl->k_divide_preproc_img); clReleaseKernel(cl->k_update_img);
+        clReleaseKernel(cl->k_cone_hw);
         clReleaseProgram(cl->prog_buffer);
     }
     if (cl->mode == GPU_MODE_IMAGE) {
@@ -222,7 +244,9 @@ void gpu_cleanup(CLState *cl)
     if (cl->mode == GPU_MODE_OPT) {
         clReleaseKernel(cl->k_bp_opt);
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
-        clReleaseKernel(cl->k_preproc); clReleaseKernel(cl->k_cone_hw);
+        clReleaseKernel(cl->k_preproc);
+        clReleaseKernel(cl->k_divide_preproc_img); clReleaseKernel(cl->k_update_img);
+        clReleaseKernel(cl->k_cone_hw);
         clReleaseKernel(cl->k_fp_img); clReleaseKernel(cl->k_bp_img);
         clReleaseKernel(cl->k_f2h);
         clReleaseProgram(cl->prog_opt);
@@ -262,6 +286,47 @@ static void run_preprocess(CLState *cl, const CBpara *p,
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
     CL_CHECK(err, "preprocess_proj enqueue");
+}
+
+/*
+ * perf-v2 Phase B1+B2: fuses proj_divide (ratio=p0/b) with cone_weight +
+ * flip + transpose, writing straight into an image2d_array_t (ratio_img)
+ * instead of a buffer. Replaces what was three steps (proj_divide into a
+ * d_ratio buffer, preprocess into a d_ratio_prep buffer,
+ * clEnqueueCopyBufferToImage into the image) with one kernel launch.
+ * d_ratio/d_ratio_prep were both write-once/read-once and never used
+ * elsewhere. An intermediate B1-only version that fused just the
+ * image-write step (without the divide) was tried first and superseded
+ * by this fully-fused version once B2 landed -- removed rather than kept
+ * as dead code. See divide_preprocess_img in kernels/bp_buffer.cl for the
+ * kernel and its math-equivalence note against the original two kernels.
+ */
+static void run_divide_preprocess_img(CLState *cl, const CBpara *p,
+                                       cl_mem d_proj_meas, cl_mem d_proj_b,
+                                       cl_mem dst_img)
+{
+    cl_int err;
+    cl_kernel k = cl->k_divide_preproc_img;
+    int W = p->detector_width, H = p->detector_height, np = p->num_projs;
+    float vs  = (float)p->voxelSize;
+    float SDD = (float)p->SDD;
+    float px  = (float)p->pixelSize;
+
+    clSetKernelArg(k, 0, sizeof(cl_mem), &d_proj_meas);
+    clSetKernelArg(k, 1, sizeof(cl_mem), &d_proj_b);
+    clSetKernelArg(k, 2, sizeof(cl_mem), &dst_img);
+    clSetKernelArg(k, 3, sizeof(int),    &W);
+    clSetKernelArg(k, 4, sizeof(int),    &H);
+    clSetKernelArg(k, 5, sizeof(float),  &vs);
+    clSetKernelArg(k, 6, sizeof(float),  &SDD);
+    clSetKernelArg(k, 7, sizeof(float),  &px);
+
+    size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
+    size_t lws[3] = {16, 16, 1};
+    for (int d = 0; d < 3; d++)
+        if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
+    err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
+    CL_CHECK(err, "divide_preprocess_img enqueue");
 }
 
 
@@ -346,7 +411,7 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
 
 /* ── Internal: run forward projection on GPU (buffer mode) ─────────────── */
 static void run_fp_buffer(CLState *cl, const CBpara *p,
-                           cl_mem d_vol, cl_mem d_proj)
+                           cl_mem *d_vol_ptr, cl_mem d_proj)
 {
     cl_int err;
     cl_kernel k = cl->k_fp_buf;
@@ -356,6 +421,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     int n_samples = p->n_samples;
     float SOD=(float)p->SOD, SDD=(float)p->SDD;
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
+    cl_mem d_vol = *d_vol_ptr;
 
     clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
     clSetKernelArg(k, 1, sizeof(cl_mem), &cl->d_R_mats);
@@ -416,16 +482,80 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     }
     /* Variance investigation (see README "gpu-buf run-to-run variance"):
      * ruled out other-user contention and per-angle geometry, couldn't
-     * check dmesg (no root). This adds GPU-side event profiling
+     * check dmesg (no root). GPU-side event profiling
      * (CL_PROFILING_COMMAND_START/END, already enabled on the queue via
-     * CL_QUEUE_PROFILING_ENABLE) alongside the existing host wall-clock
-     * timing, so a slow slab can be attributed to either: GPU execution
-     * itself running slow (event delta matches wall-clock delta — real
-     * throttling/contention on the device), or host-side overhead around
-     * a fast GPU execution (event delta stays fast while wall-clock is
-     * slow — driver queueing, OS scheduling, or clFinish overhead, not
-     * the GPU itself). */
+     * CL_QUEUE_PROFILING_ENABLE) confirmed slow slabs are GPU-bound
+     * (wall==gpu to the ms), and a follow-up diagnostic (--diag
+     * repeat-slab, perf-v2 Phase A2/A3) found the actual mechanism: NOT
+     * thermal throttling (Hawaii's ~3.2x DVFS range can't produce the
+     * observed ~5.8-6x jump, and gpu-img/gpu-opt stay stable in the same
+     * sessions gpu-buf goes slow). Repeating one fixed angle-slab many
+     * times showed a step degradation to ~6x cost that HOLDS, then
+     * recovers instantly when d_vol is freed and recreated -- and then
+     * degrades again after a further, variable number of launches (6-13
+     * in testing). This is consistent with the OpenCL driver periodically
+     * demoting the 537MB d_vol buffer's memory placement under sustained
+     * access (e.g. losing a large-page mapping or migrating out of the
+     * fastest VRAM tier), recoverable by reallocation, recurring on a
+     * roughly time/pressure-based cycle rather than a fixed launch count.
+     *
+     * FP_BUFFER_VOL_REALLOC_EVERY: mitigation attempt -- every N angle-slabs,
+     * read the current d_vol contents back to host, free the buffer, and
+     * recreate it fresh from that same data, on the theory that this resets
+     * whatever driver-side state causes the demotion confirmed via --diag
+     * repeat-slab (see that diagnostic's comment for the root-cause
+     * evidence: NOT thermal throttling, a step-degradation that recovers
+     * instantly on reallocation and recurs after 6-13 further launches).
+     *
+     * DOES NOT RELIABLY BEAT BASELINE -- kept off by default (0) after
+     * real testing contradicted an earlier promising result. A 5-epoch
+     * sweep at N in {3,4,5,6,7,10} showed N=5 as a clear winner (34.91s
+     * vs a 37.7-50.9s baseline-equivalent range, clean of slow-slab
+     * warnings after 2 epochs of warmup) -- but that did not reproduce at
+     * the full 10-epoch/75-angle scale used for the documented baseline.
+     * Four full 10-epoch runs with N=5 gave [105.84, 86.77, 89.04, 85.31]s
+     * (mean 91.74s, stdev 9.52) against the three existing unmitigated
+     * baseline runs [75.37, 101.89, 83.63]s (mean 86.96s, stdev 13.57) --
+     * the mitigated mean is *slower*, not faster (-5.5%), though the
+     * spread narrowed somewhat (weak signal at this sample size, not
+     * treated as confirmed). Most mitigated runs still showed scattered
+     * GPU-BOUND warnings despite reallocating every 5 launches, meaning
+     * it does not reliably land inside the degradation-avoidance window
+     * at this scale, and each reallocation itself costs real time
+     * (~0.2-0.4s observed, readback+upload of 537MB) that appears to
+     * roughly cancel whatever it saves.
+     *
+     * Root-cause diagnosis (buffer-tied, driver-side, not thermal) stands
+     * on its own evidence from --diag repeat-slab; this specific
+     * mitigation strategy does not fix it in practice at real MLEM scale.
+     * Left in as an opt-in env var for further tuning (e.g. a different
+     * trigger heuristic, or per-buffer-size scaling) rather than removed,
+     * since the underlying mechanism and hook point are still correct. */
+    int realloc_every = 0;
+    {
+        const char *re_env = getenv("FP_BUFFER_VOL_REALLOC_EVERY");
+        if (re_env) realloc_every = atoi(re_env);
+    }
+    static long total_slab_launches = 0;
+    size_t vol_bytes = (size_t)Nxz * Nxz * Ny * sizeof(float);
+    float *vol_scratch = (realloc_every > 0) ? (float *)malloc(vol_bytes) : NULL;
+
     for (size_t p0 = 0; p0 < gws_full[2]; p0 += ANG_SLAB) {
+        if (realloc_every > 0 && total_slab_launches > 0 &&
+            total_slab_launches % realloc_every == 0) {
+            double t_realloc0 = get_time_sec();
+            err = clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, vol_scratch, 0, NULL, NULL);
+            CL_CHECK(err, "fp_buffer vol readback (realloc mitigation)");
+            clReleaseMemObject(d_vol);
+            d_vol = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
+                                    vol_bytes, vol_scratch, &err);
+            CL_CHECK(err, "fp_buffer d_vol realloc (mitigation)");
+            clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
+            *d_vol_ptr = d_vol;
+            printf("    [fp_buffer] reallocated d_vol at total_slab_launches=%ld (%.3fs)\n",
+                   total_slab_launches, get_time_sec() - t_realloc0);
+        }
+
         size_t slab = (gws_full[2] - p0 < ANG_SLAB) ? (gws_full[2] - p0) : ANG_SLAB;
         size_t offset[3] = {0, 0, p0};
         size_t gws[3]    = {gws_full[0], gws_full[1], slab};
@@ -454,8 +584,137 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
         }
         clReleaseEvent(evt);
         slab_idx++;
+        total_slab_launches++;
         if (slab_pause_us > 0) usleep((useconds_t)slab_pause_us);
     }
+
+    if (vol_scratch) free(vol_scratch);
+}
+
+/*
+ * ── Diagnostic: repeat one fp_buffer angle-slab N times ─────────────────
+ *
+ * perf-v2 plan Phase A2/A3: the README's "thermal throttling" explanation
+ * for gpu-buf's run-to-run variance is disputed (6.6x discrete jump is
+ * beyond Hawaii's ~3.2x DVFS range, and gpu-img/gpu-opt stay stable in the
+ * same sessions gpu-buf goes slow -- device-wide throttling can't be
+ * mode-selective). This isolates ONE fixed angle-slab and launches it N
+ * times back-to-back, timing each with GPU-side event profiling:
+ *
+ *   - Throttling predicts MONOTONE degradation (die heating under load).
+ *   - TLB/page-residency predicts BIMODAL switching between two cost levels.
+ *   - Memory-channel camping predicts UNIFORMLY slow, every time (fully
+ *     deterministic for that angle set).
+ *
+ * angle_offset lets the same test be re-run with a different angle range
+ * in the same slab-index slot (A3: does slowness follow slab INDEX or
+ * ANGLE VALUE?) without changing which position in the launch sequence it
+ * occupies.
+ *
+ * realloc_at (0 = never): after this many repeats have completed, free
+ * d_vol and create a fresh buffer from the same host data, then continue.
+ * Both repeat-slab runs so far show a one-time step degradation (~5.8-6x)
+ * that then holds permanently for the rest of the run, angle-independent
+ * -- not thermal (no monotone ramp), not channel camping (starts fast),
+ * not classic TLB bimodal flapping (single step, not repeated switching).
+ * That points at a one-shot driver-side event tied to the allocation
+ * itself (e.g. page migration/remapping under sustained pressure). If
+ * speed recovers after realloc, this confirms it and gives a workaround
+ * (periodic reallocation); if it doesn't, the cause is external to the
+ * buffer (global GPU/driver state).
+ */
+static void run_diag_repeat_slab(CLState *cl, const CBpara *p,
+                                  const float *volume,
+                                  int angle_offset, int slab_size, int n_repeats,
+                                  int realloc_at)
+{
+    cl_int err;
+    cl_kernel k = cl->k_fp_buf;
+    int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
+    int W = p->detector_width,   H  = p->detector_height;
+    int np = p->num_projs;
+    int n_samples = p->n_samples;
+    float SOD=(float)p->SOD, SDD=(float)p->SDD;
+    float vs=(float)p->voxelSize, px=(float)p->pixelSize;
+
+    if (angle_offset < 0 || angle_offset + slab_size > np) {
+        fprintf(stderr, "run_diag_repeat_slab: angle range [%d,%d) out of "
+                        "bounds for np=%d\n", angle_offset, angle_offset+slab_size, np);
+        return;
+    }
+
+    size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
+    size_t proj_bytes = (size_t)np * H * W * sizeof(float);
+    cl_mem d_proj_scratch = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+    CL_CHECK(err, "d_proj_scratch (diag)");
+
+    cl_mem d_vol = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
+                                   vol_bytes, (void*)volume, &err);
+    CL_CHECK(err, "d_vol (diag)");
+
+    clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
+    clSetKernelArg(k, 1, sizeof(cl_mem), &cl->d_R_mats);
+    clSetKernelArg(k, 2, sizeof(cl_mem), &cl->d_T_vecs);
+    clSetKernelArg(k, 3, sizeof(cl_mem), &d_proj_scratch);
+    clSetKernelArg(k, 4, sizeof(int),    &Nxz);
+    clSetKernelArg(k, 5, sizeof(int),    &Ny);
+    clSetKernelArg(k, 6, sizeof(int),    &W);
+    clSetKernelArg(k, 7, sizeof(int),    &H);
+    clSetKernelArg(k, 8, sizeof(int),    &np);
+    clSetKernelArg(k, 9, sizeof(int),    &n_samples);
+    clSetKernelArg(k,10, sizeof(float),  &SOD);
+    clSetKernelArg(k,11, sizeof(float),  &SDD);
+    clSetKernelArg(k,12, sizeof(float),  &vs);
+    clSetKernelArg(k,13, sizeof(float),  &px);
+
+    size_t lws[3] = {4, 64, 1};
+    const char *lws_env = getenv("FP_BUFFER_LWS");
+    if (lws_env) {
+        unsigned long a=4, b=64, c=1;
+        if (sscanf(lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+            lws[0]=a; lws[1]=b; lws[2]=c;
+        }
+    }
+    size_t gws_full[3] = {(size_t)W, (size_t)H, (size_t)np};
+    for (int d=0; d<2; d++)
+        if (gws_full[d] % lws[d]) gws_full[d] += lws[d] - gws_full[d] % lws[d];
+
+    printf("=== diag repeat-slab: angles [%d,%d), %d repeats, lws={%zu,%zu,%zu} ===\n",
+           angle_offset, angle_offset + slab_size, n_repeats, lws[0], lws[1], lws[2]);
+
+    size_t offset[3] = {0, 0, (size_t)angle_offset};
+    size_t gws[3]     = {gws_full[0], gws_full[1], (size_t)slab_size};
+
+    for (int rep = 0; rep < n_repeats; rep++) {
+        if (realloc_at > 0 && rep == realloc_at) {
+            clReleaseMemObject(d_vol);
+            d_vol = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
+                                    vol_bytes, (void*)volume, &err);
+            CL_CHECK(err, "d_vol realloc (diag)");
+            clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
+            printf("  -- reallocated d_vol before rep %d --\n", rep+1);
+        }
+
+        cl_event evt;
+        double t0 = get_time_sec();
+        err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, &evt);
+        CL_CHECK(err, "diag repeat-slab enqueue");
+        err = clFinish(cl->queue);
+        CL_CHECK(err, "diag repeat-slab finish");
+        double dt = get_time_sec() - t0;
+
+        cl_ulong t_start = 0, t_end = 0;
+        double gpu_dt = -1.0;
+        if (clGetEventProfilingInfo(evt, CL_PROFILING_COMMAND_START, sizeof(t_start), &t_start, NULL) == CL_SUCCESS &&
+            clGetEventProfilingInfo(evt, CL_PROFILING_COMMAND_END,   sizeof(t_end),   &t_end,   NULL) == CL_SUCCESS) {
+            gpu_dt = (double)(t_end - t_start) * 1e-9;
+        }
+        printf("  rep %3d/%d  wall=%.4fs  gpu=%.4fs\n", rep+1, n_repeats, dt, gpu_dt);
+        clReleaseEvent(evt);
+    }
+
+    clReleaseMemObject(d_vol);
+    clReleaseMemObject(d_proj_scratch);
 }
 
 /* ── Internal: run backprojection (image mode) ──────────────────────────── */
@@ -570,10 +829,29 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     CL_CHECK(err, "fp_image enqueue");
 }
 
+/*
+ * ── gpu_diag_repeat_slab ────────────────────────────────────────────────
+ * Public entry for the perf-v2 Phase A2/A3 diagnostic. Builds R/T buffers,
+ * repeats one fixed angle-slab n_repeats times (optionally reallocating
+ * d_vol partway through -- see run_diag_repeat_slab for realloc_at).
+ * Does not run any epoch loop and does not write output -- diagnostic only.
+ */
+void gpu_diag_repeat_slab(CLState *cl, const CBpara *p, const float *volume,
+                           int angle_offset, int slab_size, int n_repeats,
+                           int realloc_at)
+{
+    build_RT_buffers(cl, p);
+
+    run_diag_repeat_slab(cl, p, volume, angle_offset, slab_size, n_repeats, realloc_at);
+
+    clReleaseMemObject(cl->d_R_mats);
+    clReleaseMemObject(cl->d_T_vecs);
+}
+
 /* ── reconstruct_gpu ─────────────────────────────────────────────────────── */
 void reconstruct_gpu(CLState *cl, const CBpara *p,
                      const float *proj_measured, float *volume,
-                     int epochs)
+                     int epochs, const char *conv_log)
 {
     cl_int err;
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
@@ -724,12 +1002,38 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     int proj_n = np * H * W;
     int vol_n  = Nxz * Nxz * Ny;
 
+    /* perf-v2 Phase B4: seed vol_img once with the initial volume
+     * (float32 mode only; --half still uses its own per-epoch
+     * float_to_half+copy path). After this, vol_update_img keeps vol_img
+     * current at the end of every epoch, so the per-epoch
+     * clEnqueueCopyBufferToImage this loop used to do at the START of
+     * every epoch (~1.07GB/epoch at 512^3) is removed entirely below. */
+    if (cl->mode == GPU_MODE_IMAGE && !p->use_half_vol) {
+        size_t vorigin0[3]={0,0,0};
+        size_t vregion0[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
+        err = clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img,
+                                         0, vorigin0, vregion0, 0, NULL, NULL);
+        CL_CHECK(err, "seed vol_img float32");
+    }
+
+    /* --log-convergence scratch: host-side readback buffers, only allocated
+     * when logging is on (default NULL, zero extra cost otherwise). b_host
+     * holds fp(v) read back right after fp; v_prev_host holds the volume
+     * from the start of the epoch, for rel_change. */
+    float *b_host      = conv_log ? (float *)malloc((size_t)proj_n * sizeof(float)) : NULL;
+    float *v_prev_host = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
+    float *v_cur_host  = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
+
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
 
+        if (conv_log)
+            clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
+                                 (size_t)vol_n * sizeof(float), v_prev_host, 0, NULL, NULL);
+
         /* forward project: b = F(v0) */
         if (cl->mode == GPU_MODE_BUFFER) {
-            run_fp_buffer(cl, p, d_vol, d_proj_b);
+            run_fp_buffer(cl, p, &d_vol, d_proj_b);
         } else {
             size_t vorigin[3]={0,0,0};
             size_t vregion[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
@@ -745,18 +1049,30 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                 err=clEnqueueCopyBufferToImage(cl->queue, d_vol_half_img, vol_img,
                                                0, vorigin, vregion, 0,NULL,NULL);
                 CL_CHECK(err,"CopyBufferToImage vol img");
-            } else {
-                /* float32: copy d_vol straight into vol_img, skipping the
-                 * same-format staging buffer entirely. */
-                err=clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img,
-                                               0, vorigin, vregion, 0,NULL,NULL);
-                CL_CHECK(err,"CopyBufferToImage vol img float32");
             }
+            /* float32 mode: no copy needed here -- vol_img was seeded
+             * before the loop and is kept current by vol_update_img at
+             * the end of every epoch (Phase B4). --half still copies
+             * every epoch (above), since float_to_half is a real format
+             * conversion vol_update_img doesn't do. */
             run_fp_image(cl, p, vol_img, d_proj_b);
         }
 
-        /* ratio = p0 / b */
-        {
+        if (conv_log)
+            clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
+                                 (size_t)proj_n * sizeof(float), b_host, 0, NULL, NULL);
+
+        /* bp_ratio = bp(ratio_prep). No zero-fill needed: bp_buffer/bp_image
+         * kernels unconditionally overwrite every voxel in range (plain
+         * assignment, not accumulation), so pre-clearing is dead work.
+         *
+         * perf-v2 Phase B1+B2: image mode fuses proj_divide (ratio=p0/b)
+         * with preprocess (cone_weight+flip+transpose) into one kernel
+         * that writes straight into ratio_img_buf -- no d_ratio
+         * intermediate buffer, no buffer->image copy. Buffer mode is
+         * unaffected: it still needs proj_divide's plain-buffer output
+         * for run_preprocess/run_bp_buffer, which don't use an image. */
+        if (cl->mode == GPU_MODE_BUFFER) {
             cl_kernel k = cl->k_divide;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_proj_b);
@@ -765,28 +1081,34 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             size_t gws=((size_t)proj_n + 3) / 4;
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"proj_divide");
+            run_preprocess(cl, p, d_ratio, d_ratio_prep);  /* fused: cone_weight + flip + transpose */
+            run_bp_buffer(cl, p, d_ratio_prep, d_ang_cs, d_bp_ratio);
+        } else {
+            run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img_buf);
+            run_bp_image(cl, p, ratio_img_buf, d_ang_cs, d_bp_ratio);
         }
 
-        run_preprocess(cl, p, d_ratio, d_ratio_prep);  /* fused: cone_weight + flip + transpose */
-
-        /* bp_ratio = bp(ratio_prep). No zero-fill needed: bp_buffer/bp_image
-         * kernels unconditionally overwrite every voxel in range (plain
-         * assignment, not accumulation), so pre-clearing is dead work. */
-        {
-            if (cl->mode == GPU_MODE_BUFFER) {
-                run_bp_buffer(cl, p, d_ratio_prep, d_ang_cs, d_bp_ratio);
-            } else {
-                size_t rorigin[3]={0,0,0};
-                size_t rregion[3]={(size_t)H,(size_t)W,(size_t)np};
-                err=clEnqueueCopyBufferToImage(cl->queue, d_ratio_prep, ratio_img_buf,
-                                               0, rorigin, rregion, 0,NULL,NULL);
-                CL_CHECK(err,"CopyBufferToImage ratio img");
-                run_bp_image(cl, p, ratio_img_buf, d_ang_cs, d_bp_ratio);
-            }
-        }
-
-        /* v0 *= bp_ratio / bp_ones */
-        {
+        /* v0 *= bp_ratio / bp_ones
+         *
+         * perf-v2 Phase B4: image mode in float32 uses vol_update_img,
+         * which does the same update AND writes straight into vol_img,
+         * replacing the copy that used to run at the top of the NEXT
+         * epoch. --half keeps the plain vol_update (its vol_img is
+         * refreshed via float_to_half+copy above instead). Buffer mode
+         * has no vol_img at all, so it always uses plain vol_update. */
+        if (cl->mode == GPU_MODE_IMAGE && !p->use_half_vol) {
+            cl_kernel k = cl->k_update_img;
+            clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
+            clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
+            clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
+            clSetKernelArg(k,3,sizeof(cl_mem),&vol_img);
+            clSetKernelArg(k,4,sizeof(int),   &Nxz);
+            clSetKernelArg(k,5,sizeof(int),   &Ny);
+            clSetKernelArg(k,6,sizeof(int),   &vol_n);
+            size_t gws=((size_t)vol_n + 3) / 4;
+            err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
+            CL_CHECK(err,"vol_update_img");
+        } else {
             cl_kernel k = cl->k_update;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
@@ -797,11 +1119,24 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             CL_CHECK(err,"vol_update");
         }
         clFinish(cl->queue);  /* single sync per epoch — for timing */
-        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
+        double t_ep_total = get_time_sec() - t_ep;
+        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, t_ep_total);
+
+        if (conv_log) {
+            clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
+                                 (size_t)vol_n * sizeof(float), v_cur_host, 0, NULL, NULL);
+            log_convergence(conv_log, epoch, t_ep_total,
+                             proj_measured, b_host, (size_t)proj_n,
+                             v_cur_host, (epoch == 0) ? NULL : v_prev_host, (size_t)vol_n);
+        }
     }
 
     /* Read back result */
     clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
+
+    if (b_host)      free(b_host);
+    if (v_prev_host) free(v_prev_host);
+    if (v_cur_host)  free(v_cur_host);
 
     /* Cleanup */
     clReleaseMemObject(d_proj_meas);
@@ -834,7 +1169,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
  * ═══════════════════════════════════════════════════════════════════════════ */
 void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          const float *proj_measured, float *volume,
-                         int epochs)
+                         int epochs, const char *conv_log)
 {
     cl_int err;
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
@@ -871,10 +1206,9 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
 
     cl_mem d_proj_b    = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
     CL_CHECK(err, "d_proj_b opt");
-    cl_mem d_ratio     = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
-    CL_CHECK(err, "d_ratio opt");
-    cl_mem d_ratio_prep= clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
-    CL_CHECK(err, "d_ratio_prep opt");
+    /* perf-v2 Phase B1+B2: d_ratio and d_ratio_prep both removed --
+     * run_divide_preprocess_img now fuses divide+preprocess and writes
+     * straight into ratio_img, no intermediate buffers needed. */
     cl_mem d_proj_prep = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
     CL_CHECK(err, "d_proj_prep opt");
     cl_mem d_bp_ratio  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
@@ -995,13 +1329,36 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         CL_CHECK(err,"d_vol_half");
     }
 
+    /* perf-v2 Phase B4: seed vol_img once with the initial volume
+     * (float32 mode only). After this, vol_update_img keeps vol_img
+     * current at the end of every epoch, so the per-epoch
+     * clEnqueueCopyBufferToImage this loop used to do at the START of
+     * every epoch (~1.07GB/epoch at 512^3) is removed entirely below. */
+    if (!p->use_half_vol) {
+        size_t vorigin0[3]={0,0,0};
+        size_t vregion0[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
+        err = clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img,
+                                         0, vorigin0, vregion0, 0, NULL, NULL);
+        CL_CHECK(err, "seed vol_img float32 opt");
+    }
+
+    /* --log-convergence scratch: only allocated when logging is on (default
+     * NULL, zero extra cost otherwise). See reconstruct_gpu for the pattern. */
+    float *b_host      = conv_log ? (float *)malloc((size_t)proj_n * sizeof(float)) : NULL;
+    float *v_prev_host = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
+    float *v_cur_host  = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
+
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
 
-        /* ── float d_vol → vol_img (GPU-side, no PCIe) ── */
-        size_t origin[3]={0,0,0};
-        size_t region[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
+        if (conv_log)
+            clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
+                                 (size_t)vol_n * sizeof(float), v_prev_host, 0, NULL, NULL);
+
         if (p->use_half_vol) {
+            /* ── float d_vol → vol_img (GPU-side, no PCIe) ── */
+            size_t origin[3]={0,0,0};
+            size_t region[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
             cl_kernel k = cl->k_f2h;
             clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
             clSetKernelArg(k, 1, sizeof(cl_mem), &d_vol_half);
@@ -1013,34 +1370,21 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueCopyBufferToImage(cl->queue, d_vol_half, vol_img,
                                            0, origin, region, 0,NULL,NULL);
             CL_CHECK(err,"CopyBufferToImage vol half");
-        } else {
-            err=clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img,
-                                           0, origin, region, 0,NULL,NULL);
-            CL_CHECK(err,"CopyBufferToImage vol float32");
         }
+        /* float32 mode: no copy needed here -- vol_img was seeded before
+         * the loop and is kept current by vol_update_img at the end of
+         * every epoch (Phase B4). */
         run_fp_image(cl, p, vol_img, d_proj_b);
 
-        /* ── ratio = p0/b ── */
-        {
-            cl_kernel k = cl->k_divide;
-            clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
-            clSetKernelArg(k,1,sizeof(cl_mem),&d_proj_b);
-            clSetKernelArg(k,2,sizeof(cl_mem),&d_ratio);
-            clSetKernelArg(k,3,sizeof(int),&proj_n);
-            size_t gws=((size_t)proj_n + 3) / 4;
-            err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
-            CL_CHECK(err,"divide opt");
-        }
-        run_preprocess(cl, p, d_ratio, d_ratio_prep);
+        if (conv_log)
+            clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
+                                 (size_t)proj_n * sizeof(float), b_host, 0, NULL, NULL);
 
-        /* ── copy d_ratio_prep buffer → ratio_img ── */
-        {
-            size_t origin[3]={0,0,0};
-            size_t region[3]={(size_t)H,(size_t)W,(size_t)np};
-            err=clEnqueueCopyBufferToImage(cl->queue, d_ratio_prep, ratio_img,
-                                           0, origin, region, 0, NULL, NULL);
-            CL_CHECK(err,"CopyBufferToImage ratio");
-        }
+        /* perf-v2 Phase B1+B2: fuses ratio=p0/b with cone_weight+flip+
+         * transpose+write-to-image into one kernel -- no d_ratio
+         * intermediate buffer, no buffer->image copy (was ~0.80GB/epoch
+         * at 512^3 plus two kernel launches). Same math, same values. */
+        run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img);
 
         /* ── bp_opt(ratio_img) ── */
         {
@@ -1074,8 +1418,25 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             CL_CHECK(err,"bp_opt ratio");
         }
 
-        /* ── update (float4 vectorized) ── */
-        {
+        /* ── update (float4 vectorized) ──
+         * perf-v2 Phase B4: float32 mode uses vol_update_img, which also
+         * writes straight into vol_img (replacing the copy that used to
+         * run at the top of the NEXT epoch). --half keeps plain
+         * vol_update since its vol_img is refreshed via
+         * float_to_half+copy above instead. */
+        if (!p->use_half_vol) {
+            cl_kernel k = cl->k_update_img;
+            clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
+            clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
+            clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
+            clSetKernelArg(k,3,sizeof(cl_mem),&vol_img);
+            clSetKernelArg(k,4,sizeof(int),&Nxz);
+            clSetKernelArg(k,5,sizeof(int),&Ny);
+            clSetKernelArg(k,6,sizeof(int),&vol_n);
+            size_t gws=((size_t)vol_n + 3) / 4;
+            err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
+            CL_CHECK(err,"update_img opt");
+        } else {
             cl_kernel k = cl->k_update;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
@@ -1086,7 +1447,16 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             CL_CHECK(err,"update opt");
         }
         clFinish(cl->queue);
-        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
+        double t_ep_total = get_time_sec() - t_ep;
+        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, t_ep_total);
+
+        if (conv_log) {
+            clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
+                                 (size_t)vol_n * sizeof(float), v_cur_host, 0, NULL, NULL);
+            log_convergence(conv_log, epoch, t_ep_total,
+                             proj_measured, b_host, (size_t)proj_n,
+                             v_cur_host, (epoch == 0) ? NULL : v_prev_host, (size_t)vol_n);
+        }
     }
     clReleaseMemObject(vol_img);
     if (d_vol_half) clReleaseMemObject(d_vol_half);
@@ -1094,14 +1464,16 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
 
     clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
 
+    if (b_host)      free(b_host);
+    if (v_prev_host) free(v_prev_host);
+    if (v_cur_host)  free(v_cur_host);
+
     clReleaseMemObject(d_ang_cs);
     clReleaseMemObject(d_angles);
     clReleaseMemObject(d_proj_meas);
     clReleaseMemObject(d_proj_prep);
     clReleaseMemObject(d_vol);
     clReleaseMemObject(d_proj_b);
-    clReleaseMemObject(d_ratio);
-    clReleaseMemObject(d_ratio_prep);
     clReleaseMemObject(d_bp_ratio);
     clReleaseMemObject(d_bp_ones);
     clReleaseMemObject(cl->d_R_mats);
