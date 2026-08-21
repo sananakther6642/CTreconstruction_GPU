@@ -341,10 +341,19 @@ never have caught it (both would agree while both were wrong). Confirmed
   `validate.py` hardcoded the same `output_python.hdf5` filename
   regardless of which scale you validated — so `validate.py 512` always
   compared 512³ C output against a 256³-shaped array and printed "shape
-  mismatch". Fixed: `validate.py` now looks for `output_python_512.hdf5`;
-  generate it with `make run-python-512 EPOCHS=N` (slow — pure Python
-  `fp_func` at 512³, minutes/epoch). Still subject to the sampling
-  mismatch above once generated.
+  mismatch". `validate.py`'s filename bug is fixed (now looks for
+  `output_python_512.hdf5`), but generating that file turned out to be
+  **infeasible on `pool15-01`**: `bp_func`/`fp_func` at 512³ build several
+  float64 `(512,512,512)` arrays at once (~1GB each), and with only 15GB
+  RAM and no swap configured on this machine, the run was OOM-killed by
+  the kernel (confirmed via `dmesg`) even with nothing else running.
+  A `ulimit -v` memory cap just turns the freeze into a clean
+  `MemoryError` faster — it doesn't make the workload fit. Would need a
+  machine with substantially more RAM (or a numpy rewrite using float32 /
+  chunked processing instead of `bp_func`'s all-at-once float64
+  meshgrids) to ever produce this file. Not pursued further — `MSE vs
+  Python` at 512³ stays unavailable; 256³ is unaffected and already works
+  via `make run-python`.
 
 ## Modes
 
