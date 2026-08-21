@@ -30,6 +30,7 @@ typedef struct {
     cl_kernel  k_update;
     cl_kernel  k_preproc;
     cl_kernel  k_divide_preproc_img; /* perf-v2 Phase B1+B2: fuses proj_divide + preprocess, writes straight to ratio_img */
+    cl_kernel  k_update_img; /* perf-v2 Phase B4: vol_update that also writes straight to vol_img (float32 mode only) */
     cl_kernel  k_cone_hw;
 
     /* image-mode kernels */

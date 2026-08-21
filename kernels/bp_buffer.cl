@@ -256,3 +256,71 @@ __kernel void vol_update(
         }
     }
 }
+
+/*
+ * vol_update_img — same update as vol_update, but also writes the result
+ * directly into vol_img (a 3D image), eliminating the separate
+ * clEnqueueCopyBufferToImage(d_vol -> vol_img) the epoch loop used to do
+ * right before fp_image's next call (~1.07GB/epoch at 512^3: 537MB read +
+ * 537MB write). Requires cl_khr_3d_image_writes (OpenCL 1.2 has no 3D
+ * read-write images without it) -- confirmed supported on this Hawaii
+ * device via perf-v2 Phase A7. float32 mode only; --half still uses the
+ * separate float_to_half + copy path since half-precision needs an
+ * actual format conversion this kernel doesn't do.
+ *
+ * perf-v2 Phase B4. Flat buffer index j decomposes as
+ * j = x*(Nxz*Ny) + y*Ny + z (matching the existing buffer layout), and
+ * the image is (width=Ny/z-axis, height=Nxz/y-axis, depth=Nxz/x-axis) --
+ * verified against fp_image.cl's own read_imagef(volume_img, samp,
+ * (zi,yi,xi)) coordinate convention. Since Ny (256 or 512) is always a
+ * multiple of 4, four consecutive flat indices in one vec4 always share
+ * the same (x,y) and differ only in z -- safe to decompose into four
+ * scalar write_imagef calls at (z,z+1,z+2,z+3) with the same (y,x).
+ */
+__kernel void vol_update_img(
+    __global       float *volume,
+    __global const float *bp_ratio,
+    __global const float *bp_ones,
+    __write_only image3d_t vol_img,
+    int Nxz,
+    int Ny,
+    int n
+)
+{
+    int i4 = get_global_id(0);
+    int base = i4 * 4;
+    if (base + 3 < n) {
+        float4 v  = vload4(i4, volume);
+        float4 br = vload4(i4, bp_ratio);
+        float4 bo = vload4(i4, bp_ones);
+        float4 out;
+        out.x = (bo.x > 1e-10f) ? v.x * br.x / bo.x : v.x;
+        out.y = (bo.y > 1e-10f) ? v.y * br.y / bo.y : v.y;
+        out.z = (bo.z > 1e-10f) ? v.z * br.z / bo.z : v.z;
+        out.w = (bo.w > 1e-10f) ? v.w * br.w / bo.w : v.w;
+        vstore4(out, i4, volume);
+
+        int x = base / (Nxz * Ny);
+        int rem = base % (Nxz * Ny);
+        int y = rem / Ny;
+        int z = rem % Ny;
+        write_imagef(vol_img, (int4)(z,   y, x, 0), (float4)(out.x, 0.f, 0.f, 0.f));
+        write_imagef(vol_img, (int4)(z+1, y, x, 0), (float4)(out.y, 0.f, 0.f, 0.f));
+        write_imagef(vol_img, (int4)(z+2, y, x, 0), (float4)(out.z, 0.f, 0.f, 0.f));
+        write_imagef(vol_img, (int4)(z+3, y, x, 0), (float4)(out.w, 0.f, 0.f, 0.f));
+    } else {
+        for (int j = base; j < n; j++) {
+            float denom = bp_ones[j];
+            float val = volume[j];
+            if (denom > 1e-10f) {
+                val = volume[j] * bp_ratio[j] / denom;
+                volume[j] = val;
+            }
+            int x = j / (Nxz * Ny);
+            int rem = j % (Nxz * Ny);
+            int y = rem / Ny;
+            int z = rem % Ny;
+            write_imagef(vol_img, (int4)(z, y, x, 0), (float4)(val, 0.f, 0.f, 0.f));
+        }
+    }
+}

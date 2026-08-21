@@ -180,6 +180,8 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "preprocess_proj");
         cl->k_divide_preproc_img = clCreateKernel(cl->prog_buffer, "divide_preprocess_img", &err);
         CL_CHECK(err, "divide_preprocess_img");
+        cl->k_update_img = clCreateKernel(cl->prog_buffer, "vol_update_img", &err);
+        CL_CHECK(err, "vol_update_img");
         cl->k_cone_hw  = clCreateKernel(cl->prog_buffer, "cone_weight_hw", &err);
         CL_CHECK(err, "cone_weight_hw");
     }
@@ -230,7 +232,7 @@ void gpu_cleanup(CLState *cl)
         clReleaseKernel(cl->k_bp_buf); clReleaseKernel(cl->k_fp_buf);
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
         clReleaseKernel(cl->k_preproc);
-        clReleaseKernel(cl->k_divide_preproc_img);
+        clReleaseKernel(cl->k_divide_preproc_img); clReleaseKernel(cl->k_update_img);
         clReleaseKernel(cl->k_cone_hw);
         clReleaseProgram(cl->prog_buffer);
     }
@@ -243,7 +245,7 @@ void gpu_cleanup(CLState *cl)
         clReleaseKernel(cl->k_bp_opt);
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
         clReleaseKernel(cl->k_preproc);
-        clReleaseKernel(cl->k_divide_preproc_img);
+        clReleaseKernel(cl->k_divide_preproc_img); clReleaseKernel(cl->k_update_img);
         clReleaseKernel(cl->k_cone_hw);
         clReleaseKernel(cl->k_fp_img); clReleaseKernel(cl->k_bp_img);
         clReleaseKernel(cl->k_f2h);
@@ -1000,6 +1002,20 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     int proj_n = np * H * W;
     int vol_n  = Nxz * Nxz * Ny;
 
+    /* perf-v2 Phase B4: seed vol_img once with the initial volume
+     * (float32 mode only; --half still uses its own per-epoch
+     * float_to_half+copy path). After this, vol_update_img keeps vol_img
+     * current at the end of every epoch, so the per-epoch
+     * clEnqueueCopyBufferToImage this loop used to do at the START of
+     * every epoch (~1.07GB/epoch at 512^3) is removed entirely below. */
+    if (cl->mode == GPU_MODE_IMAGE && !p->use_half_vol) {
+        size_t vorigin0[3]={0,0,0};
+        size_t vregion0[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
+        err = clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img,
+                                         0, vorigin0, vregion0, 0, NULL, NULL);
+        CL_CHECK(err, "seed vol_img float32");
+    }
+
     /* --log-convergence scratch: host-side readback buffers, only allocated
      * when logging is on (default NULL, zero extra cost otherwise). b_host
      * holds fp(v) read back right after fp; v_prev_host holds the volume
@@ -1033,13 +1049,12 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                 err=clEnqueueCopyBufferToImage(cl->queue, d_vol_half_img, vol_img,
                                                0, vorigin, vregion, 0,NULL,NULL);
                 CL_CHECK(err,"CopyBufferToImage vol img");
-            } else {
-                /* float32: copy d_vol straight into vol_img, skipping the
-                 * same-format staging buffer entirely. */
-                err=clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img,
-                                               0, vorigin, vregion, 0,NULL,NULL);
-                CL_CHECK(err,"CopyBufferToImage vol img float32");
             }
+            /* float32 mode: no copy needed here -- vol_img was seeded
+             * before the loop and is kept current by vol_update_img at
+             * the end of every epoch (Phase B4). --half still copies
+             * every epoch (above), since float_to_half is a real format
+             * conversion vol_update_img doesn't do. */
             run_fp_image(cl, p, vol_img, d_proj_b);
         }
 
@@ -1073,8 +1088,27 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             run_bp_image(cl, p, ratio_img_buf, d_ang_cs, d_bp_ratio);
         }
 
-        /* v0 *= bp_ratio / bp_ones */
-        {
+        /* v0 *= bp_ratio / bp_ones
+         *
+         * perf-v2 Phase B4: image mode in float32 uses vol_update_img,
+         * which does the same update AND writes straight into vol_img,
+         * replacing the copy that used to run at the top of the NEXT
+         * epoch. --half keeps the plain vol_update (its vol_img is
+         * refreshed via float_to_half+copy above instead). Buffer mode
+         * has no vol_img at all, so it always uses plain vol_update. */
+        if (cl->mode == GPU_MODE_IMAGE && !p->use_half_vol) {
+            cl_kernel k = cl->k_update_img;
+            clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
+            clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
+            clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
+            clSetKernelArg(k,3,sizeof(cl_mem),&vol_img);
+            clSetKernelArg(k,4,sizeof(int),   &Nxz);
+            clSetKernelArg(k,5,sizeof(int),   &Ny);
+            clSetKernelArg(k,6,sizeof(int),   &vol_n);
+            size_t gws=((size_t)vol_n + 3) / 4;
+            err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
+            CL_CHECK(err,"vol_update_img");
+        } else {
             cl_kernel k = cl->k_update;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
@@ -1295,6 +1329,19 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         CL_CHECK(err,"d_vol_half");
     }
 
+    /* perf-v2 Phase B4: seed vol_img once with the initial volume
+     * (float32 mode only). After this, vol_update_img keeps vol_img
+     * current at the end of every epoch, so the per-epoch
+     * clEnqueueCopyBufferToImage this loop used to do at the START of
+     * every epoch (~1.07GB/epoch at 512^3) is removed entirely below. */
+    if (!p->use_half_vol) {
+        size_t vorigin0[3]={0,0,0};
+        size_t vregion0[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
+        err = clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img,
+                                         0, vorigin0, vregion0, 0, NULL, NULL);
+        CL_CHECK(err, "seed vol_img float32 opt");
+    }
+
     /* --log-convergence scratch: only allocated when logging is on (default
      * NULL, zero extra cost otherwise). See reconstruct_gpu for the pattern. */
     float *b_host      = conv_log ? (float *)malloc((size_t)proj_n * sizeof(float)) : NULL;
@@ -1308,10 +1355,10 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
                                  (size_t)vol_n * sizeof(float), v_prev_host, 0, NULL, NULL);
 
-        /* ── float d_vol → vol_img (GPU-side, no PCIe) ── */
-        size_t origin[3]={0,0,0};
-        size_t region[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
         if (p->use_half_vol) {
+            /* ── float d_vol → vol_img (GPU-side, no PCIe) ── */
+            size_t origin[3]={0,0,0};
+            size_t region[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
             cl_kernel k = cl->k_f2h;
             clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
             clSetKernelArg(k, 1, sizeof(cl_mem), &d_vol_half);
@@ -1323,11 +1370,10 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueCopyBufferToImage(cl->queue, d_vol_half, vol_img,
                                            0, origin, region, 0,NULL,NULL);
             CL_CHECK(err,"CopyBufferToImage vol half");
-        } else {
-            err=clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img,
-                                           0, origin, region, 0,NULL,NULL);
-            CL_CHECK(err,"CopyBufferToImage vol float32");
         }
+        /* float32 mode: no copy needed here -- vol_img was seeded before
+         * the loop and is kept current by vol_update_img at the end of
+         * every epoch (Phase B4). */
         run_fp_image(cl, p, vol_img, d_proj_b);
 
         if (conv_log)
@@ -1372,8 +1418,25 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             CL_CHECK(err,"bp_opt ratio");
         }
 
-        /* ── update (float4 vectorized) ── */
-        {
+        /* ── update (float4 vectorized) ──
+         * perf-v2 Phase B4: float32 mode uses vol_update_img, which also
+         * writes straight into vol_img (replacing the copy that used to
+         * run at the top of the NEXT epoch). --half keeps plain
+         * vol_update since its vol_img is refreshed via
+         * float_to_half+copy above instead. */
+        if (!p->use_half_vol) {
+            cl_kernel k = cl->k_update_img;
+            clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
+            clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
+            clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
+            clSetKernelArg(k,3,sizeof(cl_mem),&vol_img);
+            clSetKernelArg(k,4,sizeof(int),&Nxz);
+            clSetKernelArg(k,5,sizeof(int),&Ny);
+            clSetKernelArg(k,6,sizeof(int),&vol_n);
+            size_t gws=((size_t)vol_n + 3) / 4;
+            err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
+            CL_CHECK(err,"update_img opt");
+        } else {
             cl_kernel k = cl->k_update;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
