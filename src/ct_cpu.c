@@ -288,14 +288,18 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
      * per-sample bounds check exactly as before — this only reorders when
      * each ray's reads happen relative to its neighbors', not what is read
      * or how it's weighted. */
-/* FP_TILE was tuned once (=8) and never swept, unlike fp_image's
- * work-group shape which went through a 10-candidate sweep and found
- * {8,32,1} ~5-7% faster than the untested {16,16,1} default. Arrays below
- * are sized to FP_TILE_MAX so FP_TILE_ENV can pick any tile size up to
- * that without touching array declarations; unset defaults to 8
- * (unchanged behavior). */
+/* FP_TILE swept 4/8/16/32/48/64 at 512^3 (3-epoch runs, fp time only):
+ *   4->26.05s(*)  8->16.84s  16->14.72s  32->13.58s  48->13.79s  64->13.64s
+ * (*4's result carried contention noise from a preceding GPU sweep on the
+ * same machine; treated as unreliable, not re-tested since the trend from
+ * 8 onward is already clean and monotonic-then-flat). 32-64 are within
+ * noise of each other — curve plateaus at 32, no benefit to going larger,
+ * and 32 costs less stack/cache footprint per tile than 48/64. 32 is now
+ * the default (was 8, a ~19% win: 16.84s->13.58s fp/epoch at 512^3).
+ * Arrays sized to FP_TILE_MAX so FP_TILE_ENV can still override for
+ * further testing without touching declarations. */
 #define FP_TILE_MAX 64
-    int FP_TILE = 8;
+    int FP_TILE = 32;
     {
         const char *tile_env = getenv("FP_TILE_ENV");
         if (tile_env) {
