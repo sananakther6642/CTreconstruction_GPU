@@ -290,7 +290,23 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,10, sizeof(float),  &vs);
     clSetKernelArg(k,11, sizeof(float),  &px);
 
+    /* {4,4,16} tuned once early on (718ms->290ms, the biggest measured win
+     * at the time) and never re-swept, unlike fp_image/fp_buffer which
+     * both turned out to have significant headroom over their untested
+     * defaults. Shared BP_LWS env override across all three bp call sites
+     * (run_bp_buffer, run_bp_image, bp_opt x2) so a sweep tests them
+     * consistently. Keep lws[2] a divisor of Z_SLAB=64 below (1,2,4,8,
+     * 16,32,64) — the z-slab chunking requires it. */
     size_t lws[3] = {4, 4, 16};  /* 16 contiguous z-threads → coalesced writes */
+    {
+        const char *bp_lws_env = getenv("BP_LWS");
+        if (bp_lws_env) {
+            unsigned long a=4, b=4, c=16;
+            if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+                lws[0]=a; lws[1]=b; lws[2]=c;
+            }
+        }
+    }
     size_t gws_full[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
     for (int d=0;d<3;d++)
         if (gws_full[d] % lws[d]) gws_full[d] += lws[d] - gws_full[d] % lws[d];
@@ -419,7 +435,16 @@ static void run_bp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &px);
 
     size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
-    size_t lws[3] = {4, 4, 16};
+    size_t lws[3] = {4, 4, 16};  /* see BP_LWS note in run_bp_buffer above */
+    {
+        const char *bp_lws_env = getenv("BP_LWS");
+        if (bp_lws_env) {
+            unsigned long a=4, b=4, c=16;
+            if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+                lws[0]=a; lws[1]=b; lws[2]=c;
+            }
+        }
+    }
     for (int d=0;d<3;d++) {
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     }
@@ -863,7 +888,16 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,11,sizeof(float),&vs);
             clSetKernelArg(k,12,sizeof(float),&px);
             size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
-            size_t lws[3]={4,4,16};
+            size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
+            {
+                const char *bp_lws_env = getenv("BP_LWS");
+                if (bp_lws_env) {
+                    unsigned long a=4, b=4, c=16;
+                    if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+                        lws[0]=a; lws[1]=b; lws[2]=c;
+                    }
+                }
+            }
             for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ones");
@@ -976,7 +1010,16 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,11,sizeof(float),&vs);
             clSetKernelArg(k,12,sizeof(float),&px);
             size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
-            size_t lws[3]={4,4,16};
+            size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
+            {
+                const char *bp_lws_env = getenv("BP_LWS");
+                if (bp_lws_env) {
+                    unsigned long a=4, b=4, c=16;
+                    if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+                        lws[0]=a; lws[1]=b; lws[2]=c;
+                    }
+                }
+            }
             for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ratio");
