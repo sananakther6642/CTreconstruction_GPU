@@ -77,10 +77,16 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
  * TLB/page-residency effects (bimodal) from channel camping (uniform).
  * angle_offset/slab_size select which angles form the slab -- rerun with
  * a different range to test slab-index vs angle-value sensitivity (A3).
+ * realloc_at (0 = never): after this many repeats, free and recreate
+ * d_vol from the same host data, then continue -- tests whether the
+ * observed one-time step-degradation is tied to the buffer allocation
+ * itself (recovers after realloc) or to external GPU/driver state
+ * (doesn't recover).
  * cl must already be gpu_init'd in GPU_MODE_BUFFER. Diagnostic only --
  * writes nothing, runs no epoch loop.
  */
 void gpu_diag_repeat_slab(CLState *cl, const CBpara *p, const float *volume,
-                           int angle_offset, int slab_size, int n_repeats);
+                           int angle_offset, int slab_size, int n_repeats,
+                           int realloc_at);
 
 #endif /* CT_GPU_H */

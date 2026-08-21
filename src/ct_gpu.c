@@ -477,9 +477,23 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
  * in the same slab-index slot (A3: does slowness follow slab INDEX or
  * ANGLE VALUE?) without changing which position in the launch sequence it
  * occupies.
+ *
+ * realloc_at (0 = never): after this many repeats have completed, free
+ * d_vol and create a fresh buffer from the same host data, then continue.
+ * Both repeat-slab runs so far show a one-time step degradation (~5.8-6x)
+ * that then holds permanently for the rest of the run, angle-independent
+ * -- not thermal (no monotone ramp), not channel camping (starts fast),
+ * not classic TLB bimodal flapping (single step, not repeated switching).
+ * That points at a one-shot driver-side event tied to the allocation
+ * itself (e.g. page migration/remapping under sustained pressure). If
+ * speed recovers after realloc, this confirms it and gives a workaround
+ * (periodic reallocation); if it doesn't, the cause is external to the
+ * buffer (global GPU/driver state).
  */
-static void run_diag_repeat_slab(CLState *cl, const CBpara *p, cl_mem d_vol,
-                                  int angle_offset, int slab_size, int n_repeats)
+static void run_diag_repeat_slab(CLState *cl, const CBpara *p,
+                                  const float *volume,
+                                  int angle_offset, int slab_size, int n_repeats,
+                                  int realloc_at)
 {
     cl_int err;
     cl_kernel k = cl->k_fp_buf;
@@ -496,9 +510,14 @@ static void run_diag_repeat_slab(CLState *cl, const CBpara *p, cl_mem d_vol,
         return;
     }
 
+    size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
     size_t proj_bytes = (size_t)np * H * W * sizeof(float);
     cl_mem d_proj_scratch = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
     CL_CHECK(err, "d_proj_scratch (diag)");
+
+    cl_mem d_vol = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
+                                   vol_bytes, (void*)volume, &err);
+    CL_CHECK(err, "d_vol (diag)");
 
     clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
     clSetKernelArg(k, 1, sizeof(cl_mem), &cl->d_R_mats);
@@ -534,6 +553,15 @@ static void run_diag_repeat_slab(CLState *cl, const CBpara *p, cl_mem d_vol,
     size_t gws[3]     = {gws_full[0], gws_full[1], (size_t)slab_size};
 
     for (int rep = 0; rep < n_repeats; rep++) {
+        if (realloc_at > 0 && rep == realloc_at) {
+            clReleaseMemObject(d_vol);
+            d_vol = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
+                                    vol_bytes, (void*)volume, &err);
+            CL_CHECK(err, "d_vol realloc (diag)");
+            clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
+            printf("  -- reallocated d_vol before rep %d --\n", rep+1);
+        }
+
         cl_event evt;
         double t0 = get_time_sec();
         err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, &evt);
@@ -552,6 +580,7 @@ static void run_diag_repeat_slab(CLState *cl, const CBpara *p, cl_mem d_vol,
         clReleaseEvent(evt);
     }
 
+    clReleaseMemObject(d_vol);
     clReleaseMemObject(d_proj_scratch);
 }
 
@@ -669,26 +698,19 @@ static void run_fp_image(CLState *cl, const CBpara *p,
 
 /*
  * ── gpu_diag_repeat_slab ────────────────────────────────────────────────
- * Public entry for the perf-v2 Phase A2/A3 diagnostic. Loads the volume
- * once, builds R/T buffers, repeats one fixed angle-slab n_repeats times.
+ * Public entry for the perf-v2 Phase A2/A3 diagnostic. Builds R/T buffers,
+ * repeats one fixed angle-slab n_repeats times (optionally reallocating
+ * d_vol partway through -- see run_diag_repeat_slab for realloc_at).
  * Does not run any epoch loop and does not write output -- diagnostic only.
  */
 void gpu_diag_repeat_slab(CLState *cl, const CBpara *p, const float *volume,
-                           int angle_offset, int slab_size, int n_repeats)
+                           int angle_offset, int slab_size, int n_repeats,
+                           int realloc_at)
 {
-    cl_int err;
-    int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
-    size_t vol_bytes = (size_t)Nxz * Nxz * Ny * sizeof(float);
-
     build_RT_buffers(cl, p);
 
-    cl_mem d_vol = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
-                                   vol_bytes, (void*)volume, &err);
-    CL_CHECK(err, "d_vol (diag)");
+    run_diag_repeat_slab(cl, p, volume, angle_offset, slab_size, n_repeats, realloc_at);
 
-    run_diag_repeat_slab(cl, p, d_vol, angle_offset, slab_size, n_repeats);
-
-    clReleaseMemObject(d_vol);
     clReleaseMemObject(cl->d_R_mats);
     clReleaseMemObject(cl->d_T_vecs);
 }
