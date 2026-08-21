@@ -19,14 +19,16 @@ current code (post `FP_TILE=32` and `fp_buffer` work-group changes):
 
 ### 512³ dataset (1120×1184 detector, 75 angles, n\_samples=512)
 
-Measured on `pool15-01`, **EPOCHS=10**, current code:
+Measured on `pool15-01`, **EPOCHS=10**, current code. Two independent
+10-epoch runs shown for `gpu-buf`, whose per-epoch time varies more than
+the other modes' — see note below.
 
 | Mode | Time/epoch | Speedup vs CPU |
 |------|-----------|----------------|
-| `cpu` (12-thread OpenMP, `FP_TILE=32`) | 23.30 s | 1× |
-| `gpu-buf` (`{4,64,1}`) | 4.87 s | **4.8×** |
-| `gpu-img` | 0.876 s | **26.6×** |
-| `gpu-opt` | 0.879 s | **26.5×** |
+| `cpu` (12-thread OpenMP, `FP_TILE=32`) | 22.9-23.3 s | 1× |
+| `gpu-buf` (`{4,64,1}`) | 4.87-10.19 s (run-to-run) | **2.3-4.8×** |
+| `gpu-img` | 0.870-0.876 s | **26.6×** |
+| `gpu-opt` | 0.873-0.879 s | **26.5×** |
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (12 logical cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
@@ -39,13 +41,26 @@ Measured on `pool15-01`, **EPOCHS=10**, current code:
 >   256³ `cpu` also dropped from 2.73s to 2.60s/epoch.
 > - **`gpu-buf` work-group `{16,16,1}→{4,64,1}`**: `fp_buffer.cl` had also
 >   never been swept. This is the big one — **`gpu-buf` at 512³ went from
->   56.93s/epoch to 4.87s/epoch, ~11.7× faster**, and correspondingly from
->   *slower than CPU* to a solid 4.8× win. `fp_buffer.cl`'s manual
+>   56.93s/epoch to 4.87-10.19s/epoch across repeat runs, still 2.3-11.7×
+>   faster**, and correspondingly from *slower than CPU* to a real win
+>   over it every time it's been measured. `fp_buffer.cl`'s manual
 >   uncoalesced gather (no texture cache) turns out to be far more
 >   sensitive to work-group shape than `fp_image.cl` was — shapes like
 >   `{32,8,1}` that were merely suboptimal for `fp_image` are
 >   catastrophic here (4-8× slower). See "Work-group sweeps" below for
 >   both sweeps' full data.
+>
+> **`gpu-buf`'s own run-to-run variance is larger than the other three
+> modes'.** A second 10-epoch confirmation run came back at 101.89s total
+> (10.19s/epoch avg) vs the first run's 75.37s (7.54s/epoch avg) — same
+> `{4,64,1}` work-group, same code, real difference. Per-slab timing shows
+> `fp_buffer` slabs occasionally hitting the same `>2s` threshold that
+> flagged the original `{16,16,1}` problem, just less often and less
+> severely post-fix. `cpu`/`gpu-img`/`gpu-opt` stayed within ~1% of their
+> usual numbers across both runs — this variance is specific to
+> `fp_buffer`'s uncached gather pattern, likely thermal or shared-machine
+> contention on `pool15-01` (a lab pool machine), not a code regression.
+> Report a range, not a single number, when citing `gpu-buf` at 512³.
 >
 > These 10-epoch numbers aren't yet re-confirmed at 100 epochs — worth
 > doing before citing final numbers in a report; `gpu-img`/`gpu-opt`
@@ -268,9 +283,12 @@ lws        s / 10 epochs
 ```
 
 This is the biggest single win of this project's optimization work: at
-512³, `gpu-buf` went from 56.93s/epoch (slower than CPU) to 4.87s/epoch —
-a solid 4.8× speedup over CPU instead of a 0.46× embarrassment. Default in
-`run_fp_buffer` (`src/ct_gpu.c`); overridable via `FP_BUFFER_LWS=X,Y,Z`.
+512³, `gpu-buf` went from 56.93s/epoch (slower than CPU) to 4.87-10.19s
+across repeat 10-epoch runs (this mode has more run-to-run variance than
+the others even post-fix — see the Performance Results note above) — a
+solid 2.3-4.8× speedup over CPU every time it's been measured, instead of
+a 0.46× embarrassment. Default in `run_fp_buffer` (`src/ct_gpu.c`);
+overridable via `FP_BUFFER_LWS=X,Y,Z`.
 
 **`fp_cpu`'s `FP_TILE`: `8→32`, ~19% at 512³.** The ray-tiling batch size
 (see "CPU 512³ speedup" above) was tuned once when the tiling rewrite
@@ -498,5 +516,5 @@ for each epoch:
 | `schedule(guided,4)` | `fp_cpu` | lower scheduling overhead than `dynamic` at 512³'s larger iteration count (75×1120=84000 work items), still handles AABB-clipped load imbalance |
 | Work-group `{16,16,1}→{8,32,1}` for `fp_image` | `ct_gpu.c` | ~5-7% at both scales; swept 10 candidates, see "Work-group sweeps" above. `FP_IMAGE_LWS` env override for further tuning |
 | Skip float32 staging copy for `vol_img` upload | `ct_gpu.c` | float32 mode (default) copies `d_vol` straight to the image instead of through a same-format memcpy staging buffer; ~0.7% at 512³, correctness-neutral |
-| Work-group `{16,16,1}→{4,64,1}` for `fp_buffer` | `ct_gpu.c` | >4× at 512³ (56.93s→4.87s/epoch) — the single largest win in this project; `fp_buffer`'s uncoalesced gather is far more work-group-sensitive than `fp_image`'s. `FP_BUFFER_LWS` env override |
+| Work-group `{16,16,1}→{4,64,1}` for `fp_buffer` | `ct_gpu.c` | 2.3-4.8× at 512³ (56.93s→4.87-10.19s/epoch, run-to-run variance) — the single largest win in this project; `fp_buffer`'s uncoalesced gather is far more work-group-sensitive than `fp_image`'s. `FP_BUFFER_LWS` env override |
 | `FP_TILE` swept `8→32` | `fp_cpu` | ~19% further on top of the original tiling rewrite (13.58s vs 16.84s fp/epoch at 512³). `FP_TILE_ENV` env override |
