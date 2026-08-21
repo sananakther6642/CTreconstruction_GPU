@@ -331,12 +331,20 @@ never have caught it (both would agree while both were wrong). Confirmed
 `validate.py` shows zero change, as expected for a currently-no-op fix.
 
 ### Known gaps
-- CPU-vs-Python sampling mismatch (n_samples=256 vs Python `fp_func`'s
-  module default `sample_ratio=2`, i.e. 512 samples, at 256³) not
-  reconciled — doesn't affect CPU-vs-GPU correctness (both C paths use the
-  same n_samples), but means "MSE vs Python" isn't apples-to-apples yet.
-  `MSE vs Python` at 512³ is also not shown above: 512³'s C output and the
-  Python reference (which only ran at 256³) have different shapes.
+- CPU-vs-Python sampling mismatch (`fp_func`'s hardcoded `sample_ratio=2`
+  gives `n_samples=ceil(Nxz*2)` — 512 at 256³, 1024 at 512³ — vs the C
+  side's `--samples` default of `Nxz`/512) not reconciled — doesn't affect
+  CPU-vs-GPU correctness (both C paths use the same `n_samples`), but
+  means "MSE vs Python" isn't apples-to-apples at either scale.
+- `MSE vs Python` at 512³ was never shown above because
+  `run_python_reference.py` had only ever been run at 256³, and
+  `validate.py` hardcoded the same `output_python.hdf5` filename
+  regardless of which scale you validated — so `validate.py 512` always
+  compared 512³ C output against a 256³-shaped array and printed "shape
+  mismatch". Fixed: `validate.py` now looks for `output_python_512.hdf5`;
+  generate it with `make run-python-512 EPOCHS=N` (slow — pure Python
+  `fp_func` at 512³, minutes/epoch). Still subject to the sampling
+  mismatch above once generated.
 
 ## Modes
 
@@ -435,7 +443,9 @@ python3 diag_fp.py --data /lgrp/edu-2026-1-gpulab/proj_512_75.hdf5 --dump fp_cpu
 
 ### Python reference (must match C run's `--epochs` for validate.py's "MSE vs Python" to be meaningful)
 ```bash
-make run-python EPOCHS=10   # slow — Python fp is ~minutes/epoch
+make run-python     EPOCHS=10   # 256^3, slow — Python fp is ~minutes/epoch
+make run-python-512 EPOCHS=10   # 512^3, slower still; see Known Gaps for the
+                                 # sample_ratio mismatch this doesn't fix
 ```
 
 ## Algorithm
