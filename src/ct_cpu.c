@@ -251,6 +251,14 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
     int   n_samples = p->n_samples;
     float dt        = (far_t - near_t) / (float)(n_samples - 1);
 
+    /* perf-v2 Phase A6: histogram actual AABB-clipped sample range instead
+     * of assuming it -- see the dump site below for details. Read once. */
+    int diag_aabb_range = 0;
+    {
+        const char *dr_env = getenv("FP_CPU_DIAG_AABB_RANGE");
+        if (dr_env && atoi(dr_env) != 0) diag_aabb_range = 1;
+    }
+
     /* constants for world→voxel mapping */
     float inv_sv_xz = (float)Nxz / sVoxel_xz;
     float inv_sv_y  = (float)Ny  / sVoxel_y;
@@ -425,6 +433,19 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
 
                 for (int t = 0; t < tile_n; t++)
                     proj[ip*H*W + (iv0+t)*W + iu] = val[t] * step_val[t];
+
+                /* perf-v2 Phase A6 diagnostic: dump (s_end-s_start) per ray
+                 * instead of the accumulated value, so the actual AABB
+                 * clip tightness can be histogrammed in Python rather than
+                 * assumed. Only active with FP_CPU_DIAG_AABB_RANGE=1 and
+                 * only meaningful when W>512 (the AABB gate) -- off by
+                 * default, zero cost/behavior change otherwise. Use with
+                 * --op fp so proj is dumped directly (no MLEM iteration
+                 * folded in). */
+                if (diag_aabb_range) {
+                    for (int t = 0; t < tile_n; t++)
+                        proj[ip*H*W + (iv0+t)*W + iu] = (float)(s_end[t] - s_start[t]);
+                }
             }
         }
     }
