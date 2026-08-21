@@ -346,7 +346,7 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
 
 /* ── Internal: run forward projection on GPU (buffer mode) ─────────────── */
 static void run_fp_buffer(CLState *cl, const CBpara *p,
-                           cl_mem d_vol, cl_mem d_proj)
+                           cl_mem *d_vol_ptr, cl_mem d_proj)
 {
     cl_int err;
     cl_kernel k = cl->k_fp_buf;
@@ -356,6 +356,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     int n_samples = p->n_samples;
     float SOD=(float)p->SOD, SDD=(float)p->SDD;
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
+    cl_mem d_vol = *d_vol_ptr;
 
     clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
     clSetKernelArg(k, 1, sizeof(cl_mem), &cl->d_R_mats);
@@ -416,16 +417,51 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     }
     /* Variance investigation (see README "gpu-buf run-to-run variance"):
      * ruled out other-user contention and per-angle geometry, couldn't
-     * check dmesg (no root). This adds GPU-side event profiling
+     * check dmesg (no root). GPU-side event profiling
      * (CL_PROFILING_COMMAND_START/END, already enabled on the queue via
-     * CL_QUEUE_PROFILING_ENABLE) alongside the existing host wall-clock
-     * timing, so a slow slab can be attributed to either: GPU execution
-     * itself running slow (event delta matches wall-clock delta — real
-     * throttling/contention on the device), or host-side overhead around
-     * a fast GPU execution (event delta stays fast while wall-clock is
-     * slow — driver queueing, OS scheduling, or clFinish overhead, not
-     * the GPU itself). */
+     * CL_QUEUE_PROFILING_ENABLE) confirmed slow slabs are GPU-bound
+     * (wall==gpu to the ms), and a follow-up diagnostic (--diag
+     * repeat-slab, perf-v2 Phase A2/A3) found the actual mechanism: NOT
+     * thermal throttling (Hawaii's ~3.2x DVFS range can't produce the
+     * observed ~5.8-6x jump, and gpu-img/gpu-opt stay stable in the same
+     * sessions gpu-buf goes slow). Repeating one fixed angle-slab many
+     * times showed a step degradation to ~6x cost that HOLDS, then
+     * recovers instantly when d_vol is freed and recreated -- and then
+     * degrades again after a further, variable number of launches (6-13
+     * in testing). This is consistent with the OpenCL driver periodically
+     * demoting the 537MB d_vol buffer's memory placement under sustained
+     * access (e.g. losing a large-page mapping or migrating out of the
+     * fastest VRAM tier), recoverable by reallocation, recurring on a
+     * roughly time/pressure-based cycle rather than a fixed launch count.
+     *
+     * FP_BUFFER_VOL_REALLOC_EVERY: mitigation -- every N angle-slabs,
+     * read the current d_vol contents back to host, free the buffer, and
+     * recreate it fresh from that same data. This resets whatever
+     * driver-side state causes the demotion. 0 (default) = off, since
+     * this trades a real per-N-slab readback+upload cost (~90ms at 512^3
+     * for the 537MB volume) for avoiding the ~2.5s-per-slab slow state --
+     * a clear win if the degradation cycle is shorter than N, unmeasured
+     * whether it beats no mitigation at all when it isn't. */
+    int realloc_every = 0;
+    {
+        const char *re_env = getenv("FP_BUFFER_VOL_REALLOC_EVERY");
+        if (re_env) realloc_every = atoi(re_env);
+    }
+    size_t vol_bytes = (size_t)Nxz * Nxz * Ny * sizeof(float);
+    float *vol_scratch = (realloc_every > 0) ? (float *)malloc(vol_bytes) : NULL;
+
     for (size_t p0 = 0; p0 < gws_full[2]; p0 += ANG_SLAB) {
+        if (realloc_every > 0 && slab_idx > 0 && slab_idx % realloc_every == 0) {
+            err = clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, vol_scratch, 0, NULL, NULL);
+            CL_CHECK(err, "fp_buffer vol readback (realloc mitigation)");
+            clReleaseMemObject(d_vol);
+            d_vol = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
+                                    vol_bytes, vol_scratch, &err);
+            CL_CHECK(err, "fp_buffer d_vol realloc (mitigation)");
+            clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
+            *d_vol_ptr = d_vol;
+        }
+
         size_t slab = (gws_full[2] - p0 < ANG_SLAB) ? (gws_full[2] - p0) : ANG_SLAB;
         size_t offset[3] = {0, 0, p0};
         size_t gws[3]    = {gws_full[0], gws_full[1], slab};
@@ -456,6 +492,8 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
         slab_idx++;
         if (slab_pause_us > 0) usleep((useconds_t)slab_pause_us);
     }
+
+    if (vol_scratch) free(vol_scratch);
 }
 
 /*
@@ -886,7 +924,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 
         /* forward project: b = F(v0) */
         if (cl->mode == GPU_MODE_BUFFER) {
-            run_fp_buffer(cl, p, d_vol, d_proj_b);
+            run_fp_buffer(cl, p, &d_vol, d_proj_b);
         } else {
             size_t vorigin[3]={0,0,0};
             size_t vregion[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
