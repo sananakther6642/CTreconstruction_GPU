@@ -66,34 +66,84 @@ the other modes' — see note below.
 > not available on this account, so GPU thermal/driver-level events
 > couldn't be directly confirmed via system logs.
 >
-> **Confirmed GPU-bound, not host/driver overhead.** Added OpenCL event
+> **Confirmed GPU-bound, not host/driver overhead.** OpenCL event
 > profiling (`CL_PROFILING_COMMAND_START`/`END`) around each angle-slab
-> dispatch in `run_fp_buffer` — this measures actual device execution
-> time, independent of host-side queueing or driver dispatch gaps. Result:
+> dispatch in `run_fp_buffer` measures actual device execution time,
+> independent of host-side queueing or driver dispatch gaps. Result:
 > **100% of flagged slow slabs showed `wall≈gpu` to the millisecond**
 > (e.g. `wall=2.975s gpu=2.975s`). The GPU itself is taking longer to run
-> the identical kernel, not waiting on the host. Slow slabs also show a
-> consistent, discrete cost each time they occur (slab 8 costs ~2.95-2.97s
-> whenever it's slow, not a gradually worsening ramp) — pattern is more
-> consistent with a discrete GPU clock/power-state drop than smooth
-> thermal ramping.
+> the identical kernel, not waiting on the host.
 >
-> **Mitigation tested, made it worse.** Tried inserting a pause between
-> angle-slab dispatches (`FP_BUFFER_SLAB_PAUSE_US` env var,
-> `usleep()`-based) on the theory that idle gaps might let the GPU recover
-> a higher clock state. At 100ms/slab: total went to 172.47s for 10
-> epochs — worse than any unmitigated run in the 75-102s range — and the
-> same slabs were still flagged `GPU-BOUND`, more often than baseline (up
-> to 8/8 slabs slow in some epochs). 100ms idle windows are not long
-> enough for real thermal/power recovery (typically seconds-to-minutes),
-> so this just adds pure overhead with no compensating benefit. Confirms
-> genuine device-side throttling, not something fixable by pacing kernel
-> launches from the host.
+> **"Thermal throttling" (the earlier working theory here) is wrong —
+> corrected after direct testing.** A pause-based mitigation
+> (`FP_BUFFER_SLAB_PAUSE_US`, `usleep()` between slab dispatches, on the
+> theory that idle gaps let the GPU recover a higher clock state) was
+> tried first and made things *worse* (172.47s for 10 epochs vs a 75-102s
+> unmitigated range, more slabs flagged slow, not fewer) — the wrong shape
+> for throttling, since idle time can only help or be neutral under real
+> clock throttling. That result was mis-read at the time as "confirms
+> genuine device-side throttling"; it should have been read as evidence
+> *against* it.
 >
-> Root cause narrowed to GPU clock/power-state throttling under sustained
-> load, confirmed at the "GPU is genuinely slower" level via device-side
-> profiling, but not further diagnosable without root/`dmesg`/GPU sensor
-> access on this machine. Not chased further.
+> A dedicated diagnostic (`--diag repeat-slab:<angle_offset>:<slab_size>:
+> <n_repeats>[:<realloc_at>]`, `gpu_diag_repeat_slab()` in `ct_gpu.c`)
+> repeats one fixed angle-slab N times back-to-back, isolating the
+> mechanism from full-epoch noise. Two 20-repeat runs on different, fixed
+> angle ranges (angles 64-71 and angles 0-7) both showed the same
+> signature: fast for several repeats (~0.44-0.53s), then a **single step
+> up to ~5.8-6× slower that HOLDS** for the rest of the run — not a
+> monotone climb (rules out thermal ramping), not repeated bimodal
+> flapping (rules out simple TLB thrashing), not slow from the first
+> repeat (rules out deterministic memory-channel camping on that angle
+> set). The magnitude alone already ruled out throttling: Hawaii's entire
+> DVFS range is ~3.2× (300→947MHz), well short of the observed ~5.8-6×,
+> and `gpu-img`/`gpu-opt` stay within ~1% in the very same sessions
+> `gpu-buf` goes 6× slow — a device-wide clock/power drop cannot be
+> mode-selective like that.
+>
+> A follow-up 40-repeat run added a mid-run `d_vol` **reallocation**
+> (`realloc_at`): the step-degradation **recovered instantly** on
+> reallocation (2.99s → 0.51s the very next repeat) — then **degraded
+> again on its own** after a further, variable number of repeats (6 vs 13
+> launches in two cycles of the same run). This is the load-bearing
+> result: the slowdown is tied to the specific `d_vol` allocation and is
+> recoverable by replacing it, but recurs on a roughly time/pressure-based
+> cycle rather than a fixed launch count — consistent with the OpenCL
+> driver periodically demoting the 537MB volume buffer's memory placement
+> under sustained access (e.g. losing a large-page mapping or migrating
+> out of the fastest VRAM tier), not with any cyclical *hardware* effect.
+>
+> **Root cause: confirmed driver-side memory-placement demotion of the
+> large `d_vol` allocation under sustained access, not thermal throttling.**
+> This is now evidence-based rather than inferred, unlike the earlier
+> "narrowed but not confirmed" throttling guess.
+>
+> **Mitigation attempted, does not reliably help at full scale.** Added
+> `FP_BUFFER_VOL_REALLOC_EVERY=N` (`ct_gpu.c`, `run_fp_buffer`): every N
+> angle-slab launches, read `d_vol` back to host, free it, and recreate it
+> fresh — directly targeting the confirmed mechanism. A 5-epoch sweep
+> (N ∈ {3,4,5,6,7,10}) found N=5 as a clear winner (34.91s vs a
+> 37.7-50.9s baseline-equivalent range, clean of slow-slab warnings after
+> ~2 epochs of warmup). **This did not reproduce at the documented
+> 10-epoch/75-angle scale**: four full 10-epoch runs with N=5 gave
+> `[105.84, 86.77, 89.04, 85.31]s` (mean 91.74s, stdev 9.52) against the
+> three existing unmitigated baseline runs `[75.37, 101.89, 83.63]s`
+> (mean 86.96s, stdev 13.57) — the mitigated mean is *slower*, not
+> faster (−5.5%), and most mitigated runs still showed scattered
+> `GPU-BOUND` warnings despite reallocating every 5 launches. Each
+> reallocation costs real time (~0.2-0.4s observed for the 537MB
+> readback+upload) that appears to roughly cancel whatever it saves, and
+> a fixed launch-count period doesn't reliably land inside the
+> variable-length degradation window at this scale. Left disabled by
+> default (`FP_BUFFER_VOL_REALLOC_EVERY=0`); the env var remains
+> available for further tuning (a different trigger heuristic, e.g. one
+> based on elapsed time rather than launch count, is untried) since the
+> root-cause diagnosis and hook point are still correct even though this
+> specific fix isn't.
+>
+> Not chased further given no root/`dmesg`/GPU sensor access on this
+> machine to directly confirm the driver-side mechanism, though the
+> reallocation-recovery evidence is strong indirect support.
 > Report a range, not a single number, when citing `gpu-buf` at 512³.
 >
 > These 10-epoch numbers aren't yet re-confirmed at 100 epochs — worth
