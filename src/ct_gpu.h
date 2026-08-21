@@ -70,4 +70,17 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          const float *proj_measured, float *volume,
                          int epochs, const char *conv_log);
 
+/*
+ * perf-v2 Phase A2/A3 diagnostic: repeat one fixed fp_buffer angle-slab
+ * n_repeats times, printing wall + GPU-event-profiled time per repeat.
+ * Distinguishes thermal throttling (monotone degradation) from
+ * TLB/page-residency effects (bimodal) from channel camping (uniform).
+ * angle_offset/slab_size select which angles form the slab -- rerun with
+ * a different range to test slab-index vs angle-value sensitivity (A3).
+ * cl must already be gpu_init'd in GPU_MODE_BUFFER. Diagnostic only --
+ * writes nothing, runs no epoch loop.
+ */
+void gpu_diag_repeat_slab(CLState *cl, const CBpara *p, const float *volume,
+                           int angle_offset, int slab_size, int n_repeats);
+
 #endif /* CT_GPU_H */

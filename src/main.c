@@ -18,7 +18,10 @@ static void print_usage(const char *prog)
         "           [--op fp|bp]    (component test: run a single fp or bp call, CPU only,\n"
         "                            on all-ones input; dumps to <out> instead of full MLEM)\n"
         "           [--log-convergence <file.csv>]  (per-epoch loglik/residual/rel_change;\n"
-        "                            off by default, zero extra cost when unset)\n",
+        "                            off by default, zero extra cost when unset)\n"
+        "           [--diag repeat-slab:<angle_offset>:<slab_size>:<n_repeats>]\n"
+        "                           (gpu-buf only; perf-v2 Phase A2/A3 variance diagnostic,\n"
+        "                            repeats one fixed fp_buffer angle-slab N times and exits)\n",
         prog);
 }
 
@@ -33,6 +36,7 @@ int main(int argc, char **argv)
     int         use_half     = 0;  /* default: float32 vol_img (accurate) */
     const char *op_str       = NULL; /* "fp" or "bp": component test mode */
     const char *conv_log     = NULL; /* --log-convergence path, NULL = off */
+    const char *diag_str     = NULL; /* --diag repeat-slab:<off>:<size>:<reps> */
 
     /* ── Parse args ── */
     for (int i = 1; i < argc; i++) {
@@ -45,6 +49,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--half"))                use_half    = 1;
         else if (!strcmp(argv[i], "--op")      && i+1<argc) op_str      = argv[++i];
         else if (!strcmp(argv[i], "--log-convergence") && i+1<argc) conv_log = argv[++i];
+        else if (!strcmp(argv[i], "--diag")    && i+1<argc) diag_str    = argv[++i];
         else { print_usage(argv[0]); return 1; }
     }
 
@@ -120,6 +125,27 @@ int main(int argc, char **argv)
             fprintf(stderr, "Unknown --op: %s (expected fp or bp)\n", op_str);
             return 1;
         }
+        free(volume); free(proj_measured); free(para.angles);
+        return 0;
+    }
+
+    /* ── perf-v2 Phase A2/A3 diagnostic: repeat one fixed fp_buffer
+     * angle-slab N times and exit. gpu-buf only (fp_buffer is the kernel
+     * showing the variance). Format: repeat-slab:<angle_offset>:<slab_size>:<n_repeats> */
+    if (diag_str) {
+        if (strncmp(diag_str, "repeat-slab:", 12) != 0) {
+            fprintf(stderr, "Unknown --diag: %s (expected repeat-slab:<offset>:<size>:<reps>)\n", diag_str);
+            return 1;
+        }
+        int angle_offset = 0, slab_size = 8, n_repeats = 20;
+        if (sscanf(diag_str + 12, "%d:%d:%d", &angle_offset, &slab_size, &n_repeats) != 3) {
+            fprintf(stderr, "Malformed --diag repeat-slab spec: %s\n", diag_str);
+            return 1;
+        }
+        CLState cl;
+        if (gpu_init(&cl, GPU_MODE_BUFFER, kernel_dir) != 0) return 1;
+        gpu_diag_repeat_slab(&cl, &para, volume, angle_offset, slab_size, n_repeats);
+        gpu_cleanup(&cl);
         free(volume); free(proj_measured); free(para.angles);
         return 0;
     }
