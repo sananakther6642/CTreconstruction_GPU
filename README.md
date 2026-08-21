@@ -64,10 +64,36 @@ the other modes' — see note below.
 > other users were logged into `pool15-01` (a shared lab pool machine)
 > during a slow run, ruling out user contention. `dmesg` requires root,
 > not available on this account, so GPU thermal/driver-level events
-> couldn't be directly confirmed — the most likely remaining explanation
-> is thermal throttling building up from this same sustained
-> memory-bandwidth-heavy workload, but that's inference, not confirmed
-> evidence. Not chased further given no access to system-level logs.
+> couldn't be directly confirmed via system logs.
+>
+> **Confirmed GPU-bound, not host/driver overhead.** Added OpenCL event
+> profiling (`CL_PROFILING_COMMAND_START`/`END`) around each angle-slab
+> dispatch in `run_fp_buffer` — this measures actual device execution
+> time, independent of host-side queueing or driver dispatch gaps. Result:
+> **100% of flagged slow slabs showed `wall≈gpu` to the millisecond**
+> (e.g. `wall=2.975s gpu=2.975s`). The GPU itself is taking longer to run
+> the identical kernel, not waiting on the host. Slow slabs also show a
+> consistent, discrete cost each time they occur (slab 8 costs ~2.95-2.97s
+> whenever it's slow, not a gradually worsening ramp) — pattern is more
+> consistent with a discrete GPU clock/power-state drop than smooth
+> thermal ramping.
+>
+> **Mitigation tested, made it worse.** Tried inserting a pause between
+> angle-slab dispatches (`FP_BUFFER_SLAB_PAUSE_US` env var,
+> `usleep()`-based) on the theory that idle gaps might let the GPU recover
+> a higher clock state. At 100ms/slab: total went to 172.47s for 10
+> epochs — worse than any unmitigated run in the 75-102s range — and the
+> same slabs were still flagged `GPU-BOUND`, more often than baseline (up
+> to 8/8 slabs slow in some epochs). 100ms idle windows are not long
+> enough for real thermal/power recovery (typically seconds-to-minutes),
+> so this just adds pure overhead with no compensating benefit. Confirms
+> genuine device-side throttling, not something fixable by pacing kernel
+> launches from the host.
+>
+> Root cause narrowed to GPU clock/power-state throttling under sustained
+> load, confirmed at the "GPU is genuinely slower" level via device-side
+> profiling, but not further diagnosable without root/`dmesg`/GPU sensor
+> access on this machine. Not chased further.
 > Report a range, not a single number, when citing `gpu-buf` at 512³.
 >
 > These 10-epoch numbers aren't yet re-confirmed at 100 epochs — worth
