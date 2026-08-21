@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
 
 /* ── Helper macros ──────────────────────────────────────────────────────── */
 #define CL_CHECK(err, msg) \
@@ -399,6 +400,20 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
      * as run_bp_buffer; fp_buffer's trilinear_buf is also uncoalesced. */
     const size_t ANG_SLAB = 8;
     int slab_idx = 0;
+    /* FP_BUFFER_SLAB_PAUSE_US: experimental mitigation for the confirmed
+     * GPU-BOUND variance above — inserts a host-side sleep between slab
+     * launches, in case brief idle windows let the GPU recover from a
+     * throttled clock/power state before the next launch. Off by default
+     * (0). Likely limited benefit if this is real thermal throttling
+     * (recovery is usually seconds-to-minutes, not the microsecond-scale
+     * gaps this can realistically add without hurting throughput more
+     * than the throttling itself costs) — worth testing anyway since it's
+     * cheap and the alternative is no mitigation at all. */
+    long slab_pause_us = 0;
+    {
+        const char *pause_env = getenv("FP_BUFFER_SLAB_PAUSE_US");
+        if (pause_env) slab_pause_us = atol(pause_env);
+    }
     /* Variance investigation (see README "gpu-buf run-to-run variance"):
      * ruled out other-user contention and per-angle geometry, couldn't
      * check dmesg (no root). This adds GPU-side event profiling
@@ -439,6 +454,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
         }
         clReleaseEvent(evt);
         slab_idx++;
+        if (slab_pause_us > 0) usleep((useconds_t)slab_pause_us);
     }
 }
 
