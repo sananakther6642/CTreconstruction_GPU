@@ -125,6 +125,22 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
     clGetDeviceInfo(cl->device, CL_DEVICE_NAME, sizeof(dev_name), dev_name, NULL);
     printf("OpenCL device: %s\n", dev_name);
 
+    /* perf-v2 Phase A7: check cl_khr_3d_image_writes -- gates Phase B4
+     * (vol_update writing directly into vol_img instead of a separate
+     * clEnqueueCopyBufferToImage each epoch). OpenCL 1.2 has no 3D
+     * read-write images without this extension. Printed once at init,
+     * not gated behind an env var since it costs nothing. */
+    {
+        size_t ext_sz = 0;
+        clGetDeviceInfo(cl->device, CL_DEVICE_EXTENSIONS, 0, NULL, &ext_sz);
+        char *ext_str = (char *)malloc(ext_sz + 1);
+        clGetDeviceInfo(cl->device, CL_DEVICE_EXTENSIONS, ext_sz, ext_str, NULL);
+        ext_str[ext_sz] = '\0';
+        int has_3d_image_writes = (strstr(ext_str, "cl_khr_3d_image_writes") != NULL);
+        printf("  cl_khr_3d_image_writes: %s\n", has_3d_image_writes ? "yes" : "no");
+        free(ext_str);
+    }
+
     cl->ctx   = clCreateContext(NULL, 1, &cl->device, NULL, NULL, &err);
     CL_CHECK(err, "clCreateContext");
 #pragma GCC diagnostic push
