@@ -432,7 +432,31 @@ and GPU shared the bug identically, meaning CPU-vs-GPU validation could
 never have caught it (both would agree while both were wrong). Confirmed
 `validate.py` shows zero change, as expected for a currently-no-op fix.
 
-### Known gaps
+**Sphere-shaped AABB considered, measured no headroom, not implemented.**
+A tighter (sphere or cylinder) bounding test was proposed as a possible
+win over the current box clip's setup cost — but only worth writing if
+the box clip is actually loose. Measured directly instead of assumed:
+`FP_CPU_DIAG_AABB_RANGE=1` dumps `(s_end-s_start)` per ray (the number of
+samples the current box clip keeps) instead of the accumulated value, run
+once at 512³ via `--op fp`. Result: **mean 146.6/512 (28.6%), median
+177/512 (34.6%)**, both close to the ~35% figure that was the "already
+tight, don't bother" threshold going in. The box clip is doing its job;
+a sphere test would only tighten the corner-ray cases, which are already
+a small minority. Not implemented.
+
+**`bp_cpu` thread scaling measured, current default already near-optimal.**
+Never measured before (only ever run at the Makefile's `nproc`-detected
+default). Swept `OMP_NUM_THREADS` ∈ {1,2,4,6,8,12} on `run-op-bp-512`
+(isolated bp timing, no MLEM loop) at 512³: scales cleanly through the
+5820K's 6 physical cores (92-99% parallel efficiency), as expected for a
+memory-bound kernel. Past 6 the picture is **not** the clean
+"plateau-then-regress" curve a hyperthreading story would predict — 8
+threads is a genuine outlier (12.77s, worse than both 6 *and* 12
+threads), while 12 threads (9.09s) is essentially tied with 6 threads
+(9.80s), not worse. Single-sample-per-count, so the 8-thread dip isn't
+chased further, but the actionable conclusion holds either way: the
+current default (`nproc`-detected, 12 on this machine) is already
+at or near the best available, no Makefile change indicated.
 - CPU-vs-Python sampling mismatch (`fp_func`'s hardcoded `sample_ratio=2`
   gives `n_samples=ceil(Nxz*2)` — 512 at 256³, 1024 at 512³ — vs the C
   side's `--samples` default of `Nxz`/512) not reconciled — doesn't affect
