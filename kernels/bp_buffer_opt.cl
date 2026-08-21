@@ -60,37 +60,24 @@ __kernel void bp_opt(
     float inv_px = 1.f / pixelSize;
     float half_W = (W - 1) * 0.5f;
     float half_H = (H - 1) * 0.5f;
+    float sdd_inv_px = SDD * inv_px;
+    float zpr_sdd_inv_px = zpr * sdd_inv_px;
 
-    /* Whole-cell zero rule matching the Python reference (see bp_buffer.cl):
-     * CLK_ADDRESS_CLAMP zero-pads individual texels, which differs from
-     * scipy's all-or-nothing fill_value=0 — gate explicitly instead.
-     * floor() computed once per value and reused (matches bp_image.cl's
-     * single-floor pattern) instead of calling floor(u)/floor(v) twice
-     * each inside the OOB test. */
-
-    /* Unroll-x2 was tried here (gated Nxz>=512) on the theory that hiding
-     * texture latency across two overlapped fetches would help large
-     * volumes. Measured on this hardware (AMD Hawaii, pool15-01) it did
-     * the opposite: gpu-opt at 512^3 (0.930-0.945s/epoch, unrolled) was
-     * marginally SLOWER than plain gpu-img (0.930s, scalar bp_image.cl),
-     * despite gpu-opt otherwise having strictly more optimizations
-     * layered on (LUT + local mem). Disabling unroll-x2 dropped gpu-opt
-     * to 0.923-0.927s — faster than gpu-img, as the LUT/local-mem win was
-     * supposed to deliver. The extra registers from unrolling (two live
-     * float2/float4/etc sets instead of one) apparently cost more in
-     * occupancy than the ILP saved in latency-hiding on GCN 1.1's
-     * register file — confirmed by isolated before/after measurement,
-     * not assumed. Kept as scalar-only unconditionally now. */
     for (int ip = 0; ip < num_projs; ip++) {
         float2 cs = lcs[ip];
         float U = SOD + ypr*cs.y + xpr*cs.x;
         float inv_U = native_recip(U);
-        float uf = -(SDD*(ypr*cs.x - xpr*cs.y)*inv_U)*inv_px + half_W;
-        float vf = (zpr*SDD*inv_U)*inv_px + half_H;
-        int u0 = (int)floor(uf), v0 = (int)floor(vf);
-        if (u0 < 0 || u0+1 >= W || v0 < 0 || v0+1 >= H) continue;
-        float4 val = read_imagef(proj_images, samp, (float4)(vf+.5f, uf+.5f, (float)ip, 0.f));
-        sum += val.x * sod2 * inv_U * inv_U;
+        float term = (ypr*cs.x - xpr*cs.y) * sdd_inv_px;
+        float uf = half_W - term * inv_U;
+        int u0 = (int)floor(uf);
+        if ((unsigned)u0 >= (unsigned)(W - 1)) continue;
+
+        float vf = half_H + zpr_sdd_inv_px * inv_U;
+        int v0 = (int)floor(vf);
+        if ((unsigned)v0 >= (unsigned)(H - 1)) continue;
+
+        float4 val = read_imagef(proj_images, samp, (float4)(vf + 0.5f, uf + 0.5f, (float)ip, 0.f));
+        sum += val.x * sod2 * (inv_U * inv_U);
     }
 
     sum *= M_PI_F / (float)num_projs;

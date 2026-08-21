@@ -29,6 +29,7 @@ typedef struct {
     cl_kernel  k_divide;
     cl_kernel  k_update;
     cl_kernel  k_preproc;
+    cl_kernel  k_div_preproc;
     cl_kernel  k_cone_hw;
 
     /* image-mode kernels */
