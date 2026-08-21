@@ -125,6 +125,46 @@ __kernel void preprocess_proj(
 }
 
 /*
+ * preprocess_proj_img — same as preprocess_proj, but writes directly into
+ * an image2d_array_t (width=H, height=W, depth=np) instead of a buffer.
+ *
+ * perf-v2 Phase B1: gpu-img/gpu-opt's epoch loop previously wrote
+ * preprocess_proj's output to a buffer, then did a separate
+ * clEnqueueCopyBufferToImage (0.80GB/epoch traffic at 512^3, plus a
+ * kernel launch) to get it into ratio_img for bp_image/bp_opt to read.
+ * This kernel skips that copy entirely by writing straight into the
+ * image with write_imagef -- same math, same coalescing (iw on dim 0),
+ * one fewer buffer and one fewer host-enqueued step per epoch.
+ *
+ * Texel coord convention matches bp_image.cl/bp_buffer_opt.cl's read:
+ * they read (texel_u=vf+0.5, texel_v=uf+0.5, ip) where uf derives from
+ * iw-space and vf from ih-space, i.e. texel dim0=ih, dim1=iw, dim2=ip --
+ * exactly the (ih, iw, ip) coord written here.
+ */
+__kernel void preprocess_proj_img(
+    __global const float *src,
+    __write_only image2d_array_t dst,
+    int   W,
+    int   H,
+    float voxelSize,
+    float SDD,
+    float pixelSize
+)
+{
+    int iw = get_global_id(0);
+    int ih = get_global_id(1);
+    int ip = get_global_id(2);
+    if (iw >= W || ih >= H) return;
+
+    float u = (-(float)(iw - (W-1)*0.5f)) * pixelSize;
+    float v = (  (float)(ih - (H-1)*0.5f)) * pixelSize;
+    float cw = SDD / sqrt(SDD*SDD + u*u + v*v);
+
+    float val = src[ip * H * W + (H - 1 - ih) * W + iw] * cw / voxelSize;
+    write_imagef(dst, (int4)(ih, iw, ip, 0), (float4)(val, 0.f, 0.f, 0.f));
+}
+
+/*
  * cone_weight_hw — kept for ones_raw path where we can't fuse
  * (ones are filled with 1.0, no src to read through preprocess in one shot
  *  without an extra buffer — kept as in-place pass for that case).
