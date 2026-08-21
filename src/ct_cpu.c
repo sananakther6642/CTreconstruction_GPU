@@ -316,8 +316,8 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
 
                 float step_val[FP_TILE_MAX];
                 int   s_start[FP_TILE_MAX], s_end[FP_TILE_MAX];
-                float wx[FP_TILE_MAX], wy[FP_TILE_MAX], wz[FP_TILE_MAX];
-                float dox[FP_TILE_MAX], doy[FP_TILE_MAX], doz[FP_TILE_MAX];
+                float xi[FP_TILE_MAX], yi[FP_TILE_MAX], zi[FP_TILE_MAX];
+                float dxi[FP_TILE_MAX], dyi[FP_TILE_MAX], dzi[FP_TILE_MAX];
                 float val[FP_TILE_MAX];
                 int   tile_s_lo = n_samples, tile_s_hi = 0;
 
@@ -375,10 +375,18 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
                         if (s1 > tile_s_hi) tile_s_hi = s1;
                     }
 
-                    wx[t] = T[0] + rdx * (near_t + s0 * dt);
-                    wy[t] = T[1] + rdy * (near_t + s0 * dt);
-                    wz[t] = T[2] + rdz * (near_t + s0 * dt);
-                    dox[t] = rdx * dt; doy[t] = rdy * dt; doz[t] = rdz * dt;
+                    float t0 = near_t + (float)s0 * dt;
+                    float wx0 = T[0] + rdx * t0;
+                    float wy0 = T[1] + rdy * t0;
+                    float wz0 = T[2] + rdz * t0;
+
+                    xi[t] = wx0 * inv_sv_xz + shift_xz;
+                    yi[t] = wy0 * inv_sv_y  + shift_y;
+                    zi[t] = wz0 * inv_sv_xz + shift_xz;
+
+                    dxi[t] = (rdx * dt) * inv_sv_xz;
+                    dyi[t] = (rdy * dt) * inv_sv_y;
+                    dzi[t] = (rdz * dt) * inv_sv_xz;
                     val[t] = 0.f;
                 }
 
@@ -391,18 +399,18 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
                     for (int t = 0; t < tile_n; t++) {
                         if (s < s_start[t] || s >= s_end[t]) continue;
 
-                        float xi = wx[t] * inv_sv_xz + shift_xz;
-                        float yi = wy[t] * inv_sv_y  + shift_y;
-                        float zi = wz[t] * inv_sv_xz + shift_xz;
+                        float curr_xi = xi[t];
+                        float curr_yi = yi[t];
+                        float curr_zi = zi[t];
 
                         /* floorf, not (int) truncation — see fp_cpu bug fix
                          * note: (int)xi truncates toward zero, wrongly
                          * passing the bounds check for xi in (-1,0). */
-                        int x0 = (int)floorf(xi), y0 = (int)floorf(yi), z0 = (int)floorf(zi);
+                        int x0 = (int)floorf(curr_xi), y0 = (int)floorf(curr_yi), z0 = (int)floorf(curr_zi);
                         if ((unsigned)x0 < (unsigned)(Nxz-1) &&
                             (unsigned)y0 < (unsigned)(Ny -1) &&
                             (unsigned)z0 < (unsigned)(Nxz-1)) {
-                            float dx = xi-x0, dy = yi-y0, dz = zi-z0;
+                            float dx = curr_xi - (float)x0, dy = curr_yi - (float)y0, dz = curr_zi - (float)z0;
                             float nx = 1.f-dx, ny_ = 1.f-dy, nz_ = 1.f-dz;
                             int base = x0*(Nxz*Ny) + y0*Ny + z0;
                             int sNy  = Nxz*Ny;
@@ -415,7 +423,9 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
                                     + volume[base+Ny+1]    * nx * dy  * dz
                                     + volume[base+sNy+Ny+1]* dx * dy  * dz;
                         }
-                        wx[t] += dox[t]; wy[t] += doy[t]; wz[t] += doz[t];
+                        xi[t] = curr_xi + dxi[t];
+                        yi[t] = curr_yi + dyi[t];
+                        zi[t] = curr_zi + dzi[t];
                     }
                 }
 
