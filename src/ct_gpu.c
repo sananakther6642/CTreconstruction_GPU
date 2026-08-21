@@ -349,16 +349,22 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,12, sizeof(float),  &vs);
     clSetKernelArg(k,13, sizeof(float),  &px);
 
-    /* Never swept — fp_image's {16,16,1} was in the same state before a
-     * 10-candidate sweep found {8,32,1} ~5-7% faster on this detector
-     * shape (W=1120,H=1184). Same shape here, so worth testing the same
-     * candidates. FP_BUFFER_LWS=X,Y,Z overrides without a rebuild — keep
-     * Z=1, the angle-slab chunking below requires lws[2] to divide
-     * ANG_SLAB=8 evenly (all fp_image sweep candidates used Z=1 too). */
-    size_t lws[3] = {16, 16, 1};
+    /* Swept 16,16,1 / 8,32,1 / 4,64,1 / 32,8,1 / 8,16,1 at 512^3 (10-epoch
+     * confirmation, after an earlier noisy 3-epoch pass suggested the
+     * same trend): 4,64,1 gave 75.37s/10ep vs 321.19s/10ep for the old
+     * 16,16,1 default -- >4x faster, and far more stable epoch-to-epoch
+     * (mostly 5-10s vs 9-48s for the old default). 32,8,1 and 8,16,1 were
+     * catastrophically worse (~4-8x slower), matching the same wide-short
+     * shape being bad on this GPU that fp_image's sweep also found.
+     * fp_buffer.cl's manual uncoalesced global-memory gather (no texture
+     * cache, unlike fp_image) is far more sensitive to work-group shape
+     * than fp_image was. FP_BUFFER_LWS=X,Y,Z still overrides for further
+     * testing — keep Z=1, the angle-slab chunking below requires lws[2]
+     * to divide ANG_SLAB=8 evenly. */
+    size_t lws[3] = {4, 64, 1};
     const char *lws_env = getenv("FP_BUFFER_LWS");
     if (lws_env) {
-        unsigned long a=16, b=16, c=1;
+        unsigned long a=4, b=64, c=1;
         if (sscanf(lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
             lws[0]=a; lws[1]=b; lws[2]=c;
         }
