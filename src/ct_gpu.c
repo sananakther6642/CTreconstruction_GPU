@@ -349,7 +349,20 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,12, sizeof(float),  &vs);
     clSetKernelArg(k,13, sizeof(float),  &px);
 
+    /* Never swept — fp_image's {16,16,1} was in the same state before a
+     * 10-candidate sweep found {8,32,1} ~5-7% faster on this detector
+     * shape (W=1120,H=1184). Same shape here, so worth testing the same
+     * candidates. FP_BUFFER_LWS=X,Y,Z overrides without a rebuild — keep
+     * Z=1, the angle-slab chunking below requires lws[2] to divide
+     * ANG_SLAB=8 evenly (all fp_image sweep candidates used Z=1 too). */
     size_t lws[3] = {16, 16, 1};
+    const char *lws_env = getenv("FP_BUFFER_LWS");
+    if (lws_env) {
+        unsigned long a=16, b=16, c=1;
+        if (sscanf(lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+            lws[0]=a; lws[1]=b; lws[2]=c;
+        }
+    }
     size_t gws_full[3] = {(size_t)W, (size_t)H, (size_t)np};
     for (int d=0;d<3;d++)
         if (gws_full[d] % lws[d]) gws_full[d] += lws[d] - gws_full[d] % lws[d];

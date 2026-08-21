@@ -288,7 +288,21 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
      * per-sample bounds check exactly as before — this only reorders when
      * each ray's reads happen relative to its neighbors', not what is read
      * or how it's weighted. */
-#define FP_TILE 8
+/* FP_TILE was tuned once (=8) and never swept, unlike fp_image's
+ * work-group shape which went through a 10-candidate sweep and found
+ * {8,32,1} ~5-7% faster than the untested {16,16,1} default. Arrays below
+ * are sized to FP_TILE_MAX so FP_TILE_ENV can pick any tile size up to
+ * that without touching array declarations; unset defaults to 8
+ * (unchanged behavior). */
+#define FP_TILE_MAX 64
+    int FP_TILE = 8;
+    {
+        const char *tile_env = getenv("FP_TILE_ENV");
+        if (tile_env) {
+            int v = atoi(tile_env);
+            if (v > 0 && v <= FP_TILE_MAX) FP_TILE = v;
+        }
+    }
     #pragma omp parallel for collapse(2) schedule(guided, 4)
     for (int ip = 0; ip < np; ip++) {
         for (int iu = 0; iu < W; iu++) {
@@ -300,11 +314,11 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
             for (int iv0 = 0; iv0 < H; iv0 += FP_TILE) {
                 int tile_n = (H - iv0 < FP_TILE) ? (H - iv0) : FP_TILE;
 
-                float step_val[FP_TILE];
-                int   s_start[FP_TILE], s_end[FP_TILE];
-                float wx[FP_TILE], wy[FP_TILE], wz[FP_TILE];
-                float dox[FP_TILE], doy[FP_TILE], doz[FP_TILE];
-                float val[FP_TILE];
+                float step_val[FP_TILE_MAX];
+                int   s_start[FP_TILE_MAX], s_end[FP_TILE_MAX];
+                float wx[FP_TILE_MAX], wy[FP_TILE_MAX], wz[FP_TILE_MAX];
+                float dox[FP_TILE_MAX], doy[FP_TILE_MAX], doz[FP_TILE_MAX];
+                float val[FP_TILE_MAX];
                 int   tile_s_lo = n_samples, tile_s_hi = 0;
 
                 for (int t = 0; t < tile_n; t++) {
