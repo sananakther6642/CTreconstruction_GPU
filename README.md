@@ -7,66 +7,52 @@ Supports 256³ and 512³ datasets. All GPU modes validated: no NaN/Inf, MSE vs C
 
 ### 256³ dataset (512×512 detector, 75 angles, n\_samples=256)
 
-Measured on `pool15-01`, **EPOCHS=100**, current code (post `{8,32,1}`
-work-group change):
+Measured on `pool15-01`, **EPOCHS=10** (10-epoch, not 100 — see note),
+current code (post `FP_TILE=32` and `fp_buffer` work-group changes):
 
-| Mode | Time/epoch | Total (100ep) | Speedup vs CPU |
-|------|-----------|--------------|----------------|
-| `cpu` (12-thread OpenMP) | 2.73 s | 273.1 s | 1× |
-| `gpu-buf` (chunked) | 0.57 s | 57.4 s | **4.8×** |
-| `gpu-img` | 0.0963 s | 9.63 s | **28.3×** |
-| `gpu-opt` | **0.0940 s** | **9.40 s** | **29.0×** |
+| Mode | Time/epoch | Speedup vs CPU |
+|------|-----------|----------------|
+| `cpu` (12-thread OpenMP, `FP_TILE=32`) | 2.60 s | 1× |
+| `gpu-buf` (`{4,64,1}`) | 0.44 s | **5.9×** |
+| `gpu-img` | 0.095 s | **27.4×** |
+| `gpu-opt` | **0.093 s** | **28.0×** |
 
 ### 512³ dataset (1120×1184 detector, 75 angles, n\_samples=512)
 
-Measured on `pool15-01`, **EPOCHS=100**, current code (post `{8,32,1}`
-work-group change):
+Measured on `pool15-01`, **EPOCHS=10**, current code:
 
-| Mode | Time/epoch | Total (100ep) | Speedup vs CPU |
-|------|-----------|--------------|----------------|
-| `cpu` (12-thread OpenMP) | 26.06 s | 2605.5 s | 1× |
-| `gpu-buf` (chunked) | 56.93 s | 5693.2 s | **0.46× (slower than CPU)** |
-| `gpu-img` | 0.8858 s | 88.58 s | **29.4×** |
-| `gpu-opt` | **0.8838 s** | **88.38 s** | **29.5×** |
-
-> **`fp_image` work-group `{16,16,1}→{8,32,1}`**: confirmed at full
-> 100-epoch scale at both resolutions — 256³ `gpu-img/opt` up from 27.2×/
-> 27.9× to **28.3×/29.0×**; 512³ up from 28.0×/27.96× to **29.4×/29.5×**.
-> MSE identical to the pre-change 100-epoch reference at both scales
-> (256³ `1.949e-07`/`max=1.1490`, 512³ `6.849e-10`/`max=0.0169`) —
-> confirms the work-group shape change is speed-only, exactly as expected
-> since `fp_image` has no local memory or cross-work-item state. See
-> "Work-group sweep" below for the full sweep data (10 candidates tested,
-> `{8,32,1}` won by a clear margin over every alternative).
+| Mode | Time/epoch | Speedup vs CPU |
+|------|-----------|----------------|
+| `cpu` (12-thread OpenMP, `FP_TILE=32`) | 23.30 s | 1× |
+| `gpu-buf` (`{4,64,1}`) | 4.87 s | **4.8×** |
+| `gpu-img` | 0.876 s | **26.6×** |
+| `gpu-opt` | 0.879 s | **26.5×** |
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (12 logical cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
-> **`gpu-opt` vs `gpu-img`**: after the unroll-x2 removal and the
-> work-group sweep (both below), `gpu-opt` is now consistently a little
-> *faster* than `gpu-img` at both scales (88.38s vs 88.58s at 512³;
-> 9.40s vs 9.63s at 256³) — a small, real edge from its LUT + local-mem
-> cos/sin caching. Immediately after the unroll-x2 fix alone this edge
-> measured as a 0.17% wash (see "gpu-opt vs gpu-img" below); the
-> work-group sweep numbers above supersede that intermediate result.
-
-> **`gpu-buf` on 512³ is slower than CPU** — genuinely, not a bug. It
-> previously caused a driver hang from one oversized kernel launch
-> exceeding the watchdog timeout; fixed by chunking the NDRange into
-> z-slabs (bp) / angle-slabs (fp) with `clFinish` between launches, so it
-> now completes reliably (confirmed over a full 100-epoch, ~95-minute run).
-> But per-slab timing diagnostics show every `fp_buffer` angle-slab
-> consistently takes 2.5-8s — `fp_buffer.cl`'s manual 8-tap trilinear
-> gather (no texture cache, 8 uncoalesced global reads per sample) is real,
-> honest memory-bandwidth-bound work this hardware can't do fast at 512³
-> scale, and the CPU's much smaller memory footprint plus the ray-tiling
-> speedup (below) now beats it outright. Not chased further: `gpu-img`/
-> `gpu-opt` exist specifically to avoid this cost via hardware texture
-> sampling, and they deliver the real ~29-30× speedup.
-
-> At 256³, `gpu-buf` is a legitimate (if modest) 4.8× win — the same
-> kernel, just at a scale where the memory traffic fits within what the
-> hardware can handle reasonably. The naive/optimized contrast is really
-> about the transition between these two scales.
+> **Two more sweeps landed, both confirmed at matched 10-epoch runs with
+> correctness validated (`validate.py` at the float32 noise floor, both
+> scales):**
+>
+> - **`cpu` `FP_TILE` 8→32**: `fp_cpu` was never swept past its first
+>   tuning; 32 is ~19% faster than 8 at 512³ (`16.84s→13.58s` fp/epoch).
+>   256³ `cpu` also dropped from 2.73s to 2.60s/epoch.
+> - **`gpu-buf` work-group `{16,16,1}→{4,64,1}`**: `fp_buffer.cl` had also
+>   never been swept. This is the big one — **`gpu-buf` at 512³ went from
+>   56.93s/epoch to 4.87s/epoch, ~11.7× faster**, and correspondingly from
+>   *slower than CPU* to a solid 4.8× win. `fp_buffer.cl`'s manual
+>   uncoalesced gather (no texture cache) turns out to be far more
+>   sensitive to work-group shape than `fp_image.cl` was — shapes like
+>   `{32,8,1}` that were merely suboptimal for `fp_image` are
+>   catastrophic here (4-8× slower). See "Work-group sweeps" below for
+>   both sweeps' full data.
+>
+> These 10-epoch numbers aren't yet re-confirmed at 100 epochs — worth
+> doing before citing final numbers in a report; `gpu-img`/`gpu-opt`
+> speedup vs CPU looks lower here (27-28× vs the previous 100-epoch
+> table's 29-30×) purely because `cpu` got faster too, not because
+> `gpu-img`/`gpu-opt` regressed — their own per-epoch times are essentially
+> unchanged from before.
 
 ### Key optimizations that drove 512³ speedup
 
@@ -89,6 +75,13 @@ history; don't cite it as a proven win without re-measuring in isolation.
 Full-scale run: both datasets, all four modes, matching epoch counts
 throughout — the epoch-mismatch caveat from earlier 10-epoch checks no
 longer applies anywhere below.
+
+> ⚠ This table predates the `FP_TILE=8→32` and `fp_buffer` work-group
+> `{16,16,1}→{4,64,1}` changes (see Performance Results above). Both were
+> re-validated at 10 epochs after landing (MSE at the float32 noise floor,
+> same as here) but not yet re-confirmed at the full 100-epoch scale this
+> table uses. Re-run `python3 validate.py` / `validate.py 512` at
+> `EPOCHS=100` to refresh this table.
 
 ### 256³
 ```
@@ -152,7 +145,8 @@ is memory-latency-bound: each gather spans up to ~2MB due to the
 sequentially marching one ray to completion before starting the next gave
 the CPU cache nothing to reuse.
 
-Fix: batch `FP_TILE=8` neighboring detector rows together, and iterate the
+Fix: batch `FP_TILE=8` neighboring detector rows together (later swept to
+32, see "Work-group sweeps" below), and iterate the
 sample index `s` as the *outer* loop across the tile instead of per-ray.
 Neighboring rays for the same angle start near each other and diverge only
 slightly, so at a given `s` their volume addresses cluster — batching
@@ -219,12 +213,16 @@ doesn't move the needle much on a kernel this texture/memory-bound.
 Reported honestly here rather than rounding the 10-epoch numbers up to a
 "win" that the full run didn't confirm.
 
-### Work-group sweep: {8,32,1} beats {16,16,1} by ~5-7%
+### Work-group sweeps: fp_image, fp_buffer, and fp_cpu's tile size
 
-`fp_image`'s work-group shape had never been swept — the bp kernels'
-`{4,4,16}` (below) was the largest single measured win in the project, but
-fp's `{16,16,1}` was never tested against alternatives. Swept 10 candidates
-at 512³, 10 epochs each (spread under 1% within each config):
+Three separate never-swept parameters, tuned one at a time as the project
+went on — each cheap to test since none of them change results, only timing.
+
+**`fp_image` (`gpu-img`/`gpu-opt`): `{16,16,1}→{8,32,1}`, ~5-7%.**
+The bp kernels' `{4,4,16}` (below) was the largest single measured win in
+the project, but fp's `{16,16,1}` was never tested against alternatives.
+Swept 10 candidates at 512³, 10 epochs each (spread under 1% within each
+config):
 
 ```
 lws        s/epoch
@@ -246,13 +244,59 @@ Two things stood out: total occupancy alone doesn't predict the winner
 (`8,16,1` at 128 items was slower than `8,8,1` at 64), and aspect ratio
 matters independent of item count (`8,32,1` beat `32,8,1` by 25% at the
 same 256 items — narrow-in-W/tall-in-H specifically helps on this
-detector's `W=1120, H=1184` layout). `{8,32,1}` is now the default in
-`run_fp_image` (`src/ct_gpu.c`); overridable via `FP_IMAGE_LWS=X,Y,Z` for
-further tuning without a rebuild.
+detector's `W=1120, H=1184` layout). `{8,32,1}` is the default in
+`run_fp_image` (`src/ct_gpu.c`); overridable via `FP_IMAGE_LWS=X,Y,Z`.
 
-Correctness unaffected by construction — `fp_image` has no local memory or
-cross-work-item state, so group shape can only change timing. Confirmed:
-MSE identical to the pre-change baseline at both scales.
+**`fp_buffer` (`gpu-buf`): `{16,16,1}→{4,64,1}`, >4× at 512³.** Same
+detector shape as `fp_image`, so the same candidates were worth testing —
+but `fp_buffer.cl`'s manual uncoalesced global-memory gather (no texture
+cache) turned out to be *far* more sensitive to work-group shape than
+`fp_image.cl` was. First 3-epoch pass showed huge, confusing swings (same
+config varying 8-91s across runs) — turned out to be real signal buried in
+noise, not pure measurement error. Confirmed clean at 10 epochs with 30-60s
+gaps between configs to rule out thermal/contention buildup:
+
+```
+lws        s / 10 epochs
+4,64,1     75.37    <- winner, mostly 5-10s/epoch, stable
+16,16,1    321.19   (old default, 9-48s/epoch, highly variable)
+8,32,1     56.02    (3-epoch only, not re-confirmed at 10 —
+                      4,64,1 already won decisively)
+8,16,1     213.18
+32,8,1     255.43   (worst — same wide-short shape that was
+                      merely suboptimal for fp_image, catastrophic here)
+```
+
+This is the biggest single win of this project's optimization work: at
+512³, `gpu-buf` went from 56.93s/epoch (slower than CPU) to 4.87s/epoch —
+a solid 4.8× speedup over CPU instead of a 0.46× embarrassment. Default in
+`run_fp_buffer` (`src/ct_gpu.c`); overridable via `FP_BUFFER_LWS=X,Y,Z`.
+
+**`fp_cpu`'s `FP_TILE`: `8→32`, ~19% at 512³.** The ray-tiling batch size
+(see "CPU 512³ speedup" above) was tuned once when the tiling rewrite
+landed and never swept afterward. Swept 4/8/16/32/48/64 at 512³, 3-epoch
+runs (fp time only):
+
+```
+FP_TILE   fp s/epoch
+4         26.05   (unreliable — ran right after a GPU sweep had
+                    saturated the machine; contention noise)
+8         16.84   (old default)
+16        14.72
+32        13.58   <- winner
+48        13.79
+64        13.64
+```
+
+32-64 are within noise of each other — the curve plateaus at 32, and 32
+costs less stack/cache footprint per tile than going bigger for no
+measured benefit. Default `FP_TILE` in `fp_cpu` (`src/ct_cpu.c`);
+overridable via `FP_TILE_ENV=N` (1-64).
+
+Correctness unaffected by construction for all three — none change which
+samples are read or how they're weighted, only when/how work is scheduled.
+Confirmed via `validate.py` at matched 10-epoch runs: MSE at the float32
+noise floor at both scales for every change above.
 
 ### Two negative results worth recording
 
@@ -431,7 +475,9 @@ for each epoch:
 | `native_recip` in bp kernels | `bp_buffer_opt.cl`, `bp_buffer.cl`, `bp_image.cl` | hardware SFU reciprocal, ~4× faster than IEEE division |
 | ~~Unroll-x2 gated Nxz≥512~~ (removed) | `bp_buffer_opt.cl` | tried, measured harmful on this GPU — see "gpu-opt vs gpu-img" below |
 | OMP\_NUM\_THREADS=nproc | `Makefile` cpu targets | uses all available cores on lab node |
-| Ray tiling (`FP_TILE=8`, sample-index-outer loop) | `fp_cpu` | groups neighboring rays' 8-tap gathers close in time for cache reuse; 2.1× on fp_cpu at 512³ |
+| Ray tiling (`FP_TILE`, sample-index-outer loop) | `fp_cpu` | groups neighboring rays' 8-tap gathers close in time for cache reuse; 2.1× on fp_cpu at 512³ when introduced (tile=8), later swept to 32 for a further ~19% |
 | `schedule(guided,4)` | `fp_cpu` | lower scheduling overhead than `dynamic` at 512³'s larger iteration count (75×1120=84000 work items), still handles AABB-clipped load imbalance |
-| Work-group `{16,16,1}→{8,32,1}` for `fp_image` | `ct_gpu.c` | ~5-7% at both scales; swept 10 candidates, see "Work-group sweep" above. `FP_IMAGE_LWS` env override for further tuning |
+| Work-group `{16,16,1}→{8,32,1}` for `fp_image` | `ct_gpu.c` | ~5-7% at both scales; swept 10 candidates, see "Work-group sweeps" above. `FP_IMAGE_LWS` env override for further tuning |
 | Skip float32 staging copy for `vol_img` upload | `ct_gpu.c` | float32 mode (default) copies `d_vol` straight to the image instead of through a same-format memcpy staging buffer; ~0.7% at 512³, correctness-neutral |
+| Work-group `{16,16,1}→{4,64,1}` for `fp_buffer` | `ct_gpu.c` | >4× at 512³ (56.93s→4.87s/epoch) — the single largest win in this project; `fp_buffer`'s uncoalesced gather is far more work-group-sensitive than `fp_image`'s. `FP_BUFFER_LWS` env override |
+| `FP_TILE` swept `8→32` | `fp_cpu` | ~19% further on top of the original tiling rewrite (13.58s vs 16.84s fp/epoch at 512³). `FP_TILE_ENV` env override |
