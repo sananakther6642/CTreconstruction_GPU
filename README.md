@@ -41,14 +41,14 @@ the other modes' — see note below.
 >   256³ `cpu` also dropped from 2.73s to 2.60s/epoch.
 > - **`gpu-buf` work-group `{16,16,1}→{4,64,1}`**: `fp_buffer.cl` had also
 >   never been swept. This is the big one — **`gpu-buf` at 512³ went from
->   56.93s/epoch to 4.87-10.19s/epoch across repeat runs, still 2.3-11.7×
->   faster**, and correspondingly from *slower than CPU* to a real win
->   over it every time it's been measured. `fp_buffer.cl`'s manual
->   uncoalesced gather (no texture cache) turns out to be far more
->   sensitive to work-group shape than `fp_image.cl` was — shapes like
->   `{32,8,1}` that were merely suboptimal for `fp_image` are
->   catastrophic here (4-8× slower). See "Work-group sweeps" below for
->   both sweeps' full data.
+>   56.93s/epoch to 4.87-10.19s/epoch across repeat runs — 5.6-11.7× faster
+>   than the old `{16,16,1}` default**, and correspondingly from *slower
+>   than CPU* (0.46×) to **2.3-4.8× faster than CPU**, a real win over it
+>   every time it's been measured. `fp_buffer.cl`'s manual uncoalesced
+>   gather (no texture cache) turns out to be far more sensitive to
+>   work-group shape than `fp_image.cl` was — shapes like `{32,8,1}` that
+>   were merely suboptimal for `fp_image` are catastrophic here (4-8×
+>   slower). See "Work-group sweeps" below for both sweeps' full data.
 >
 > **`gpu-buf`'s own run-to-run variance is larger than the other three
 > modes'.** Three 10-epoch confirmation runs: 75.37s, 101.89s, 83.63s
@@ -371,15 +371,17 @@ never have caught it (both would agree while both were wrong). Confirmed
   `output_python_512.hdf5`), but generating that file turned out to be
   **infeasible on `pool15-01`**: `bp_func`/`fp_func` at 512³ build several
   float64 `(512,512,512)` arrays at once (~1GB each), and with only 15GB
-  RAM and no swap configured on this machine, the run was OOM-killed by
-  the kernel (confirmed via `dmesg`) even with nothing else running.
-  A `ulimit -v` memory cap just turns the freeze into a clean
-  `MemoryError` faster — it doesn't make the workload fit. Would need a
-  machine with substantially more RAM (or a numpy rewrite using float32 /
-  chunked processing instead of `bp_func`'s all-at-once float64
-  meshgrids) to ever produce this file. Not pursued further — `MSE vs
-  Python` at 512³ stays unavailable; 256³ is unaffected and already works
-  via `make run-python`.
+  RAM and no swap configured on this machine, a first uncapped attempt
+  froze the entire desktop badly enough to need a hard reset. A second,
+  memory-capped attempt was killed by the OOM killer instead (confirmed
+  by the shell reporting `Killed`, not by reading kernel logs —
+  `dmesg` requires root, not available on this account). A `ulimit -v`
+  memory cap just turns the freeze into a clean, faster kill — it doesn't
+  make the workload fit. Would need a machine with substantially more RAM
+  (or a numpy rewrite using float32 / chunked processing instead of
+  `bp_func`'s all-at-once float64 meshgrids) to ever produce this file.
+  Not pursued further — `MSE vs Python` at 512³ stays unavailable; 256³
+  is unaffected and already works via `make run-python`.
 
 ## Modes
 
