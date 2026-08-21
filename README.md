@@ -51,15 +51,23 @@ the other modes' — see note below.
 >   both sweeps' full data.
 >
 > **`gpu-buf`'s own run-to-run variance is larger than the other three
-> modes'.** A second 10-epoch confirmation run came back at 101.89s total
-> (10.19s/epoch avg) vs the first run's 75.37s (7.54s/epoch avg) — same
-> `{4,64,1}` work-group, same code, real difference. Per-slab timing shows
-> `fp_buffer` slabs occasionally hitting the same `>2s` threshold that
-> flagged the original `{16,16,1}` problem, just less often and less
-> severely post-fix. `cpu`/`gpu-img`/`gpu-opt` stayed within ~1% of their
-> usual numbers across both runs — this variance is specific to
-> `fp_buffer`'s uncached gather pattern, likely thermal or shared-machine
-> contention on `pool15-01` (a lab pool machine), not a code regression.
+> modes'.** Three 10-epoch confirmation runs: 75.37s, 101.89s, 83.63s
+> total — same `{4,64,1}` work-group, same code, real difference each
+> time. `cpu`/`gpu-img`/`gpu-opt` stayed within ~1% of their usual numbers
+> across all three runs, so this is specific to `fp_buffer`'s uncached
+> gather pattern.
+>
+> Investigated rather than assumed: per-slab timing shows the *specific*
+> angle-slabs that go slow **differ between runs** (slabs 5-8 in one run,
+> 3-8 in another) — this rules out a deterministic per-angle AABB-clipping
+> cost (which would hit the same slabs every time). `who`/`w` confirmed no
+> other users were logged into `pool15-01` (a shared lab pool machine)
+> during a slow run, ruling out user contention. `dmesg` requires root,
+> not available on this account, so GPU thermal/driver-level events
+> couldn't be directly confirmed — the most likely remaining explanation
+> is thermal throttling building up from this same sustained
+> memory-bandwidth-heavy workload, but that's inference, not confirmed
+> evidence. Not chased further given no access to system-level logs.
 > Report a range, not a single number, when citing `gpu-buf` at 512³.
 >
 > These 10-epoch numbers aren't yet re-confirmed at 100 epochs — worth
