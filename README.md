@@ -457,6 +457,20 @@ threads), while 12 threads (9.09s) is essentially tied with 6 threads
 chased further, but the actionable conclusion holds either way: the
 current default (`nproc`-detected, 12 on this machine) is already
 at or near the best available, no Makefile change indicated.
+
+**Two dataset/device facts checked, not assumed.** `cl_khr_3d_image_writes`
+is supported on this Hawaii device (printed once at `gpu_init`) — the
+extension OpenCL 1.2 requires for 3D read-write images, gating the
+"`vol_update` writes straight into `vol_img`" optimization considered for
+`gpu-opt` (would remove a `clEnqueueCopyBufferToImage` per epoch). And the
+input HDF5's `Angle` field spans 0.0-355.2° (75 angles × 4.8° steps) —
+a **full 360° scan, not a short-scan/limited-angle acquisition** — and
+contains only geometry + `Projection` + `Angle`, **no ground-truth
+volume field**. Both matter for future work: the full-angle range means
+an FDK reconstruction wouldn't need Parker short-scan weighting if ever
+implemented, and the absence of ground truth confirms any future
+image-quality comparison has to use a data-domain metric (residual,
+log-likelihood) rather than a true reconstruction-error metric.
 - CPU-vs-Python sampling mismatch (`fp_func`'s hardcoded `sample_ratio=2`
   gives `n_samples=ceil(Nxz*2)` — 512 at 256³, 1024 at 512³ — vs the C
   side's `--samples` default of `Nxz`/512) not reconciled — doesn't affect
