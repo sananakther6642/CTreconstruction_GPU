@@ -441,17 +441,26 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
      * this trades a real per-N-slab readback+upload cost (~90ms at 512^3
      * for the 537MB volume) for avoiding the ~2.5s-per-slab slow state --
      * a clear win if the degradation cycle is shorter than N, unmeasured
-     * whether it beats no mitigation at all when it isn't. */
+     * whether it beats no mitigation at all when it isn't.
+     *
+     * The counter is a static, persisting across calls (i.e. across
+     * epochs) -- ANG_SLAB=8 gives only ~10 slabs/epoch at 75 angles, well
+     * under the 6-13-launch degradation cycle observed in testing, so a
+     * per-call (per-epoch) counter that resets to 0 every run_fp_buffer
+     * call would rarely or never fire even with N < 10. A global launch
+     * count is what actually tracks proximity to the driver-side cycle. */
     int realloc_every = 0;
     {
         const char *re_env = getenv("FP_BUFFER_VOL_REALLOC_EVERY");
         if (re_env) realloc_every = atoi(re_env);
     }
+    static long total_slab_launches = 0;
     size_t vol_bytes = (size_t)Nxz * Nxz * Ny * sizeof(float);
     float *vol_scratch = (realloc_every > 0) ? (float *)malloc(vol_bytes) : NULL;
 
     for (size_t p0 = 0; p0 < gws_full[2]; p0 += ANG_SLAB) {
-        if (realloc_every > 0 && slab_idx > 0 && slab_idx % realloc_every == 0) {
+        if (realloc_every > 0 && total_slab_launches > 0 &&
+            total_slab_launches % realloc_every == 0) {
             err = clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, vol_scratch, 0, NULL, NULL);
             CL_CHECK(err, "fp_buffer vol readback (realloc mitigation)");
             clReleaseMemObject(d_vol);
@@ -490,6 +499,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
         }
         clReleaseEvent(evt);
         slab_idx++;
+        total_slab_launches++;
         if (slab_pause_us > 0) usleep((useconds_t)slab_pause_us);
     }
 
