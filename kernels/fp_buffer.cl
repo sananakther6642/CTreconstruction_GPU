@@ -93,13 +93,17 @@ __kernel void fp_buffer(
             if(t1>t2){float tmp=t1;t1=t2;t2=tmp;}
             tmin=fmax(tmin,t1); tmax=fmin(tmax,t2);
         }
+        /* component 1 (rd[1],oy0) -> yi via inv_sv_y (Ny axis): half-extent
+         * must be hy, not hxz. component 2 (rd[2],oz0) -> zi via
+         * inv_sv_xz: needs hxz, not hy. Was transposed — see fp_image.cl
+         * for the matching fix and full explanation. */
         if (fabs(rd[1]) > 1e-6f) {
-            float t1=(-hxz-oy0)/rd[1], t2=(hxz-oy0)/rd[1];
+            float t1=(-hy-oy0)/rd[1], t2=(hy-oy0)/rd[1];
             if(t1>t2){float tmp=t1;t1=t2;t2=tmp;}
             tmin=fmax(tmin,t1); tmax=fmin(tmax,t2);
         }
         if (fabs(rd[2]) > 1e-6f) {
-            float t1=(-hy-oz0)/rd[2], t2=(hy-oz0)/rd[2];
+            float t1=(-hxz-oz0)/rd[2], t2=(hxz-oz0)/rd[2];
             if(t1>t2){float tmp=t1;t1=t2;t2=tmp;}
             tmin=fmax(tmin,t1); tmax=fmin(tmax,t2);
         }

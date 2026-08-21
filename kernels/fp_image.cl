@@ -99,13 +99,20 @@ __kernel void fp_image(
             if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
             tmin = fmax(tmin, t1); tmax = fmin(tmax, t2);
         }
+        /* component 1 (rd[1], oy0) maps to yi via inv_sv_y (the Ny-sized
+         * axis, see below), so its AABB half-extent must be hy, not hxz —
+         * and component 2 (rd[2], oz0) maps to zi via inv_sv_xz, so it
+         * needs hxz, not hy. Was transposed (harmless while Nxz==Ny on
+         * both datasets, but wrong for a future non-cubic volume). Fixed
+         * identically in ct_cpu.c and fp_buffer.cl so CPU/GPU stay in
+         * lockstep. */
         if (fabs(rd[1]) > 1e-6f) {
-            float t1 = (-hxz - oy0) / rd[1], t2 = (hxz - oy0) / rd[1];
+            float t1 = (-hy - oy0) / rd[1], t2 = (hy - oy0) / rd[1];
             if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
             tmin = fmax(tmin, t1); tmax = fmin(tmax, t2);
         }
         if (fabs(rd[2]) > 1e-6f) {
-            float t1 = (-hy - oz0) / rd[2], t2 = (hy - oz0) / rd[2];
+            float t1 = (-hxz - oz0) / rd[2], t2 = (hxz - oz0) / rd[2];
             if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
             tmin = fmax(tmin, t1); tmax = fmin(tmax, t2);
         }

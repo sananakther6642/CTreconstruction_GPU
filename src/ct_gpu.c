@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
 
 /* ── Helper macros ──────────────────────────────────────────────────────── */
 #define CL_CHECK(err, msg) \
@@ -290,14 +291,57 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,10, sizeof(float),  &vs);
     clSetKernelArg(k,11, sizeof(float),  &px);
 
-    size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
+    /* {4,4,16} tuned once early on (718ms->290ms, the biggest measured win
+     * at the time) and never re-swept until fp_image/fp_buffer's sweeps
+     * (both found significant headroom over their similarly-untested
+     * defaults) prompted re-checking this one too. Re-swept at 512^3
+     * (gpu-opt, 3-epoch runs): {4,4,16} 0.874-0.879s still wins outright;
+     * every alternative tried was 14-49% slower (e.g. {8,4,8} ~0.997s,
+     * {4,16,4} ~1.10s, {2,2,64} ~1.17-1.19s, {8,8,4} ~1.30s). Unlike
+     * fp_image/fp_buffer, this one really was already at (or very near)
+     * its optimum — confirmed, not assumed. Shared BP_LWS env override
+     * across all four bp call sites (run_bp_buffer, run_bp_image, bp_opt
+     * x2) kept for any future re-test. Keep lws[2] a divisor of
+     * Z_SLAB=64 below (1,2,4,8,16,32,64) — the z-slab chunking
+     * requires it. */
     size_t lws[3] = {4, 4, 16};  /* 16 contiguous z-threads → coalesced writes */
-    /* round up to multiple of lws */
-    for (int d=0;d<3;d++) {
-        if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
+    {
+        const char *bp_lws_env = getenv("BP_LWS");
+        if (bp_lws_env) {
+            unsigned long a=4, b=4, c=16;
+            if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+                lws[0]=a; lws[1]=b; lws[2]=c;
+            }
+        }
     }
-    err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0,NULL,NULL);
-    CL_CHECK(err, "bp_buffer enqueue");
+    size_t gws_full[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
+    for (int d=0;d<3;d++)
+        if (gws_full[d] % lws[d]) gws_full[d] += lws[d] - gws_full[d] % lws[d];
+
+    /* Chunk the z-dimension into slabs so no single kernel launch runs long
+     * enough to trip the GPU watchdog (bp_buffer does 4 uncoalesced global
+     * loads/angle/voxel with no texture cache — at 512^3 one unchunked
+     * launch can exceed the ~10s driver timeout and reset the GPU). */
+    const size_t Z_SLAB = 64;
+    int slab_idx = 0;
+    for (size_t z0 = 0; z0 < gws_full[2]; z0 += Z_SLAB) {
+        size_t slab = (gws_full[2] - z0 < Z_SLAB) ? (gws_full[2] - z0) : Z_SLAB;
+        size_t offset[3] = {0, 0, z0};
+        size_t gws[3]    = {gws_full[0], gws_full[1], slab};
+        double t0 = get_time_sec();
+        err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, NULL);
+        CL_CHECK(err, "bp_buffer enqueue (slab)");
+        err = clFinish(cl->queue);
+        CL_CHECK(err, "bp_buffer slab finish");
+        double dt = get_time_sec() - t0;
+        /* flag any slab that takes much longer than a healthy slab should —
+         * pinpoints WHICH slab stalls within a slow epoch, since epoch
+         * totals alone can't distinguish "one bad slab" from "uniformly
+         * slower this epoch" */
+        if (dt > 2.0)
+            printf("    [bp_buffer slab %d, z0=%zu] %.3f s (SLOW)\n", slab_idx, z0, dt);
+        slab_idx++;
+    }
 }
 
 /* ── Internal: run forward projection on GPU (buffer mode) ─────────────── */
@@ -328,13 +372,90 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,12, sizeof(float),  &vs);
     clSetKernelArg(k,13, sizeof(float),  &px);
 
-    size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
-    size_t lws[3] = {16, 16, 1};
-    for (int d=0;d<3;d++) {
-        if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
+    /* Swept 16,16,1 / 8,32,1 / 4,64,1 / 32,8,1 / 8,16,1 at 512^3 (10-epoch
+     * confirmation, after an earlier noisy 3-epoch pass suggested the
+     * same trend): 4,64,1 gave 75.37s/10ep vs 321.19s/10ep for the old
+     * 16,16,1 default -- >4x faster, and far more stable epoch-to-epoch
+     * (mostly 5-10s vs 9-48s for the old default). 32,8,1 and 8,16,1 were
+     * catastrophically worse (~4-8x slower), matching the same wide-short
+     * shape being bad on this GPU that fp_image's sweep also found.
+     * fp_buffer.cl's manual uncoalesced global-memory gather (no texture
+     * cache, unlike fp_image) is far more sensitive to work-group shape
+     * than fp_image was. FP_BUFFER_LWS=X,Y,Z still overrides for further
+     * testing — keep Z=1, the angle-slab chunking below requires lws[2]
+     * to divide ANG_SLAB=8 evenly. */
+    size_t lws[3] = {4, 64, 1};
+    const char *lws_env = getenv("FP_BUFFER_LWS");
+    if (lws_env) {
+        unsigned long a=4, b=64, c=1;
+        if (sscanf(lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+            lws[0]=a; lws[1]=b; lws[2]=c;
+        }
     }
-    err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0,NULL,NULL);
-    CL_CHECK(err, "fp_buffer enqueue");
+    size_t gws_full[3] = {(size_t)W, (size_t)H, (size_t)np};
+    for (int d=0;d<3;d++)
+        if (gws_full[d] % lws[d]) gws_full[d] += lws[d] - gws_full[d] % lws[d];
+
+    /* Chunk over angles (dim 2, lws=1) — same watchdog-avoidance rationale
+     * as run_bp_buffer; fp_buffer's trilinear_buf is also uncoalesced. */
+    const size_t ANG_SLAB = 8;
+    int slab_idx = 0;
+    /* FP_BUFFER_SLAB_PAUSE_US: experimental mitigation for the confirmed
+     * GPU-BOUND variance above — inserts a host-side sleep between slab
+     * launches, in case brief idle windows let the GPU recover from a
+     * throttled clock/power state before the next launch. Off by default
+     * (0). Likely limited benefit if this is real thermal throttling
+     * (recovery is usually seconds-to-minutes, not the microsecond-scale
+     * gaps this can realistically add without hurting throughput more
+     * than the throttling itself costs) — worth testing anyway since it's
+     * cheap and the alternative is no mitigation at all. */
+    long slab_pause_us = 0;
+    {
+        const char *pause_env = getenv("FP_BUFFER_SLAB_PAUSE_US");
+        if (pause_env) slab_pause_us = atol(pause_env);
+    }
+    /* Variance investigation (see README "gpu-buf run-to-run variance"):
+     * ruled out other-user contention and per-angle geometry, couldn't
+     * check dmesg (no root). This adds GPU-side event profiling
+     * (CL_PROFILING_COMMAND_START/END, already enabled on the queue via
+     * CL_QUEUE_PROFILING_ENABLE) alongside the existing host wall-clock
+     * timing, so a slow slab can be attributed to either: GPU execution
+     * itself running slow (event delta matches wall-clock delta — real
+     * throttling/contention on the device), or host-side overhead around
+     * a fast GPU execution (event delta stays fast while wall-clock is
+     * slow — driver queueing, OS scheduling, or clFinish overhead, not
+     * the GPU itself). */
+    for (size_t p0 = 0; p0 < gws_full[2]; p0 += ANG_SLAB) {
+        size_t slab = (gws_full[2] - p0 < ANG_SLAB) ? (gws_full[2] - p0) : ANG_SLAB;
+        size_t offset[3] = {0, 0, p0};
+        size_t gws[3]    = {gws_full[0], gws_full[1], slab};
+        cl_event evt;
+        double t0 = get_time_sec();
+        err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, &evt);
+        CL_CHECK(err, "fp_buffer enqueue (slab)");
+        err = clFinish(cl->queue);
+        CL_CHECK(err, "fp_buffer slab finish");
+        double dt = get_time_sec() - t0;
+        if (dt > 2.0) {
+            cl_ulong t_start = 0, t_end = 0;
+            cl_int perr1 = clGetEventProfilingInfo(evt, CL_PROFILING_COMMAND_START,
+                                                    sizeof(t_start), &t_start, NULL);
+            cl_int perr2 = clGetEventProfilingInfo(evt, CL_PROFILING_COMMAND_END,
+                                                    sizeof(t_end), &t_end, NULL);
+            if (perr1 == CL_SUCCESS && perr2 == CL_SUCCESS) {
+                double gpu_dt = (double)(t_end - t_start) * 1e-9;
+                printf("    [fp_buffer slab %d, p0=%zu] wall=%.3fs gpu=%.3fs %s (SLOW)\n",
+                       slab_idx, p0, dt, gpu_dt,
+                       (dt - gpu_dt > 0.5) ? "HOST-SIDE-GAP" : "GPU-BOUND");
+            } else {
+                printf("    [fp_buffer slab %d, p0=%zu] %.3f s (SLOW, profiling query failed)\n",
+                       slab_idx, p0, dt);
+            }
+        }
+        clReleaseEvent(evt);
+        slab_idx++;
+        if (slab_pause_us > 0) usleep((useconds_t)slab_pause_us);
+    }
 }
 
 /* ── Internal: run backprojection (image mode) ──────────────────────────── */
@@ -363,7 +484,16 @@ static void run_bp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &px);
 
     size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
-    size_t lws[3] = {4, 4, 16};
+    size_t lws[3] = {4, 4, 16};  /* see BP_LWS note in run_bp_buffer above */
+    {
+        const char *bp_lws_env = getenv("BP_LWS");
+        if (bp_lws_env) {
+            unsigned long a=4, b=4, c=16;
+            if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+                lws[0]=a; lws[1]=b; lws[2]=c;
+            }
+        }
+    }
     for (int d=0;d<3;d++) {
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     }
@@ -398,13 +528,41 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &SDD);
     clSetKernelArg(k,12, sizeof(float),  &vs);
     clSetKernelArg(k,13, sizeof(float),  &px);
-    /* AABB ray clipping helps on large detectors (many edge pixels miss volume);
-     * hurts on small detectors where overhead exceeds savings. */
+    /* AABB ray clipping helps on large detectors (many edge pixels miss
+     * volume) but hurts at 256^3: re-measured after the work-group sweep
+     * above in case that changed the tradeoff (it didn't). Forcing AABB on
+     * at 256^3 via FP_IMAGE_AABB=1 gave 0.098-0.100s/epoch vs 0.095-0.096s
+     * with it off — a consistent ~4% regression despite geometry showing
+     * ~65% of samples per ray are outside the volume there. The kernel is
+     * small enough at this scale (0.095s launch) that AABB's setup cost
+     * (6 divides + branches before the march) and the ragged per-thread
+     * trip counts it creates cost more than the fetch reduction saves.
+     * Gate stays W>512; FP_IMAGE_AABB kept for future re-testing. */
     int use_aabb = (W > 512) ? 1 : 0;
+    const char *aabb_env = getenv("FP_IMAGE_AABB");
+    if (aabb_env) use_aabb = atoi(aabb_env);
     clSetKernelArg(k,14, sizeof(int), &use_aabb);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
-    size_t lws[3] = {16, 16, 1};
+    /* {8,32,1} measured ~5% faster than the previous {16,16,1} at 512^3 on
+     * this hardware (AMD Hawaii): 0.873-0.879s/epoch vs 0.921-0.928s over
+     * a 10-candidate sweep (64,1,1 through 32,16,1; the latter and
+     * {16,32,1} exceed the device's 256-item max work-group size and fail
+     * with CL_INVALID_WORK_GROUP_SIZE). Aspect ratio matters independent
+     * of total group size: {8,32,1} beat {32,8,1} by 25%, and {8,16,1}
+     * (half the items, same 1:4 ratio) was 20% slower than {8,32,1} — so
+     * this is not just "more occupancy wins", the W-narrow/H-tall shape
+     * specifically helps on this detector layout (W=1120, H=1184). */
+    size_t lws[3] = {8, 32, 1};
+    /* FP_IMAGE_LWS=X,Y,Z overrides the work-group shape for further
+     * sweeping without a rebuild. */
+    const char *lws_env = getenv("FP_IMAGE_LWS");
+    if (lws_env) {
+        unsigned long a=8, b=32, c=1;
+        if (sscanf(lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+            lws[0]=a; lws[1]=b; lws[2]=c;
+        }
+    }
     for (int d=0;d<3;d++) {
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     }
@@ -524,18 +682,26 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             (void*)proj_measured, &err);
         CL_CHECK(err,"proj_img_array");
 
-        /* persistent vol image3D — CL_HALF_FLOAT halves texture bandwidth */
-        cl_image_format half_fmt_img = {CL_R, CL_HALF_FLOAT};
+        /* persistent vol image3D — CL_HALF_FLOAT halves texture bandwidth but
+         * quantizes to ~3 decimal digits; use --half to opt in, default float32 */
+        cl_image_format vol_fmt_img = p->use_half_vol
+            ? (cl_image_format){CL_R, CL_HALF_FLOAT}
+            : (cl_image_format){CL_R, CL_FLOAT};
         cl_image_desc vdesc={0};
         vdesc.image_type=CL_MEM_OBJECT_IMAGE3D;
         vdesc.image_width=(size_t)Ny; vdesc.image_height=(size_t)Nxz; vdesc.image_depth=(size_t)Nxz;
-        vol_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &half_fmt_img, &vdesc, NULL, &err);
-        CL_CHECK(err,"vol_img persistent half");
+        vol_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &vol_fmt_img, &vdesc, NULL, &err);
+        CL_CHECK(err,"vol_img persistent");
     }
 
-    /* half-precision staging buffer for vol_img upload (gpu-img mode) */
+    /* staging buffer for vol_img upload (gpu-img mode); only needed for
+     * --half, since float_to_half must write somewhere before the image
+     * copy. In float32 mode d_vol is copied straight into vol_img below —
+     * the old code copied d_vol into this buffer first via a same-format
+     * clEnqueueCopyBuffer memcpy that did nothing but add ~1.07GB/epoch of
+     * redundant traffic at 512^3 (~0.7% of a 930ms epoch — real but small). */
     cl_mem d_vol_half_img = NULL;
-    if (cl->mode == GPU_MODE_IMAGE) {
+    if (cl->mode == GPU_MODE_IMAGE && p->use_half_vol) {
         int vol_n_img = Nxz * Nxz * Ny;
         d_vol_half_img = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE,
                                         (size_t)vol_n_img * sizeof(cl_half), NULL, &err);
@@ -565,8 +731,9 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         if (cl->mode == GPU_MODE_BUFFER) {
             run_fp_buffer(cl, p, d_vol, d_proj_b);
         } else {
-            /* float → half staging, then half → vol_img */
-            {
+            size_t vorigin[3]={0,0,0};
+            size_t vregion[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
+            if (p->use_half_vol) {
                 cl_kernel k = cl->k_f2h;
                 clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
                 clSetKernelArg(k, 1, sizeof(cl_mem), &d_vol_half_img);
@@ -575,12 +742,16 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                 size_t lws = 256;
                 err = clEnqueueNDRangeKernel(cl->queue, k, 1, NULL, &gws, &lws, 0, NULL, NULL);
                 CL_CHECK(err,"float_to_half vol img");
+                err=clEnqueueCopyBufferToImage(cl->queue, d_vol_half_img, vol_img,
+                                               0, vorigin, vregion, 0,NULL,NULL);
+                CL_CHECK(err,"CopyBufferToImage vol img");
+            } else {
+                /* float32: copy d_vol straight into vol_img, skipping the
+                 * same-format staging buffer entirely. */
+                err=clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img,
+                                               0, vorigin, vregion, 0,NULL,NULL);
+                CL_CHECK(err,"CopyBufferToImage vol img float32");
             }
-            size_t vorigin[3]={0,0,0};
-            size_t vregion[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
-            err=clEnqueueCopyBufferToImage(cl->queue, d_vol_half_img, vol_img,
-                                           0, vorigin, vregion, 0,NULL,NULL);
-            CL_CHECK(err,"CopyBufferToImage vol img half");
             run_fp_image(cl, p, vol_img, d_proj_b);
         }
 
@@ -598,10 +769,10 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 
         run_preprocess(cl, p, d_ratio, d_ratio_prep);  /* fused: cone_weight + flip + transpose */
 
-        /* bp_ratio = bp(ratio_prep) */
+        /* bp_ratio = bp(ratio_prep). No zero-fill needed: bp_buffer/bp_image
+         * kernels unconditionally overwrite every voxel in range (plain
+         * assignment, not accumulation), so pre-clearing is dead work. */
         {
-            float zero=0.f;
-            clEnqueueFillBuffer(cl->queue,d_bp_ratio,&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
             if (cl->mode == GPU_MODE_BUFFER) {
                 run_bp_buffer(cl, p, d_ratio_prep, d_ang_cs, d_bp_ratio);
             } else {
@@ -766,7 +937,16 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,11,sizeof(float),&vs);
             clSetKernelArg(k,12,sizeof(float),&px);
             size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
-            size_t lws[3]={4,4,16};
+            size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
+            {
+                const char *bp_lws_env = getenv("BP_LWS");
+                if (bp_lws_env) {
+                    unsigned long a=4, b=4, c=16;
+                    if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+                        lws[0]=a; lws[1]=b; lws[2]=c;
+                    }
+                }
+            }
             for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ones");
@@ -790,25 +970,38 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     cl_mem ratio_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &img_fmt, &rdesc, NULL, &err);
     CL_CHECK(err,"ratio_img persistent");
 
-    /* half_fmt used below for vol_img */
+    /* vol_img precision: --half opts into CL_HALF_FLOAT (bandwidth win,
+     * ~3-decimal-digit quantization floor); default float32 for accuracy */
+    cl_image_format vol_fmt = p->use_half_vol ? half_fmt : img_fmt;
     cl_image_desc vdesc={0};
     vdesc.image_type=CL_MEM_OBJECT_IMAGE3D;
     vdesc.image_width=(size_t)Ny;
     vdesc.image_height=(size_t)Nxz;
     vdesc.image_depth=(size_t)Nxz;
-    cl_mem vol_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &half_fmt, &vdesc, NULL, &err);
-    CL_CHECK(err,"vol_img persistent half");
+    cl_mem vol_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &vol_fmt, &vdesc, NULL, &err);
+    CL_CHECK(err,"vol_img persistent");
 
-    /* Half-precision staging buffer: float d_vol → half d_vol_half → vol_img */
-    cl_mem d_vol_half = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE,
-                                       (size_t)vol_n * sizeof(cl_half), NULL, &err);
-    CL_CHECK(err,"d_vol_half");
+    /* Staging buffer: only needed for --half (float_to_half must write
+     * somewhere before the image copy). In float32 mode d_vol is copied
+     * straight into vol_img in the epoch loop below — no staging buffer,
+     * no allocation. The old unconditional allocation + same-format
+     * clEnqueueCopyBuffer memcpy did nothing in float32 mode but add
+     * ~1.07GB/epoch of redundant traffic at 512^3 (~0.7% of a 930ms
+     * epoch — real but small). */
+    cl_mem d_vol_half = NULL;
+    if (p->use_half_vol) {
+        d_vol_half = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE,
+                                    (size_t)vol_n * sizeof(cl_half), NULL, &err);
+        CL_CHECK(err,"d_vol_half");
+    }
 
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
 
-        /* ── float d_vol → half d_vol_half → vol_img (GPU-side, no PCIe) ── */
-        {
+        /* ── float d_vol → vol_img (GPU-side, no PCIe) ── */
+        size_t origin[3]={0,0,0};
+        size_t region[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
+        if (p->use_half_vol) {
             cl_kernel k = cl->k_f2h;
             clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
             clSetKernelArg(k, 1, sizeof(cl_mem), &d_vol_half);
@@ -817,13 +1010,13 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             size_t lws = 256;
             err = clEnqueueNDRangeKernel(cl->queue, k, 1, NULL, &gws, &lws, 0, NULL, NULL);
             CL_CHECK(err,"float_to_half vol");
-        }
-        {
-            size_t origin[3]={0,0,0};
-            size_t region[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
             err=clEnqueueCopyBufferToImage(cl->queue, d_vol_half, vol_img,
                                            0, origin, region, 0,NULL,NULL);
             CL_CHECK(err,"CopyBufferToImage vol half");
+        } else {
+            err=clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img,
+                                           0, origin, region, 0,NULL,NULL);
+            CL_CHECK(err,"CopyBufferToImage vol float32");
         }
         run_fp_image(cl, p, vol_img, d_proj_b);
 
@@ -866,7 +1059,16 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,11,sizeof(float),&vs);
             clSetKernelArg(k,12,sizeof(float),&px);
             size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
-            size_t lws[3]={4,4,16};
+            size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
+            {
+                const char *bp_lws_env = getenv("BP_LWS");
+                if (bp_lws_env) {
+                    unsigned long a=4, b=4, c=16;
+                    if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+                        lws[0]=a; lws[1]=b; lws[2]=c;
+                    }
+                }
+            }
             for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ratio");
@@ -887,7 +1089,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
     }
     clReleaseMemObject(vol_img);
-    clReleaseMemObject(d_vol_half);
+    if (d_vol_half) clReleaseMemObject(d_vol_half);
     clReleaseMemObject(ratio_img);
 
     clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
