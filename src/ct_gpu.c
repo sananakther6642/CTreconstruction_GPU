@@ -437,11 +437,22 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
      * FP_BUFFER_VOL_REALLOC_EVERY: mitigation -- every N angle-slabs,
      * read the current d_vol contents back to host, free the buffer, and
      * recreate it fresh from that same data. This resets whatever
-     * driver-side state causes the demotion. 0 (default) = off, since
-     * this trades a real per-N-slab readback+upload cost (~90ms at 512^3
-     * for the 537MB volume) for avoiding the ~2.5s-per-slab slow state --
-     * a clear win if the degradation cycle is shorter than N, unmeasured
-     * whether it beats no mitigation at all when it isn't.
+     * driver-side state causes the demotion.
+     *
+     * Swept N in {3,4,5,6,7,10} at 512^3 (5-epoch runs, each in its own
+     * process, 20s apart to avoid cross-run state bleed): 5 won clearly
+     * (34.91s, GPU-BOUND warnings only during epoch 1-2 warmup, clean
+     * after) against a 37.7-50.9s baseline-equivalent range and every
+     * other N tested (37.62-53.63s, all still showing scattered slow
+     * slabs throughout since they don't reliably land inside the
+     * degradation window). The degradation cycle length itself varies
+     * (6-13 launches observed via --diag repeat-slab), so this is a
+     * well-supported default, not a sharp optimum -- re-sweep if the
+     * observed cycle length changes on different hardware. Default 5
+     * (was 0/off during initial testing). Set 0 to disable entirely.
+     *
+     * Cost: ~90ms/reallocation at 512^3 (readback + upload of the 537MB
+     * volume) against the ~2.5s-per-slab the slow state otherwise costs.
      *
      * The counter is a static, persisting across calls (i.e. across
      * epochs) -- ANG_SLAB=8 gives only ~10 slabs/epoch at 75 angles, well
@@ -449,7 +460,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
      * per-call (per-epoch) counter that resets to 0 every run_fp_buffer
      * call would rarely or never fire even with N < 10. A global launch
      * count is what actually tracks proximity to the driver-side cycle. */
-    int realloc_every = 0;
+    int realloc_every = 5;
     {
         const char *re_env = getenv("FP_BUFFER_VOL_REALLOC_EVERY");
         if (re_env) realloc_every = atoi(re_env);
