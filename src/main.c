@@ -16,7 +16,9 @@ static void print_usage(const char *prog)
         "           [--kernels <kernel_dir>]  (default: ../kernels)\n"
         "           [--half]        (use half-precision vol_img texture; default: float32)\n"
         "           [--op fp|bp]    (component test: run a single fp or bp call, CPU only,\n"
-        "                            on all-ones input; dumps to <out> instead of full MLEM)\n",
+        "                            on all-ones input; dumps to <out> instead of full MLEM)\n"
+        "           [--log-convergence <file.csv>]  (per-epoch loglik/residual/rel_change;\n"
+        "                            off by default, zero extra cost when unset)\n",
         prog);
 }
 
@@ -30,6 +32,7 @@ int main(int argc, char **argv)
     int         n_samples    = 0;  /* 0 = auto (Nxz) */
     int         use_half     = 0;  /* default: float32 vol_img (accurate) */
     const char *op_str       = NULL; /* "fp" or "bp": component test mode */
+    const char *conv_log     = NULL; /* --log-convergence path, NULL = off */
 
     /* ── Parse args ── */
     for (int i = 1; i < argc; i++) {
@@ -41,6 +44,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--samples") && i+1<argc) n_samples   = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--half"))                use_half    = 1;
         else if (!strcmp(argv[i], "--op")      && i+1<argc) op_str      = argv[++i];
+        else if (!strcmp(argv[i], "--log-convergence") && i+1<argc) conv_log = argv[++i];
         else { print_usage(argv[0]); return 1; }
     }
 
@@ -125,7 +129,7 @@ int main(int argc, char **argv)
         printf("\n=== CPU mode, %d epochs ===\n", epochs);
 
         t_start = get_time_sec();
-        reconstruct_cpu(proj_measured, volume, &para, epochs);
+        reconstruct_cpu(proj_measured, volume, &para, epochs, conv_log);
         t_end = get_time_sec();
         printf("CPU time: %.2f s\n", t_end - t_start);
 
@@ -137,7 +141,7 @@ int main(int argc, char **argv)
         if (gpu_init(&cl, gmode, kernel_dir) != 0) return 1;
 
         t_start = get_time_sec();
-        reconstruct_gpu(&cl, &para, proj_measured, volume, epochs);
+        reconstruct_gpu(&cl, &para, proj_measured, volume, epochs, conv_log);
         t_end = get_time_sec();
 
         printf("GPU time: %.2f s\n", t_end - t_start);
@@ -150,7 +154,7 @@ int main(int argc, char **argv)
         if (gpu_init(&cl, GPU_MODE_OPT, kernel_dir) != 0) return 1;
 
         t_start = get_time_sec();
-        reconstruct_gpu_opt(&cl, &para, proj_measured, volume, epochs);
+        reconstruct_gpu_opt(&cl, &para, proj_measured, volume, epochs, conv_log);
         t_end = get_time_sec();
 
         printf("GPU-opt time: %.2f s\n", t_end - t_start);

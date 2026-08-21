@@ -573,7 +573,7 @@ static void run_fp_image(CLState *cl, const CBpara *p,
 /* ── reconstruct_gpu ─────────────────────────────────────────────────────── */
 void reconstruct_gpu(CLState *cl, const CBpara *p,
                      const float *proj_measured, float *volume,
-                     int epochs)
+                     int epochs, const char *conv_log)
 {
     cl_int err;
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
@@ -724,8 +724,20 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     int proj_n = np * H * W;
     int vol_n  = Nxz * Nxz * Ny;
 
+    /* --log-convergence scratch: host-side readback buffers, only allocated
+     * when logging is on (default NULL, zero extra cost otherwise). b_host
+     * holds fp(v) read back right after fp; v_prev_host holds the volume
+     * from the start of the epoch, for rel_change. */
+    float *b_host      = conv_log ? (float *)malloc((size_t)proj_n * sizeof(float)) : NULL;
+    float *v_prev_host = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
+    float *v_cur_host  = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
+
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
+
+        if (conv_log)
+            clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
+                                 (size_t)vol_n * sizeof(float), v_prev_host, 0, NULL, NULL);
 
         /* forward project: b = F(v0) */
         if (cl->mode == GPU_MODE_BUFFER) {
@@ -754,6 +766,10 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             }
             run_fp_image(cl, p, vol_img, d_proj_b);
         }
+
+        if (conv_log)
+            clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
+                                 (size_t)proj_n * sizeof(float), b_host, 0, NULL, NULL);
 
         /* ratio = p0 / b */
         {
@@ -797,11 +813,24 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             CL_CHECK(err,"vol_update");
         }
         clFinish(cl->queue);  /* single sync per epoch — for timing */
-        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
+        double t_ep_total = get_time_sec() - t_ep;
+        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, t_ep_total);
+
+        if (conv_log) {
+            clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
+                                 (size_t)vol_n * sizeof(float), v_cur_host, 0, NULL, NULL);
+            log_convergence(conv_log, epoch, t_ep_total,
+                             proj_measured, b_host, (size_t)proj_n,
+                             v_cur_host, (epoch == 0) ? NULL : v_prev_host, (size_t)vol_n);
+        }
     }
 
     /* Read back result */
     clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
+
+    if (b_host)      free(b_host);
+    if (v_prev_host) free(v_prev_host);
+    if (v_cur_host)  free(v_cur_host);
 
     /* Cleanup */
     clReleaseMemObject(d_proj_meas);
@@ -834,7 +863,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
  * ═══════════════════════════════════════════════════════════════════════════ */
 void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          const float *proj_measured, float *volume,
-                         int epochs)
+                         int epochs, const char *conv_log)
 {
     cl_int err;
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
@@ -995,8 +1024,18 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         CL_CHECK(err,"d_vol_half");
     }
 
+    /* --log-convergence scratch: only allocated when logging is on (default
+     * NULL, zero extra cost otherwise). See reconstruct_gpu for the pattern. */
+    float *b_host      = conv_log ? (float *)malloc((size_t)proj_n * sizeof(float)) : NULL;
+    float *v_prev_host = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
+    float *v_cur_host  = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
+
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
+
+        if (conv_log)
+            clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
+                                 (size_t)vol_n * sizeof(float), v_prev_host, 0, NULL, NULL);
 
         /* ── float d_vol → vol_img (GPU-side, no PCIe) ── */
         size_t origin[3]={0,0,0};
@@ -1019,6 +1058,10 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             CL_CHECK(err,"CopyBufferToImage vol float32");
         }
         run_fp_image(cl, p, vol_img, d_proj_b);
+
+        if (conv_log)
+            clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
+                                 (size_t)proj_n * sizeof(float), b_host, 0, NULL, NULL);
 
         /* ── ratio = p0/b ── */
         {
@@ -1086,13 +1129,26 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             CL_CHECK(err,"update opt");
         }
         clFinish(cl->queue);
-        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, get_time_sec()-t_ep);
+        double t_ep_total = get_time_sec() - t_ep;
+        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, t_ep_total);
+
+        if (conv_log) {
+            clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
+                                 (size_t)vol_n * sizeof(float), v_cur_host, 0, NULL, NULL);
+            log_convergence(conv_log, epoch, t_ep_total,
+                             proj_measured, b_host, (size_t)proj_n,
+                             v_cur_host, (epoch == 0) ? NULL : v_prev_host, (size_t)vol_n);
+        }
     }
     clReleaseMemObject(vol_img);
     if (d_vol_half) clReleaseMemObject(d_vol_half);
     clReleaseMemObject(ratio_img);
 
     clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
+
+    if (b_host)      free(b_host);
+    if (v_prev_host) free(v_prev_host);
+    if (v_cur_host)  free(v_cur_host);
 
     clReleaseMemObject(d_ang_cs);
     clReleaseMemObject(d_angles);
