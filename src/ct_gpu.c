@@ -291,12 +291,18 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &px);
 
     /* {4,4,16} tuned once early on (718ms->290ms, the biggest measured win
-     * at the time) and never re-swept, unlike fp_image/fp_buffer which
-     * both turned out to have significant headroom over their untested
-     * defaults. Shared BP_LWS env override across all three bp call sites
-     * (run_bp_buffer, run_bp_image, bp_opt x2) so a sweep tests them
-     * consistently. Keep lws[2] a divisor of Z_SLAB=64 below (1,2,4,8,
-     * 16,32,64) — the z-slab chunking requires it. */
+     * at the time) and never re-swept until fp_image/fp_buffer's sweeps
+     * (both found significant headroom over their similarly-untested
+     * defaults) prompted re-checking this one too. Re-swept at 512^3
+     * (gpu-opt, 3-epoch runs): {4,4,16} 0.874-0.879s still wins outright;
+     * every alternative tried was 14-49% slower (e.g. {8,4,8} ~0.997s,
+     * {4,16,4} ~1.10s, {2,2,64} ~1.17-1.19s, {8,8,4} ~1.30s). Unlike
+     * fp_image/fp_buffer, this one really was already at (or very near)
+     * its optimum — confirmed, not assumed. Shared BP_LWS env override
+     * across all four bp call sites (run_bp_buffer, run_bp_image, bp_opt
+     * x2) kept for any future re-test. Keep lws[2] a divisor of
+     * Z_SLAB=64 below (1,2,4,8,16,32,64) — the z-slab chunking
+     * requires it. */
     size_t lws[3] = {4, 4, 16};  /* 16 contiguous z-threads → coalesced writes */
     {
         const char *bp_lws_env = getenv("BP_LWS");
