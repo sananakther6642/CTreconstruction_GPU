@@ -434,33 +434,39 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
      * fastest VRAM tier), recoverable by reallocation, recurring on a
      * roughly time/pressure-based cycle rather than a fixed launch count.
      *
-     * FP_BUFFER_VOL_REALLOC_EVERY: mitigation -- every N angle-slabs,
+     * FP_BUFFER_VOL_REALLOC_EVERY: mitigation attempt -- every N angle-slabs,
      * read the current d_vol contents back to host, free the buffer, and
-     * recreate it fresh from that same data. This resets whatever
-     * driver-side state causes the demotion.
+     * recreate it fresh from that same data, on the theory that this resets
+     * whatever driver-side state causes the demotion confirmed via --diag
+     * repeat-slab (see that diagnostic's comment for the root-cause
+     * evidence: NOT thermal throttling, a step-degradation that recovers
+     * instantly on reallocation and recurs after 6-13 further launches).
      *
-     * Swept N in {3,4,5,6,7,10} at 512^3 (5-epoch runs, each in its own
-     * process, 20s apart to avoid cross-run state bleed): 5 won clearly
-     * (34.91s, GPU-BOUND warnings only during epoch 1-2 warmup, clean
-     * after) against a 37.7-50.9s baseline-equivalent range and every
-     * other N tested (37.62-53.63s, all still showing scattered slow
-     * slabs throughout since they don't reliably land inside the
-     * degradation window). The degradation cycle length itself varies
-     * (6-13 launches observed via --diag repeat-slab), so this is a
-     * well-supported default, not a sharp optimum -- re-sweep if the
-     * observed cycle length changes on different hardware. Default 5
-     * (was 0/off during initial testing). Set 0 to disable entirely.
+     * DOES NOT RELIABLY BEAT BASELINE -- kept off by default (0) after
+     * real testing contradicted an earlier promising result. A 5-epoch
+     * sweep at N in {3,4,5,6,7,10} showed N=5 as a clear winner (34.91s
+     * vs a 37.7-50.9s baseline-equivalent range, clean of slow-slab
+     * warnings after 2 epochs of warmup) -- but that did not reproduce at
+     * the full 10-epoch/75-angle scale used for the documented baseline.
+     * Four full 10-epoch runs with N=5 gave [105.84, 86.77, 89.04, 85.31]s
+     * (mean 91.74s, stdev 9.52) against the three existing unmitigated
+     * baseline runs [75.37, 101.89, 83.63]s (mean 86.96s, stdev 13.57) --
+     * the mitigated mean is *slower*, not faster (-5.5%), though the
+     * spread narrowed somewhat (weak signal at this sample size, not
+     * treated as confirmed). Most mitigated runs still showed scattered
+     * GPU-BOUND warnings despite reallocating every 5 launches, meaning
+     * it does not reliably land inside the degradation-avoidance window
+     * at this scale, and each reallocation itself costs real time
+     * (~0.2-0.4s observed, readback+upload of 537MB) that appears to
+     * roughly cancel whatever it saves.
      *
-     * Cost: ~90ms/reallocation at 512^3 (readback + upload of the 537MB
-     * volume) against the ~2.5s-per-slab the slow state otherwise costs.
-     *
-     * The counter is a static, persisting across calls (i.e. across
-     * epochs) -- ANG_SLAB=8 gives only ~10 slabs/epoch at 75 angles, well
-     * under the 6-13-launch degradation cycle observed in testing, so a
-     * per-call (per-epoch) counter that resets to 0 every run_fp_buffer
-     * call would rarely or never fire even with N < 10. A global launch
-     * count is what actually tracks proximity to the driver-side cycle. */
-    int realloc_every = 5;
+     * Root-cause diagnosis (buffer-tied, driver-side, not thermal) stands
+     * on its own evidence from --diag repeat-slab; this specific
+     * mitigation strategy does not fix it in practice at real MLEM scale.
+     * Left in as an opt-in env var for further tuning (e.g. a different
+     * trigger heuristic, or per-buffer-size scaling) rather than removed,
+     * since the underlying mechanism and hook point are still correct. */
+    int realloc_every = 0;
     {
         const char *re_env = getenv("FP_BUFFER_VOL_REALLOC_EVERY");
         if (re_env) realloc_every = atoi(re_env);
