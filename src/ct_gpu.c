@@ -461,6 +461,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     for (size_t p0 = 0; p0 < gws_full[2]; p0 += ANG_SLAB) {
         if (realloc_every > 0 && total_slab_launches > 0 &&
             total_slab_launches % realloc_every == 0) {
+            double t_realloc0 = get_time_sec();
             err = clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, vol_scratch, 0, NULL, NULL);
             CL_CHECK(err, "fp_buffer vol readback (realloc mitigation)");
             clReleaseMemObject(d_vol);
@@ -469,6 +470,8 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
             CL_CHECK(err, "fp_buffer d_vol realloc (mitigation)");
             clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
             *d_vol_ptr = d_vol;
+            printf("    [fp_buffer] reallocated d_vol at total_slab_launches=%ld (%.3fs)\n",
+                   total_slab_launches, get_time_sec() - t_realloc0);
         }
 
         size_t slab = (gws_full[2] - p0 < ANG_SLAB) ? (gws_full[2] - p0) : ANG_SLAB;
