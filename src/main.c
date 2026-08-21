@@ -19,9 +19,10 @@ static void print_usage(const char *prog)
         "                            on all-ones input; dumps to <out> instead of full MLEM)\n"
         "           [--log-convergence <file.csv>]  (per-epoch loglik/residual/rel_change;\n"
         "                            off by default, zero extra cost when unset)\n"
-        "           [--diag repeat-slab:<angle_offset>:<slab_size>:<n_repeats>]\n"
+        "           [--diag repeat-slab:<angle_offset>:<slab_size>:<n_repeats>[:<realloc_at>]]\n"
         "                           (gpu-buf only; perf-v2 Phase A2/A3 variance diagnostic,\n"
-        "                            repeats one fixed fp_buffer angle-slab N times and exits)\n",
+        "                            repeats one fixed fp_buffer angle-slab N times and exits;\n"
+        "                            optional realloc_at: reallocate d_vol before that repeat)\n",
         prog);
 }
 
@@ -137,14 +138,16 @@ int main(int argc, char **argv)
             fprintf(stderr, "Unknown --diag: %s (expected repeat-slab:<offset>:<size>:<reps>)\n", diag_str);
             return 1;
         }
-        int angle_offset = 0, slab_size = 8, n_repeats = 20;
-        if (sscanf(diag_str + 12, "%d:%d:%d", &angle_offset, &slab_size, &n_repeats) != 3) {
+        int angle_offset = 0, slab_size = 8, n_repeats = 20, realloc_at = 0;
+        int n_parsed = sscanf(diag_str + 12, "%d:%d:%d:%d",
+                               &angle_offset, &slab_size, &n_repeats, &realloc_at);
+        if (n_parsed != 3 && n_parsed != 4) {
             fprintf(stderr, "Malformed --diag repeat-slab spec: %s\n", diag_str);
             return 1;
         }
         CLState cl;
         if (gpu_init(&cl, GPU_MODE_BUFFER, kernel_dir) != 0) return 1;
-        gpu_diag_repeat_slab(&cl, &para, volume, angle_offset, slab_size, n_repeats);
+        gpu_diag_repeat_slab(&cl, &para, volume, angle_offset, slab_size, n_repeats, realloc_at);
         gpu_cleanup(&cl);
         free(volume); free(proj_measured); free(para.angles);
         return 0;
