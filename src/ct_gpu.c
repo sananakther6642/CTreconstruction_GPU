@@ -549,6 +549,20 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
         const char *pause_env = getenv("FP_BUFFER_SLAB_PAUSE_US");
         if (pause_env) slab_pause_us = atol(pause_env);
     }
+    /* perf-v2 Phase E: the per-slab clFinish below is a watchdog, not just
+     * a sync point -- it's what lets each slab be individually timed for
+     * the SLOW/HOST-SIDE-GAP diagnostic printout (used throughout this
+     * project's variance investigation, see --diag repeat-slab and the
+     * README's gpu-buf variance section). Skipping it (enqueue all slabs,
+     * sync once at the end) saves the plan's estimated 2-5% on gpu-buf,
+     * but silently disables that diagnostic. Off by default so the
+     * diagnostic path stays the default; opt in only when the variance
+     * mechanism is already understood and not being actively debugged. */
+    int skip_slab_finish = 0;
+    {
+        const char *skip_env = getenv("FP_BUFFER_SKIP_SLAB_FINISH");
+        if (skip_env && atoi(skip_env) != 0) skip_slab_finish = 1;
+    }
     /* Variance investigation (see README "gpu-buf run-to-run variance"):
      * ruled out other-user contention and per-angle geometry, couldn't
      * check dmesg (no root). GPU-side event profiling
@@ -628,33 +642,46 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
         size_t slab = (gws_full[2] - p0 < ANG_SLAB) ? (gws_full[2] - p0) : ANG_SLAB;
         size_t offset[3] = {0, 0, (size_t)ip_start + p0};
         size_t gws[3]    = {gws_full[0], gws_full[1], slab};
-        cl_event evt;
-        double t0 = get_time_sec();
-        err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, &evt);
-        CL_CHECK(err, "fp_buffer enqueue (slab)");
-        err = clFinish(cl->queue);
-        CL_CHECK(err, "fp_buffer slab finish");
-        double dt = get_time_sec() - t0;
-        if (dt > 2.0) {
-            cl_ulong t_start = 0, t_end = 0;
-            cl_int perr1 = clGetEventProfilingInfo(evt, CL_PROFILING_COMMAND_START,
-                                                    sizeof(t_start), &t_start, NULL);
-            cl_int perr2 = clGetEventProfilingInfo(evt, CL_PROFILING_COMMAND_END,
-                                                    sizeof(t_end), &t_end, NULL);
-            if (perr1 == CL_SUCCESS && perr2 == CL_SUCCESS) {
-                double gpu_dt = (double)(t_end - t_start) * 1e-9;
-                printf("    [fp_buffer slab %d, p0=%zu] wall=%.3fs gpu=%.3fs %s (SLOW)\n",
-                       slab_idx, p0, dt, gpu_dt,
-                       (dt - gpu_dt > 0.5) ? "HOST-SIDE-GAP" : "GPU-BOUND");
-            } else {
-                printf("    [fp_buffer slab %d, p0=%zu] %.3f s (SLOW, profiling query failed)\n",
-                       slab_idx, p0, dt);
+
+        if (skip_slab_finish) {
+            /* batched path: enqueue only, no per-slab sync/timing/watchdog */
+            cl_event evt;
+            err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, &evt);
+            CL_CHECK(err, "fp_buffer enqueue (slab, batched)");
+            clReleaseEvent(evt);
+        } else {
+            cl_event evt;
+            double t0 = get_time_sec();
+            err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, &evt);
+            CL_CHECK(err, "fp_buffer enqueue (slab)");
+            err = clFinish(cl->queue);
+            CL_CHECK(err, "fp_buffer slab finish");
+            double dt = get_time_sec() - t0;
+            if (dt > 2.0) {
+                cl_ulong t_start = 0, t_end = 0;
+                cl_int perr1 = clGetEventProfilingInfo(evt, CL_PROFILING_COMMAND_START,
+                                                        sizeof(t_start), &t_start, NULL);
+                cl_int perr2 = clGetEventProfilingInfo(evt, CL_PROFILING_COMMAND_END,
+                                                        sizeof(t_end), &t_end, NULL);
+                if (perr1 == CL_SUCCESS && perr2 == CL_SUCCESS) {
+                    double gpu_dt = (double)(t_end - t_start) * 1e-9;
+                    printf("    [fp_buffer slab %d, p0=%zu] wall=%.3fs gpu=%.3fs %s (SLOW)\n",
+                           slab_idx, p0, dt, gpu_dt,
+                           (dt - gpu_dt > 0.5) ? "HOST-SIDE-GAP" : "GPU-BOUND");
+                } else {
+                    printf("    [fp_buffer slab %d, p0=%zu] %.3f s (SLOW, profiling query failed)\n",
+                           slab_idx, p0, dt);
+                }
             }
+            clReleaseEvent(evt);
         }
-        clReleaseEvent(evt);
         slab_idx++;
         total_slab_launches++;
         if (slab_pause_us > 0) usleep((useconds_t)slab_pause_us);
+    }
+    if (skip_slab_finish) {
+        err = clFinish(cl->queue);
+        CL_CHECK(err, "fp_buffer batched finish");
     }
 
     if (vol_scratch) free(vol_scratch);
