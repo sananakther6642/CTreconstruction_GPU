@@ -19,13 +19,14 @@ BUILD_DIR  = build
 SRCS = $(SRC_DIR)/main.c \
        $(SRC_DIR)/utils.c \
        $(SRC_DIR)/ct_cpu.c \
-       $(SRC_DIR)/ct_gpu.c
+       $(SRC_DIR)/ct_gpu.c \
+       $(SRC_DIR)/ct_fdk.c
 
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
 TARGET = $(BUILD_DIR)/ct_recon
 
-.PHONY: all clean run-cpu run-gpu-buf run-gpu-img run-gpu-opt \
-               run-cpu-512 run-gpu-buf-512 run-gpu-img-512 run-gpu-opt-512 \
+.PHONY: all clean run-cpu run-gpu-buf run-gpu-img run-gpu-opt run-fdk \
+               run-cpu-512 run-gpu-buf-512 run-gpu-img-512 run-gpu-opt-512 run-fdk-512 \
                run-python run-python-512 run-op-fp run-op-bp run-op-fp-512 run-op-bp-512
 
 all: $(BUILD_DIR) $(TARGET)
@@ -57,6 +58,8 @@ run-gpu-img:
 	$(TARGET) --data $(DATA256) --out output_gpu_img.hdf5     --mode gpu-img --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
 run-gpu-opt:
 	$(TARGET) --data $(DATA256) --out output_gpu_opt.hdf5     --mode gpu-opt --epochs $(EPOCHS) --kernels $(KERNEL_DIR)
+run-fdk:
+	$(TARGET) --data $(DATA256) --out output_fdk.hdf5         --mode fdk     --kernels $(KERNEL_DIR)
 
 # 512 targets (n_samples=384 by default, override with SAMPLES512=N)
 run-cpu-512:
@@ -67,6 +70,8 @@ run-gpu-img-512:
 	$(TARGET) --data $(DATA512) --out output_gpu_img_512.hdf5 --mode gpu-img --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 run-gpu-opt-512:
 	$(TARGET) --data $(DATA512) --out output_gpu_opt_512.hdf5 --mode gpu-opt --epochs $(EPOCHS) --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
+run-fdk-512:
+	$(TARGET) --data $(DATA512) --out output_fdk_512.hdf5     --mode fdk     --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 
 
 # ── Validation helpers ──
