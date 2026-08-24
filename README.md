@@ -814,6 +814,47 @@ stability edge.** Sweep `--beta-delta` too before trusting these exact
 values on a different dataset/scale — it wasn't re-tuned here, only its
 default was used throughout.
 
+### Log-domain momentum — `--gamma G`, negative result (implemented, not usable)
+
+perf-v2 Phase C5 (planned as a "coin flip", 35-55% chance of a usable
+result). Log-domain (multiplicative) Nesterov-style extrapolation:
+`v_{k+1} = u_k·(u_k/v_k)^gamma`, applied once per epoch after the full
+OSEM subset loop. Positive by construction — no clamp needed, unlike
+naive additive momentum which can drive voxels negative under MLEM's
+multiplicative update and get stuck there. `--gamma 0` (default) skips
+the kernel and extra buffer entirely — exactly the pre-C5 code path,
+confirmed byte-identical (`max abs diff: 0.0`).
+
+**Rejected after measurement: unstable at every tested `gamma`, no
+usable operating point found.** Swept `gamma` ∈ {0.1, 0.2, 0.3, 0.5} at
+256³, 30 epochs, `--subsets 1`:
+
+| γ | max | mean |
+|---|---|---|
+| 0 (baseline) | 1.7489 | 0.006644 |
+| 0.1 | 2.3471 (+34%) | 0.006633 |
+| 0.2 | 1.8661 | 0.006628 |
+| 0.3 | 1.8661 | 0.006619 |
+| 0.5 | 20.9745 (**+12×**) | 0.006496 |
+
+No NaN/inf/negative values at any γ — the positivity guarantee holds as
+designed — but the max-value overshoot is present from the smallest γ
+tested and does not grow monotonically (γ=0.1 spikes worse than
+γ=0.2/0.3), then jumps 12× at γ=0.5. Convergence logging at γ=0.5 shows
+why: log-likelihood/residual settle into low-level non-monotone
+ringing by epoch ~18-30 instead of smooth convergence, consistent with
+momentum overshoot compounding on a small set of voxels near the
+positivity floor each epoch rather than a global divergence. The
+0.2/0.3 near-identical max (1.8661 both) was verified as a genuine
+coincidence of two different outlier voxels via `md5sum` (different
+files) and `argmax` (different voxel locations), not a stale-output
+artifact.
+
+**Verdict:** implementation is correct and the positivity argument is
+sound, but standalone log-domain momentum is not stable enough to use
+at any γ tested. Left in the tree at `γ=0` default (zero cost, honest
+negative result) rather than reverted.
+
 ## Optimizations
 
 | Optimization | Where | Effect |
