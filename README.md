@@ -718,6 +718,49 @@ way): S=3's mean moved from 49% of S=1's (10 epochs) to within 0.2% of it
 (50 epochs), confirming healthy convergence rather than divergence — S=3
 was simply earlier in a different (valid) trajectory at 10 epochs.
 
+### FDK initialization — `--init fdk`, and its measured overlap with OSEM
+
+perf-v2 Phase C2. Single-pass analytic reconstruction (Ram-Lak ramp filter +
+cosine weight, CPU FFT, parallelized with OpenMP; single GPU `bp_opt` pass)
+used as `v0` instead of `ones`. `--init fdk` works with any `--mode`/
+`--subsets` combination — it spins up its own temporary `GPU_MODE_OPT`
+context regardless of the main mode, since `bp_opt` is `gpu-opt`-only.
+0.80s total at 256³ (filter+backprojection, 24 CPU threads). FDK's ramp
+filter undershoots and produces negative voxels (a known property, not a
+bug) — **49.17% of voxels needed clamping** to a `1e-6` positive floor,
+mandatory since MLEM's multiplicative update can never recover a voxel
+that starts ≤0.
+
+**Measured full 2×2 ({ones, fdk}-init × {MLEM, OSEM S=5}), 256³, 20
+epochs, log-likelihood** — the plan explicitly asked for this measurement
+rather than assuming FDK-init and OSEM's gains simply add:
+
+| Epoch | ones+MLEM | fdk+MLEM | ones+OSEM(S=5) | fdk+OSEM(S=5) |
+|---|---|---|---|---|
+| 1 | −20,017,427 | **−587,751** | −20,017,427 | **−587,751** |
+| 5 | −524,214 | **−520,645** | −497,197 | **−495,211** |
+| 10 | −523,152 | **−519,822** | −483,565 | −483,478 |
+| 20 | −499,712 | **−497,293** | **−480,635** | −480,951 |
+
+(higher/less-negative is better; bold = better of the pair at that
+epoch.) **Confirms the plan's predicted mechanism exactly:**
+- Under plain **MLEM**, FDK-init is a clear, large win — ~34× better
+  log-likelihood at epoch 1 alone, and stays ahead through epoch 20.
+- Under **OSEM**, the gap **collapses almost immediately**: by epoch 2
+  the two are nearly tied, and from ~epoch 11 onward **ones-init
+  slightly overtakes FDK-init** (−480,635 vs −480,951 at epoch 20).
+
+FDK-init and OSEM accelerate the *same* early-convergence phase, so
+their gains do not stack — once OSEM is doing the fast-early-progress
+job, FDK's head start is redundant, and FDK's own artifacts (the 49%
+clamped-negative voxels) may introduce a small bias OSEM's early
+sub-iterations spend some work correcting, which is the likely
+explanation for ones-init's late, small lead over fdk-init under OSEM.
+**Practical guidance: use `--init fdk` with plain MLEM (`--subsets 1`)
+for a real win; skip it when already using OSEM (`--subsets >1`) — it
+adds ~0.8s of setup for no measured benefit there, and a slight measured
+cost by epoch 20.**
+
 ## Optimizations
 
 | Optimization | Where | Effect |
