@@ -32,7 +32,7 @@ the other modes' — see note below.
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (12 logical cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
-### Current hardware: kale (NVIDIA GTX 680), 100-epoch confirmed numbers
+### kale (NVIDIA GTX 680), 100-epoch confirmed numbers
 
 The tables above are `pool15-01` (AMD Hawaii) at 10-epoch scale, from
 earlier in the project. Work has since moved to `kale` (NVIDIA GTX 680,
