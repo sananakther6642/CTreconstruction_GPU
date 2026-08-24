@@ -1439,6 +1439,26 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         clFinish(cl->queue);  /* wait for all subsets' bp_ones before epoch loop */
         clReleaseMemObject(ones_img);
         printf("  bp_opt(ones) computed (%d subset%s).\n", S, S==1?"":"s");
+
+        /* perf-v2 Phase C3 calibration diagnostic: bp_ones's magnitude is
+         * what beta*prior_grad has to be comparable to for --beta to have
+         * any visible effect on the OSL denominator. Gated behind an env
+         * var since it costs a full-volume readback -- not for normal runs. */
+        if (getenv("PRINT_BP_ONES_STATS")) {
+            float *tmp = (float *)malloc(vol_bytes);
+            clEnqueueReadBuffer(cl->queue, d_bp_ones[0], CL_TRUE, 0, vol_bytes, tmp, 0, NULL, NULL);
+            float mn = tmp[0], mx = tmp[0]; double sum = 0.0;
+            size_t nz = 0;
+            for (size_t i = 0; i < (size_t)Nxz*Nxz*Ny; i++) {
+                if (tmp[i] < mn) mn = tmp[i];
+                if (tmp[i] > mx) mx = tmp[i];
+                sum += tmp[i];
+                if (tmp[i] > 1e-10f) nz++;
+            }
+            printf("  [diag] bp_ones[0]: min=%.6g max=%.6g mean=%.6g nonzero=%zu/%d\n",
+                   mn, mx, sum / (Nxz*Nxz*Ny), nz, Nxz*Nxz*Ny);
+            free(tmp);
+        }
     }
 
     int proj_n = np*H*W;
