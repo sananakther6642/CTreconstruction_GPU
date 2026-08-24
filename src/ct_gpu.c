@@ -207,6 +207,12 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "divide_preprocess_img");
         cl->k_update_img = clCreateKernel(cl->prog_buffer, "vol_update_img", &err);
         CL_CHECK(err, "vol_update_img");
+        cl->k_prior_grad = clCreateKernel(cl->prog_buffer, "prior_gradient", &err);
+        CL_CHECK(err, "prior_gradient");
+        cl->k_update_reg = clCreateKernel(cl->prog_buffer, "vol_update_reg", &err);
+        CL_CHECK(err, "vol_update_reg");
+        cl->k_update_img_reg = clCreateKernel(cl->prog_buffer, "vol_update_img_reg", &err);
+        CL_CHECK(err, "vol_update_img_reg");
         cl->k_cone_hw  = clCreateKernel(cl->prog_buffer, "cone_weight_hw", &err);
         CL_CHECK(err, "cone_weight_hw");
     }
@@ -263,6 +269,7 @@ void gpu_cleanup(CLState *cl)
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
         clReleaseKernel(cl->k_preproc);
         clReleaseKernel(cl->k_divide_preproc_img); clReleaseKernel(cl->k_update_img);
+        clReleaseKernel(cl->k_prior_grad); clReleaseKernel(cl->k_update_reg); clReleaseKernel(cl->k_update_img_reg);
         clReleaseKernel(cl->k_cone_hw);
         clReleaseProgram(cl->prog_buffer);
     }
@@ -276,6 +283,7 @@ void gpu_cleanup(CLState *cl)
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
         clReleaseKernel(cl->k_preproc);
         clReleaseKernel(cl->k_divide_preproc_img); clReleaseKernel(cl->k_update_img);
+        clReleaseKernel(cl->k_prior_grad); clReleaseKernel(cl->k_update_reg); clReleaseKernel(cl->k_update_img_reg);
         clReleaseKernel(cl->k_cone_hw);
         clReleaseKernel(cl->k_fp_img); clReleaseKernel(cl->k_bp_img);
         if (cl->k_f2h) clReleaseKernel(cl->k_f2h);
@@ -1263,7 +1271,8 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
  * ═══════════════════════════════════════════════════════════════════════════ */
 void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          const float *proj_measured, float *volume,
-                         int epochs, const char *conv_log, int subsets)
+                         int epochs, const char *conv_log, int subsets,
+                         float beta, float beta_delta)
 {
     cl_int err;
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
@@ -1271,6 +1280,10 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     int np  = p->num_projs;
     int S   = (subsets > 0) ? subsets : 1;
     if (S > np) S = 1; /* degenerate guard: more subsets than angles makes no sense */
+    /* perf-v2 Phase C3: penalty split across S sub-iterations (the plan's
+     * flagged trap) -- applying the full beta once per sub-iteration would
+     * over-penalize by a factor of S over the course of one epoch. */
+    float beta_eff = beta / (float)S;
 
     /* perf-v2 Phase C1 (OSEM): subset k is the contiguous angle range
      * [subset_start[k], subset_start[k]+subset_count[k]) -- valid ONLY
@@ -1338,6 +1351,14 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     for (int s = 0; s < S; s++) {
         d_bp_ones[s] = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
         CL_CHECK(err, "d_bp_ones[s] opt");
+    }
+
+    /* perf-v2 Phase C3: only allocated when beta>0 -- zero extra VRAM/
+     * setup cost on the default (unregularized) path. */
+    cl_mem d_prior_grad = NULL;
+    if (beta > 0.f) {
+        d_prior_grad = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
+        CL_CHECK(err, "d_prior_grad opt");
     }
 
     /* local mem for angle_cs LUT cache in bp_opt */
@@ -1575,13 +1596,61 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                 CL_CHECK(err,"bp_opt ratio");
             }
 
-            /* ── update (float4 vectorized), this subset's normalizer ──
+            /* perf-v2 Phase C3: Huber prior gradient, only when beta>0.
+             * Reads d_vol as it stands BEFORE this sub-iteration's update
+             * (i.e. v_k in the plan's OSL formula) -- computed fresh every
+             * sub-iteration since the volume changes each time. */
+            if (beta > 0.f) {
+                cl_kernel k = cl->k_prior_grad;
+                clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
+                clSetKernelArg(k,1,sizeof(cl_mem),&d_prior_grad);
+                clSetKernelArg(k,2,sizeof(int),&Nxz);
+                clSetKernelArg(k,3,sizeof(int),&Ny);
+                clSetKernelArg(k,4,sizeof(float),&beta_delta);
+                size_t gws_pg = (size_t)vol_n;
+                err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws_pg,NULL,0,NULL,NULL);
+                CL_CHECK(err,"prior_gradient");
+            }
+
+            /* ── update, this subset's normalizer ──
              * perf-v2 Phase B4: float32 mode uses vol_update_img, which
              * also writes straight into vol_img (replacing the copy that
              * used to run at the top of the NEXT sub-iteration). --half
              * keeps plain vol_update since its vol_img is refreshed via
-             * float_to_half+copy above instead. */
-            if (!p->use_half_vol) {
+             * float_to_half+copy above instead.
+             * perf-v2 Phase C3: beta>0 switches to the _reg kernel
+             * variants (OSL denominator bp_ones + beta_eff*prior_grad).
+             * beta==0 (default) runs the ORIGINAL float4-vectorized
+             * vol_update/vol_update_img unchanged -- same code path as
+             * before C3 existed, not a beta=0 branch of new code. */
+            if (beta > 0.f) {
+                if (!p->use_half_vol) {
+                    cl_kernel k = cl->k_update_img_reg;
+                    clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
+                    clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
+                    clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones[s]);
+                    clSetKernelArg(k,3,sizeof(cl_mem),&d_prior_grad);
+                    clSetKernelArg(k,4,sizeof(float),&beta_eff);
+                    clSetKernelArg(k,5,sizeof(cl_mem),&vol_img);
+                    clSetKernelArg(k,6,sizeof(int),&Nxz);
+                    clSetKernelArg(k,7,sizeof(int),&Ny);
+                    clSetKernelArg(k,8,sizeof(int),&vol_n);
+                    size_t gws=(size_t)vol_n;
+                    err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
+                    CL_CHECK(err,"update_img_reg opt");
+                } else {
+                    cl_kernel k = cl->k_update_reg;
+                    clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
+                    clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
+                    clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones[s]);
+                    clSetKernelArg(k,3,sizeof(cl_mem),&d_prior_grad);
+                    clSetKernelArg(k,4,sizeof(float),&beta_eff);
+                    clSetKernelArg(k,5,sizeof(int),&vol_n);
+                    size_t gws=(size_t)vol_n;
+                    err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
+                    CL_CHECK(err,"update_reg opt");
+                }
+            } else if (!p->use_half_vol) {
                 cl_kernel k = cl->k_update_img;
                 clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
                 clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
@@ -1636,6 +1705,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     clReleaseMemObject(d_bp_ratio);
     for (int s = 0; s < S; s++) clReleaseMemObject(d_bp_ones[s]);
     free(d_bp_ones);
+    if (d_prior_grad) clReleaseMemObject(d_prior_grad);
     free(subset_start);
     free(subset_count);
     clReleaseMemObject(cl->d_R_mats);

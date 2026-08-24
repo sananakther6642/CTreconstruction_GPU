@@ -292,6 +292,126 @@ __kernel void vol_update(
  * the same (x,y) and differ only in z -- safe to decompose into four
  * scalar write_imagef calls at (z,z+1,z+2,z+3) with the same (y,x).
  */
+/*
+ * prior_gradient — Huber-prior gradient dR/dv for One-Step-Late MLEM
+ * (Green 1990), 6-neighbour stencil.
+ *
+ * perf-v2 Phase C3. Huber potential psi(t) = t^2/2 for |t|<=delta,
+ * delta*(|t|-delta/2) for |t|>delta -- quadratic (smooth gradient) near
+ * zero, linear (bounded influence, edge-preserving) for large gradients,
+ * unlike pure TV's non-differentiable kink at t=0. Its derivative is the
+ * simple clip: psi'(t) = clip(t, -delta, delta).
+ *
+ * dR/dv_j = sum over the 6 axis-neighbours k of psi'(v_j - v_k). Reads
+ * the plain volume buffer directly (not vol_img) -- neighbour offsets
+ * are exact integer voxel steps, so there's no benefit from the image
+ * sampler's interpolation (which would be wrong here anyway: this needs
+ * exact neighbour values, not a filtered blend) and a buffer read is
+ * simpler than computing texel coordinates for six offsets.
+ *
+ * Volume layout matches vol_update: flat index j = x*(Nxz*Ny) + y*Ny + z.
+ * Out-of-bounds neighbours (domain edges) are skipped -- equivalent to a
+ * zero-gradient (Neumann) boundary condition, avoiding a spurious pull
+ * toward zero at the volume's faces.
+ */
+__kernel void prior_gradient(
+    __global const float *volume,
+    __global       float *grad,
+    int   Nxz,
+    int   Ny,
+    float delta
+)
+{
+    int j = get_global_id(0);
+    int n = Nxz * Nxz * Ny;
+    if (j >= n) return;
+
+    int x = j / (Nxz * Ny);
+    int rem = j % (Nxz * Ny);
+    int y = rem / Ny;
+    int z = rem % Ny;
+
+    float vj = volume[j];
+    float g = 0.f;
+
+    /* x neighbours */
+    if (x > 0)       { float t = vj - volume[j - Nxz*Ny]; g += clamp(t, -delta, delta); }
+    if (x < Nxz - 1)  { float t = vj - volume[j + Nxz*Ny]; g += clamp(t, -delta, delta); }
+    /* y neighbours */
+    if (y > 0)       { float t = vj - volume[j - Ny]; g += clamp(t, -delta, delta); }
+    if (y < Nxz - 1)  { float t = vj - volume[j + Ny]; g += clamp(t, -delta, delta); }
+    /* z neighbours */
+    if (z > 0)       { float t = vj - volume[j - 1]; g += clamp(t, -delta, delta); }
+    if (z < Ny - 1)   { float t = vj - volume[j + 1]; g += clamp(t, -delta, delta); }
+
+    grad[j] = g;
+}
+
+/*
+ * vol_update_reg / vol_update_img_reg — One-Step-Late MLEM update:
+ *   v *= bp_ratio / (bp_ones + beta_eff * prior_grad)
+ * instead of plain v *= bp_ratio / bp_ones. beta_eff is beta/S under
+ * OSEM (the caller divides before passing it in -- see ct_gpu.c) so the
+ * penalty is applied once per EPOCH's worth of work, not once per
+ * sub-iteration (the plan's flagged trap: applying the full beta in
+ * every one of S sub-iterations would over-penalize by a factor of S).
+ *
+ * Denominator clamped to a small positive floor -- OSL's standard
+ * failure mode is bp_ones + beta*grad going negative or near-zero
+ * (grad can be negative when a voxel is a local minimum relative to its
+ * neighbours), which would blow up or invert the multiplicative update.
+ * Kept as separate kernels from the unregularized vol_update/
+ * vol_update_img (rather than adding a beta=0 branch to those) so
+ * --beta 0 (the default) runs the exact unmodified, already-validated
+ * kernels -- not just numerically equivalent code, the SAME code path.
+ */
+__kernel void vol_update_reg(
+    __global       float *volume,
+    __global const float *bp_ratio,
+    __global const float *bp_ones,
+    __global const float *prior_grad,
+    float beta_eff,
+    int n
+)
+{
+    int j = get_global_id(0);
+    if (j >= n) return;
+    float denom = bp_ones[j] + beta_eff * prior_grad[j];
+    if (denom > 1e-10f)
+        volume[j] *= bp_ratio[j] / denom;
+    /* denom <= floor: leave voxel unchanged, same convention as the
+     * unregularized kernels' bp_ones<=1e-10f case. */
+}
+
+__kernel void vol_update_img_reg(
+    __global       float *volume,
+    __global const float *bp_ratio,
+    __global const float *bp_ones,
+    __global const float *prior_grad,
+    float beta_eff,
+    __write_only image3d_t vol_img,
+    int Nxz,
+    int Ny,
+    int n
+)
+{
+    int j = get_global_id(0);
+    if (j >= n) return;
+
+    float denom = bp_ones[j] + beta_eff * prior_grad[j];
+    float val = volume[j];
+    if (denom > 1e-10f) {
+        val = volume[j] * bp_ratio[j] / denom;
+        volume[j] = val;
+    }
+
+    int x = j / (Nxz * Ny);
+    int rem = j % (Nxz * Ny);
+    int y = rem / Ny;
+    int z = rem % Ny;
+    write_imagef(vol_img, (int4)(z, y, x, 0), (float4)(val, 0.f, 0.f, 0.f));
+}
+
 __kernel void vol_update_img(
     __global       float *volume,
     __global const float *bp_ratio,
