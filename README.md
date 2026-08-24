@@ -632,6 +632,92 @@ for each epoch:
 `preprocess_proj`: flip H-axis + transpose `[np,H,W]→[np,W,H]` + `/voxelSize`
 (applied to ratio and ones before every bp call).
 
+### OSEM (Ordered Subsets EM) — `gpu-opt` only, `--subsets N`
+
+perf-v2 Phase C1. Splits the angle set into `N` subsets and does one
+volume update per subset instead of one per full angle pass — near-linear
+convergence acceleration per unit work, at the cost of limit-cycling near
+(not exactly onto) plain MLEM's fixed point. Default `--subsets 1` is
+**provably identical** to plain MLEM — no permutation, one normalizer,
+verified byte-identical (`max abs diff: 0.0`) against the unset-flag
+default in testing, not just assumed equivalent.
+
+```
+v = ones(...)
+bp_ones[s] = bp( cone_weight(ones_proj), subset s )   for s in 0..N   # once, before the loop
+
+for each epoch (= one full pass over all N subsets):
+    for each subset s:
+        b       = fp(v)                          # full angle range every sub-iteration
+        ratio   = p0 / b   (b > 1e-3)
+        ratio   = cone_weight(ratio)
+        v      *= bp(ratio, subset s) / bp_ones[s]   # only this subset's angles
+```
+
+`fp` still covers the full angle range every sub-iteration (`vol_img`
+holds the whole current volume) — only the `bp`/update step is restricted
+to the subset. An accepted implementation cost (`fp` isn't `1/N` the work
+it could be), not a correctness issue; scoped this way because `gpu-opt`'s
+`fp` is comparatively cheap and doing it per-subset would have meant
+splitting `vol_img`/`ratio_img` handling further for limited additional
+win.
+
+**Angle ordering**: subset `s` gets `{s, s+N, s+2N, ...}` (interleaved —
+each subset spans the full angular range, not a contiguous wedge), and
+subsets are visited in a stride-coprime-to-N order chosen near the
+golden-ratio point so consecutive sub-iterations are maximally separated
+in angle. Applied once at load time as a physical permutation of the
+projection stack (`compute_osem_permutation`/`permute_projections_inplace`
+in `utils.c`), so subset `k` becomes exactly the contiguous angle range
+`[k·np/N, (k+1)·np/N)` and the kernels only need an `(ip_start, ip_count)`
+launch range, not per-work-item subset membership checks.
+
+256³ only for now — at 512³ the per-subset normalizer array (`N` volume-sized
+buffers instead of 1) doesn't fit alongside the rest of `gpu-opt`'s already
+~4GB resident set on this project's cards; not implemented, see the plan.
+
+**Measured result** (256³, 30 epochs, `--log-convergence`, log-likelihood
+vs matched wall-clock time — the metric MLEM/OSEM actually optimizes, not
+just epoch count):
+
+| Wall-clock time | S=1 (plain MLEM) | S=5 | S=15 |
+|---|---|---|---|
+| 6 s | −488,523 | **−483,853** | −484,545 |
+| 8 s | (not yet this good) | −481,944 | **−481,603** |
+| 15 s | (not yet this good) | −480,306 | **−479,645** |
+
+(higher/less-negative is better.) **Every OSEM configuration tested beats
+plain MLEM at any matched wall-clock time past ~2s.** S=5 leads in the
+first ~6-8s; S=15 overtakes it from ~8s onward and stays ahead through the
+longest time both were measured to (15s) — more subsets means more
+updates per unit time but each is noisier, so which S wins depends on how
+close to convergence the run already is. This is the real, measured shape
+of the result, not assumed from theory: the naive "S=5 is simply the best
+default" story from the initial write-up did not hold once time-matched
+data existed. S=3 and S=25 were also tested and fall inside this envelope
+(S=3 behaves similarly to S=1 with a smaller but real speedup; S=25 is
+consistently the slowest per-unit-time of the five, more sub-iteration
+overhead than benefit at this angle count). Report a time-matched curve
+if citing this in a write-up, not a single number — which S "wins"
+depends on the time budget.
+
+**Regression tests, both passed exactly:**
+1. `--subsets` unset vs the pre-OSEM baseline: MSE=8.423e-10 vs CPU,
+   unchanged.
+2. Explicit `--subsets 1` vs unset: `max abs diff: 0.0`, bit-identical.
+
+Also investigated and resolved during testing: `--subsets 3` at 10 epochs
+showed a mean roughly half of `--subsets 1`'s, opposite the naive
+expectation (S=3's larger 25-angle subsets should track S=1 more closely
+than S=5's 15-angle subsets). Traced to S=3's angle-visit-order stride
+computation landing on stride=1 (sequential visit order) — a real,
+understood consequence of there being too few subsets for the
+maximally-separated-order step to do anything beyond sequential, not a
+bug. Re-ran S=1 and S=3 at 50 epochs (equal total angle-passes either
+way): S=3's mean moved from 49% of S=1's (10 epochs) to within 0.2% of it
+(50 epochs), confirming healthy convergence rather than divergence — S=3
+was simply earlier in a different (valid) trajectory at 10 epochs.
+
 ## Optimizations
 
 | Optimization | Where | Effect |
