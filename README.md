@@ -222,7 +222,9 @@ for each epoch (= one pass over all N subsets):
 - Regression tests: `--subsets` unset vs baseline, MSE unchanged;
   `--subsets 1` vs unset, byte-identical.
 
-**Result** (256³, 100 epochs, log-likelihood vs wall-clock):
+**Result** (256³, 100 epochs, log-likelihood vs wall-clock — logged via
+`--log-convergence <file.csv>`, which writes per-epoch loglik/residual/
+rel_change; off by default):
 
 | Time | S=1 | S=3 | S=5 | S=15 | S=25 |
 |---|---|---|---|---|---|
