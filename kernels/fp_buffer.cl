@@ -32,6 +32,11 @@ static float trilinear_buf(__global const float *vol,
          + c011*(1-dx)*dy*dz         + c111*dx*dy*dz;
 }
 
+/* perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+ * subrange. See fp_image.cl's kernel comment for why the guard checks
+ * "ip >= ip_start + ip_count" rather than "ip >= num_projs" -- the host's
+ * per-slab gws rounding (run_fp_buffer, ct_gpu.c) can otherwise let
+ * extra rounded-up work-items process angles past the intended subset. */
 __kernel void fp_buffer(
     __global const float *volume,    /* [Nxz * Nxz * Ny] */
     __constant float     *R_mats,    /* [num_projs * 9] row-major R per angle */
@@ -46,14 +51,16 @@ __kernel void fp_buffer(
     float SOD,
     float SDD,
     float voxelSize,
-    float pixelSize
+    float pixelSize,
+    int   ip_start,
+    int   ip_count
 )
 {
     int iu = get_global_id(0);
     int iv = get_global_id(1);
     int ip = get_global_id(2);
 
-    if (iu >= W || iv >= H || ip >= num_projs) return;
+    if (iu >= W || iv >= H || ip >= ip_start + ip_count) return;
 
     float sVoxel_xz = Nxz * voxelSize;
     float sVoxel_y  = Ny  * voxelSize;
@@ -93,13 +100,17 @@ __kernel void fp_buffer(
             if(t1>t2){float tmp=t1;t1=t2;t2=tmp;}
             tmin=fmax(tmin,t1); tmax=fmin(tmax,t2);
         }
+        /* component 1 (rd[1],oy0) -> yi via inv_sv_y (Ny axis): half-extent
+         * must be hy, not hxz. component 2 (rd[2],oz0) -> zi via
+         * inv_sv_xz: needs hxz, not hy. Was transposed — see fp_image.cl
+         * for the matching fix and full explanation. */
         if (fabs(rd[1]) > 1e-6f) {
-            float t1=(-hxz-oy0)/rd[1], t2=(hxz-oy0)/rd[1];
+            float t1=(-hy-oy0)/rd[1], t2=(hy-oy0)/rd[1];
             if(t1>t2){float tmp=t1;t1=t2;t2=tmp;}
             tmin=fmax(tmin,t1); tmax=fmin(tmax,t2);
         }
         if (fabs(rd[2]) > 1e-6f) {
-            float t1=(-hy-oz0)/rd[2], t2=(hy-oz0)/rd[2];
+            float t1=(-hxz-oz0)/rd[2], t2=(hxz-oz0)/rd[2];
             if(t1>t2){float tmp=t1;t1=t2;t2=tmp;}
             tmin=fmax(tmin,t1); tmax=fmin(tmax,t2);
         }
