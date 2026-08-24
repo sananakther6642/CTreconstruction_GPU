@@ -213,6 +213,8 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "vol_update_reg");
         cl->k_update_img_reg = clCreateKernel(cl->prog_buffer, "vol_update_img_reg", &err);
         CL_CHECK(err, "vol_update_img_reg");
+        cl->k_momentum = clCreateKernel(cl->prog_buffer, "momentum_extrapolate", &err);
+        CL_CHECK(err, "momentum_extrapolate");
         cl->k_cone_hw  = clCreateKernel(cl->prog_buffer, "cone_weight_hw", &err);
         CL_CHECK(err, "cone_weight_hw");
     }
@@ -270,6 +272,7 @@ void gpu_cleanup(CLState *cl)
         clReleaseKernel(cl->k_preproc);
         clReleaseKernel(cl->k_divide_preproc_img); clReleaseKernel(cl->k_update_img);
         clReleaseKernel(cl->k_prior_grad); clReleaseKernel(cl->k_update_reg); clReleaseKernel(cl->k_update_img_reg);
+        clReleaseKernel(cl->k_momentum);
         clReleaseKernel(cl->k_cone_hw);
         clReleaseProgram(cl->prog_buffer);
     }
@@ -284,6 +287,7 @@ void gpu_cleanup(CLState *cl)
         clReleaseKernel(cl->k_preproc);
         clReleaseKernel(cl->k_divide_preproc_img); clReleaseKernel(cl->k_update_img);
         clReleaseKernel(cl->k_prior_grad); clReleaseKernel(cl->k_update_reg); clReleaseKernel(cl->k_update_img_reg);
+        clReleaseKernel(cl->k_momentum);
         clReleaseKernel(cl->k_cone_hw);
         clReleaseKernel(cl->k_fp_img); clReleaseKernel(cl->k_bp_img);
         if (cl->k_f2h) clReleaseKernel(cl->k_f2h);
@@ -1272,7 +1276,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          const float *proj_measured, float *volume,
                          int epochs, const char *conv_log, int subsets,
-                         float beta, float beta_delta)
+                         float beta, float beta_delta, float gamma)
 {
     cl_int err;
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
@@ -1359,6 +1363,19 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     if (beta > 0.f) {
         d_prior_grad = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
         CL_CHECK(err, "d_prior_grad opt");
+    }
+
+    /* perf-v2 Phase C5: only allocated when gamma>0. v_prev tracks the
+     * previous momentum-extrapolated iterate v_k; seeded from the same
+     * initial volume as d_vol so the first epoch's momentum step has a
+     * valid v_0 to compare its fresh MLEM output against (a
+     * zero-momentum first step in effect, since u_1/v_0 starts however
+     * the initial volume relates to the first real update). */
+    cl_mem d_v_prev = NULL;
+    if (gamma > 0.f) {
+        d_v_prev = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
+                                   vol_bytes, (void*)volume, &err);
+        CL_CHECK(err, "d_v_prev opt");
     }
 
     /* local mem for angle_cs LUT cache in bp_opt */
@@ -1693,6 +1710,28 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                 CL_CHECK(err,"update opt");
             }
         }
+
+        /* perf-v2 Phase C5: log-domain momentum, once per EPOCH (after
+         * the full subset loop, not per sub-iteration -- see the
+         * function-level comment on why). Requires vol_img -- --half
+         * mode's vol_img gets refreshed from scratch at the start of the
+         * NEXT epoch via float_to_half+copy anyway, so writing it here
+         * under --half would just be immediately overwritten; skip it
+         * there for that reason, matching the pattern already used for
+         * the B4/C3 update kernels. */
+        if (gamma > 0.f && !p->use_half_vol) {
+            cl_kernel k = cl->k_momentum;
+            clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
+            clSetKernelArg(k,1,sizeof(cl_mem),&d_v_prev);
+            clSetKernelArg(k,2,sizeof(cl_mem),&vol_img);
+            clSetKernelArg(k,3,sizeof(int),&Nxz);
+            clSetKernelArg(k,4,sizeof(int),&Ny);
+            clSetKernelArg(k,5,sizeof(float),&gamma);
+            clSetKernelArg(k,6,sizeof(int),&vol_n);
+            size_t gws=(size_t)vol_n;
+            err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
+            CL_CHECK(err,"momentum_extrapolate");
+        }
         clFinish(cl->queue);
         double t_ep_total = get_time_sec() - t_ep;
         printf("  epoch %3d/%d  %.3f s%s\n", epoch+1, epochs, t_ep_total,
@@ -1726,6 +1765,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     for (int s = 0; s < S; s++) clReleaseMemObject(d_bp_ones[s]);
     free(d_bp_ones);
     if (d_prior_grad) clReleaseMemObject(d_prior_grad);
+    if (d_v_prev) clReleaseMemObject(d_v_prev);
     free(subset_start);
     free(subset_count);
     clReleaseMemObject(cl->d_R_mats);
