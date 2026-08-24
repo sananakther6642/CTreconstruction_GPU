@@ -15,7 +15,7 @@ Project methodology narrative: `sessions/2026-08-25-project-methodology-start-to
 | Mode | 256³ time/epoch | 512³ time/epoch | Speedup vs CPU |
 |---|---|---|---|
 | `cpu` | 2.60 s | 22.9-23.3 s | 1× |
-| `gpu-buf` | 0.44 s | 4.87-10.19 s (run-to-run variance, AMD-specific) | 5.9× / 2.3-4.8× |
+| `gpu-buf` | 0.44 s | 4.87-10.19 s (run-to-run variance, AMD-specific) | 5.9× / 2.2-4.8× |
 | `gpu-img` | 0.095 s | 0.870-0.876 s | 27.4× / 26.6× |
 | `gpu-opt` | 0.093 s | 0.873-0.879 s | 28.0× / 26.5× |
 
@@ -43,7 +43,11 @@ reproduce on kale (flat to the ms). Root cause: AMD-driver memory-
 placement demotion of the volume buffer, not thermal throttling. Full
 writeup in the session log.
 
-## Validation (100 epochs, both datasets, all four modes)
+## Validation (pool15-01, 100 epochs, both datasets, all four modes)
+
+Earlier full-scale validation run, on the original AMD hardware — MSE
+values here differ slightly from the kale numbers in Performance above
+(different GPU — likely different texture-sampler rounding, not verified), not a regression.
 
 ### 256³
 ```
@@ -159,11 +163,6 @@ make run-gpu-img-512 EPOCHS=100
 make run-gpu-opt-512 EPOCHS=100
 python3 validate.py 512
 
-# direct
-./build/ct_recon --data /lgrp/edu-2026-1-gpulab/proj_512_75.hdf5 \
-                 --out output.hdf5 --mode gpu-opt --epochs 100 \
-                 --samples 512 --kernels kernels
-
 # component tests (CPU only, isolate fp/bp correctness)
 make run-op-fp       # dumps fp_cpu.hdf5 (256³)
 make run-op-bp       # dumps bp_cpu.hdf5 (256³)
@@ -216,25 +215,30 @@ for each epoch (= one pass over all N subsets):
   subsets visited in a golden-ratio-derived coprime stride order.
   Permutation applied once at load time (`utils.c`), so each subset
   becomes a contiguous `(ip_start, ip_count)` launch range.
-- 256³ only — at 512³ the per-subset normalizer array doesn't fit
-  alongside `gpu-opt`'s ~4GB resident set.
+- 256³ only. Confirmed on kale (GTX 680, 4037MiB VRAM): plain `gpu-opt`
+  at 512³ (S=1) already uses ~3244-3274MiB, leaving ~760-790MiB
+  headroom — not enough for the 1024MiB (2×512MiB) a second subset's
+  normalizer buffers would need at S=2.
 - Regression tests: `--subsets` unset vs baseline, MSE unchanged;
   `--subsets 1` vs unset, byte-identical.
 
-**Result** (256³, 100 epochs, log-likelihood vs wall-clock):
+**Result** (256³, 100 epochs, log-likelihood vs wall-clock — logged via
+`--log-convergence <file.csv>`, which writes per-epoch loglik/residual/
+rel_change; off by default):
 
 | Time | S=1 | S=3 | S=5 | S=15 | S=25 |
 |---|---|---|---|---|---|
-| 10s | −482,720 | −481,297 | **−481,109** | −480,543 | −480,577 |
-| 15s | −481,109 | −480,391 | −480,304 | **−479,652** | −479,285 |
+| 10s | −482,720 | −481,297 | −481,109 | **−480,543** | −480,577 |
+| 15s | −481,109 | −480,391 | −480,304 | −479,652 | **−479,285** |
 | 20s | −480,652 (plateaued) | −480,013 | −479,942 | −479,305 | **−478,917** |
 | 30s | −480,652 (plateaued) | −479,701 | −479,653 | −479,042 | **−478,651** |
 | 36s | −480,652 (plateaued) | −479,610 | −479,580 | −478,964 | **−478,571** |
 
 S=1 plateaus by ~20s (100-epoch ceiling). Every OSEM config keeps
-improving through 36s, never plateaus. S=25 is worst before ~10s
-(sub-iteration overhead) but wins from ~15s on. Report the
-time-matched curve, not a single "best S."
+improving through 36s, never plateaus. S=15 leads at 10s, S=25 is a
+close second there (sub-iteration overhead still amortizing) but
+overtakes and wins clearly from 15s on. Report the time-matched curve,
+not a single "best S."
 
 ## Optimizations
 
@@ -256,4 +260,5 @@ time-matched curve, not a single "best S."
 | OMP_NUM_THREADS=nproc | `Makefile` | uses all available cores |
 | Ray tiling (`FP_TILE`) | `fp_cpu` | cache reuse across neighboring rays |
 | `schedule(guided,4)` | `fp_cpu` | lower scheduling overhead, handles AABB imbalance |
-| Skip float32 staging copy | `ct_gpu.c` | direct `d_vol`→image copy in float32 mode |
+| Fused proj_divide + preprocess_proj (`divide_preprocess_img`) | `bp_buffer.cl` | one kernel writes straight to `ratio_img`, no intermediate copy |
+| `vol_update_img` | `bp_buffer.cl`, `ct_gpu.c` | vol_update writes directly into `vol_img`, eliminates the per-epoch `d_vol`→image copy entirely (float32 mode) |
