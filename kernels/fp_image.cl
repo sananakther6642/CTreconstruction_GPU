@@ -45,6 +45,17 @@ __constant sampler_t vol_samp =
     CLK_ADDRESS_CLAMP_TO_EDGE   |
     CLK_FILTER_LINEAR;
 
+/*
+ * perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+ * subrange. The host launches with a global work-offset of ip_start in
+ * dim 2 and a work-size of ip_count rounded up to a multiple of lws[2]
+ * (see run_fp_image in ct_gpu.c) -- that rounding is exactly why the
+ * guard below checks "ip >= ip_start + ip_count", NOT "ip >= num_projs":
+ * rounding ip_count up can push get_global_id(2) past ip_start+ip_count
+ * while still being < num_projs, and a num_projs-only guard would let
+ * those extra rounded-up work-items silently process angles beyond the
+ * intended subset.
+ */
 __kernel void fp_image(
     __read_only  image3d_t       volume_img,   /* [Nxz][Nxz][Ny] as 3D image */
     __constant   float          *R_mats,       /* [num_projs * 9] row-major R per angle */
@@ -60,14 +71,16 @@ __kernel void fp_image(
     float SDD,
     float voxelSize,
     float pixelSize,
-    int   use_aabb   /* 1 = clip ray to volume AABB; 0 = full n_samples */
+    int   use_aabb,  /* 1 = clip ray to volume AABB; 0 = full n_samples */
+    int   ip_start,
+    int   ip_count
 )
 {
     int iu = get_global_id(0);
     int iv = get_global_id(1);
     int ip = get_global_id(2);
 
-    if (iu >= W || iv >= H || ip >= num_projs) return;
+    if (iu >= W || iv >= H || ip >= ip_start + ip_count) return;
 
     float sVoxel_xz = Nxz * voxelSize;
     float sVoxel_y  = Ny  * voxelSize;

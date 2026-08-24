@@ -45,4 +45,32 @@ void log_convergence(const char *path, int epoch, double epoch_time_s,
                       const float *p0, const float *b, size_t proj_n,
                       const float *v_cur, const float *v_prev, size_t vol_n);
 
+/*
+ * perf-v2 Phase C1 (OSEM): compute the angle permutation that makes each
+ * of S subsets both angularly interleaved (subset s gets angles
+ * {s, s+S, s+2S, ...}) and visited in maximally-separated order (subsets
+ * themselves reordered by a stride coprime to S, close to the golden
+ * ratio). After applying this permutation to both para->angles and the
+ * projection stack (each angle's [H][W] block, via
+ * permute_projections_inplace below), subset k is exactly the contiguous
+ * angle range [k*num_projs/S, (k+1)*num_projs/S).
+ *
+ * perm[i] = original index of the angle that should end up at permuted
+ * position i. Caller allocates perm[num_projs]. S==1 fills the identity
+ * permutation (perm[i]=i) -- the required no-op path for --subsets 1.
+ * num_projs need not be evenly divisible by S.
+ */
+void compute_osem_permutation(int num_projs, int S, int *perm);
+
+/*
+ * Apply perm (as returned by compute_osem_permutation) to a projection
+ * stack in place: proj[i] holds a [H*W] block; after this call, the
+ * block that was at perm[i] is at i. Also permutes angles[] the same way.
+ * Allocates and frees an O(H*W) scratch block internally (not O(proj_n)),
+ * via a cycle-following in-place permutation.
+ */
+void permute_projections_inplace(float *proj, double *angles,
+                                  int num_projs, size_t block_elems,
+                                  const int *perm);
+
 #endif /* UTILS_H */
