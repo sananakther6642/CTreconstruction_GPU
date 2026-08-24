@@ -168,6 +168,12 @@ int main(int argc, char **argv)
 
         CLState cl;
         if (gpu_init(&cl, gmode, kernel_dir) != 0) return 1;
+        if (use_half && !cl.has_fp16) {
+            fprintf(stderr, "--half requires cl_khr_fp16, which this device does not support "
+                            "(see \"cl_khr_fp16: no\" above). Re-run without --half.\n");
+            gpu_cleanup(&cl);
+            return 1;
+        }
 
         t_start = get_time_sec();
         reconstruct_gpu(&cl, &para, proj_measured, volume, epochs, conv_log);
@@ -181,6 +187,12 @@ int main(int argc, char **argv)
 
         CLState cl;
         if (gpu_init(&cl, GPU_MODE_OPT, kernel_dir) != 0) return 1;
+        if (use_half && !cl.has_fp16) {
+            fprintf(stderr, "--half requires cl_khr_fp16, which this device does not support "
+                            "(see \"cl_khr_fp16: no\" above). Re-run without --half.\n");
+            gpu_cleanup(&cl);
+            return 1;
+        }
 
         t_start = get_time_sec();
         reconstruct_gpu_opt(&cl, &para, proj_measured, volume, epochs, conv_log);

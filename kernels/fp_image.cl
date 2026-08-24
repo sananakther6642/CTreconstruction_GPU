@@ -3,6 +3,14 @@
  * Also contains float_to_half utility kernel for half-precision vol_img upload.
  */
 
+/* HAVE_FP16 is passed as a host build option (-DHAVE_FP16) only when
+ * CL_DEVICE_EXTENSIONS reports cl_khr_fp16 support. Guards this kernel
+ * out entirely on devices without it (e.g. this project's NVIDIA GTX 680
+ * target, alongside the original AMD Hawaii target which does support
+ * it) -- without this guard, the whole program source (fp_image +
+ * bp_image combined) fails to build, not just --half mode, since OpenCL
+ * C compiles the full translation unit even for kernels never launched. */
+#ifdef HAVE_FP16
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 
 /* Convert float volume buffer to half buffer for bandwidth-efficient vol_img upload.
@@ -13,6 +21,7 @@ __kernel void float_to_half(__global const float *src, __global half *dst, int n
     int i = get_global_id(0);
     if (i < n) dst[i] = (half)src[i];
 }
+#endif /* HAVE_FP16 */
 
 /*
  * fp_image.cl — Forward projection using OpenCL image3D for the volume.
