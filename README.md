@@ -280,6 +280,32 @@ optimization there had negligible effect since bp's cost is dominated by
 the same kind of gather, just at a fraction of fp's time budget) — the win
 is entirely from fp_cpu.
 
+### Phase D: CPU path, one negative result and two correctly-skipped items
+
+perf-v2 Phase D, after the fp_cpu tiling rewrite above. **D1**: removed
+the `continue` guard in `bp_cpu`'s inner `iz` loop (a documented
+leftover safety net after `iz_lo`/`iz_hi` already narrows the range
+analytically) in favor of a branch-free clamp. Validated correct
+(MSE vs CPU unchanged: `4.195e-13` gpu-buf, `8.423e-10` gpu-img/opt) —
+but `-fopt-info-vec-optimized` shows the loop still does not
+auto-vectorize, and `bp_cpu` epoch time stayed flat/noisy before and
+after (~1.1-1.4s either way at 256³). **No measurable win — a real
+negative result**, kept in the tree (branch-free is not worse, just
+not better) rather than reverted.
+
+**D2** (tile `bp_cpu` for L2 residency) and **D3** (branch-free
+`fp_cpu` inner loop) were not pursued after investigating what they'd
+actually target: `bp_cpu` (D2's target) is ~2.5× smaller than `fp_cpu`
+at 256³ (~1.1-1.4s vs ~2.95-3.3s/epoch), so it isn't the bottleneck.
+D3's target branch (the AABB slab clip) is gated `if (W > 512)` —
+this project's detector is `W=512`, so that branch never fires on
+either dataset tested and D3 has no applicability here. fp_cpu's real
+cost, per its own in-code documentation, is the 8-tap trilinear gather
+— fundamentally scatter-bound, already identified by the plan as
+capped-upside (gather instructions cost ~12 cycles/element on this
+class of hardware, no better than scalar). Nothing found while
+investigating D1 changes that assessment.
+
 ### gpu-opt vs gpu-img: unroll-x2 was measured harmful, removed
 
 > This section's numbers are a checkpoint taken immediately after the
