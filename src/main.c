@@ -6,12 +6,11 @@
 #include "utils.h"
 #include "ct_cpu.h"
 #include "ct_gpu.h"
-#include "ct_fdk.h"
 
 static void print_usage(const char *prog)
 {
     fprintf(stderr,
-        "Usage: %s --data <file.hdf5> --out <out.hdf5> --mode <cpu|gpu-buf|gpu-img|gpu-opt|fdk>\n"
+        "Usage: %s --data <file.hdf5> --out <out.hdf5> --mode <cpu|gpu-buf|gpu-img|gpu-opt>\n"
         "           [--epochs N]    (default: 100)\n"
         "           [--samples N]   (ray samples per projection, default: volume Nxz)\n"
         "           [--kernels <kernel_dir>]  (default: ../kernels)\n"
@@ -29,21 +28,7 @@ static void print_usage(const char *prog)
         "                            stack and requires N | num_projs for even subset sizes;\n"
         "                            1 epoch = 1 full pass over all N subsets, i.e.\n"
         "                            --epochs 20 --subsets 5 does the same total work as\n"
-        "                            --epochs 100 --subsets 1)\n"
-        "           [--init fdk|ones]  (initial volume for MLEM/OSEM iteration, default ones;\n"
-        "                            fdk runs a single-pass analytic FDK reconstruction first,\n"
-        "                            clamped positive -- needs its own GPU_MODE_OPT context\n"
-        "                            even if --mode is cpu/gpu-buf/gpu-img)\n"
-        "           [--mode fdk]    (FDK alone: single-pass analytic reconstruction, no\n"
-        "                            iteration, --epochs ignored; requires gpu-opt kernels)\n"
-        "           [--beta B]      (gpu-opt only; One-Step-Late MLEM with a Huber prior,\n"
-        "                            default 0 = exactly plain MLEM/OSEM, same code path as\n"
-        "                            beta unset. Split as beta/subsets internally under OSEM.)\n"
-        "           [--beta-delta D]  (Huber quadratic/linear transition point, default 0.01;\n"
-        "                            ignored when --beta is 0)\n"
-        "           [--gamma G]     (gpu-opt only; log-domain Nesterov-style momentum,\n"
-        "                            v_(k+1) = u_k*(u_k/v_k)^gamma, applied once per epoch;\n"
-        "                            default 0 = off, exactly the pre-C5 epoch loop)\n",
+        "                            --epochs 100 --subsets 1)\n",
         prog);
 }
 
@@ -60,10 +45,6 @@ int main(int argc, char **argv)
     const char *conv_log     = NULL; /* --log-convergence path, NULL = off */
     const char *diag_str     = NULL; /* --diag repeat-slab:<off>:<size>:<reps> */
     int         subsets      = 1;    /* --subsets N, default 1 = plain MLEM */
-    const char *init_str     = "ones"; /* --init fdk|ones */
-    float       beta         = 0.f;  /* --beta B, default 0 = plain MLEM/OSEM */
-    float       beta_delta   = 0.01f; /* --beta-delta D, Huber transition point */
-    float       gamma        = 0.f;  /* --gamma G, default 0 = no momentum */
 
     /* ── Parse args ── */
     for (int i = 1; i < argc; i++) {
@@ -78,29 +59,10 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--log-convergence") && i+1<argc) conv_log = argv[++i];
         else if (!strcmp(argv[i], "--diag")    && i+1<argc) diag_str    = argv[++i];
         else if (!strcmp(argv[i], "--subsets") && i+1<argc) subsets     = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--init")    && i+1<argc) init_str    = argv[++i];
-        else if (!strcmp(argv[i], "--beta")    && i+1<argc) beta        = (float)atof(argv[++i]);
-        else if (!strcmp(argv[i], "--beta-delta") && i+1<argc) beta_delta = (float)atof(argv[++i]);
-        else if (!strcmp(argv[i], "--gamma")   && i+1<argc) gamma       = (float)atof(argv[++i]);
         else { print_usage(argv[0]); return 1; }
     }
 
-    if (strcmp(init_str, "fdk") && strcmp(init_str, "ones")) {
-        fprintf(stderr, "Unknown --init: %s (expected fdk or ones)\n", init_str);
-        return 1;
-    }
-
     if (subsets < 1) { fprintf(stderr, "--subsets must be >= 1\n"); return 1; }
-    if (beta < 0.f) { fprintf(stderr, "--beta must be >= 0\n"); return 1; }
-    if (beta > 0.f && strcmp(mode_str, "gpu-opt")) {
-        fprintf(stderr, "--beta > 0 is only implemented for --mode gpu-opt\n");
-        return 1;
-    }
-    if (gamma < 0.f) { fprintf(stderr, "--gamma must be >= 0\n"); return 1; }
-    if (gamma > 0.f && strcmp(mode_str, "gpu-opt")) {
-        fprintf(stderr, "--gamma > 0 is only implemented for --mode gpu-opt\n");
-        return 1;
-    }
 
     if (!data_path || !out_path) { print_usage(argv[0]); return 1; }
 
@@ -141,26 +103,9 @@ int main(int argc, char **argv)
     int Ny  = para.Volumen_num_y;
     size_t vol_n = (size_t)Nxz * Nxz * Ny;
 
-    /* ── Initial volume: ones (default) or FDK (perf-v2 Phase C2) ──
-     * FDK needs its own GPU_MODE_OPT context (bp_opt) regardless of what
-     * --mode the main reconstruction uses -- e.g. --mode cpu --init fdk
-     * spins up a temporary OpenCL context just for the FDK pass, then
-     * tears it down before the CPU reconstruction runs. If --mode is
-     * already gpu-opt, this is a second, separate CLState from the one
-     * the main mode dispatch below creates -- a small duplicated init
-     * cost (build_program etc.), traded for keeping reconstruct_fdk's
-     * interface simple (it doesn't need to know whether its caller
-     * already has a GPU_MODE_OPT context lying around). */
+    /* ── Initial volume: all-ones ── */
     float *volume = (float *)malloc(vol_n * sizeof(float));
-    if (!strcmp(init_str, "fdk")) {
-        CLState fdk_cl;
-        if (gpu_init(&fdk_cl, GPU_MODE_OPT, kernel_dir) != 0) return 1;
-        reconstruct_fdk(&fdk_cl, &para, proj_measured, volume);
-        gpu_cleanup(&fdk_cl);
-        printf("  Initial volume: FDK\n");
-    } else {
-        for (size_t i = 0; i < vol_n; i++) volume[i] = 1.f;
-    }
+    for (size_t i = 0; i < vol_n; i++) volume[i] = 1.f;
 
     double t_start, t_end;
 
@@ -279,32 +224,11 @@ int main(int argc, char **argv)
         }
 
         t_start = get_time_sec();
-        reconstruct_gpu_opt(&cl, &para, proj_measured, volume, epochs, conv_log, subsets, beta, beta_delta, gamma);
+        reconstruct_gpu_opt(&cl, &para, proj_measured, volume, epochs, conv_log, subsets);
         t_end = get_time_sec();
 
         printf("GPU-opt time: %.2f s\n", t_end - t_start);
         gpu_cleanup(&cl);
-
-    } else if (!strcmp(mode_str, "fdk")) {
-        /* perf-v2 Phase C2: single-pass analytic reconstruction, no MLEM
-         * iteration -- --epochs is accepted but ignored (print_usage
-         * documents this). If --init fdk was ALSO passed, `volume`
-         * already holds an FDK result from the init step above; running
-         * --mode fdk here would needlessly recompute an identical result
-         * (same data, same deterministic algorithm) -- skip the second
-         * pass and just use what's already there. */
-        if (!strcmp(init_str, "fdk")) {
-            printf("\n=== FDK mode (already computed via --init fdk) ===\n");
-        } else {
-            printf("\n=== FDK mode (single-pass analytic reconstruction) ===\n");
-            CLState cl;
-            if (gpu_init(&cl, GPU_MODE_OPT, kernel_dir) != 0) return 1;
-            t_start = get_time_sec();
-            reconstruct_fdk(&cl, &para, proj_measured, volume);
-            t_end = get_time_sec();
-            printf("FDK time: %.2f s\n", t_end - t_start);
-            gpu_cleanup(&cl);
-        }
 
     } else {
         fprintf(stderr, "Unknown mode: %s\n", mode_str);

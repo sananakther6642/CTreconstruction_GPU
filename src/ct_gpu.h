@@ -31,10 +31,6 @@ typedef struct {
     cl_kernel  k_preproc;
     cl_kernel  k_divide_preproc_img; /* perf-v2 Phase B1+B2: fuses proj_divide + preprocess, writes straight to ratio_img */
     cl_kernel  k_update_img; /* perf-v2 Phase B4: vol_update that also writes straight to vol_img (float32 mode only) */
-    cl_kernel  k_prior_grad;      /* perf-v2 Phase C3: Huber prior gradient */
-    cl_kernel  k_update_reg;      /* perf-v2 Phase C3: OSL vol_update with regularizer (buffer mode) */
-    cl_kernel  k_update_img_reg;  /* perf-v2 Phase C3: OSL vol_update_img with regularizer */
-    cl_kernel  k_momentum;        /* perf-v2 Phase C5: log-domain Nesterov-style momentum */
     cl_kernel  k_cone_hw;
 
     /* image-mode kernels */
@@ -89,30 +85,10 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
  * update" in total work done, NOT in wall-clock number of volume
  * updates -- --epochs 20 --subsets 5 does 100 sub-iterations total,
  * the same fp/bp work as --epochs 100 --subsets 1.
- *
- * perf-v2 Phase C3: beta enables One-Step-Late MLEM with a Huber prior
- * (Green 1990) -- v *= bp_ratio / (bp_ones + (beta/S)*prior_grad) instead
- * of plain v *= bp_ratio/bp_ones. beta=0 (default) runs the ORIGINAL
- * unregularized vol_update/vol_update_img kernels, not a beta=0 branch of
- * the regularized ones -- the exact pre-C3 code path, not just a
- * numerically-equivalent one. beta_delta sets the Huber transition point
- * (quadratic below, linear above); ignored when beta==0.
- *
- * perf-v2 Phase C5: gamma enables log-domain (multiplicative) Nesterov-
- * style momentum, applied once per EPOCH (after the full subset loop,
- * not per sub-iteration -- the plan flagged that momentum may amplify
- * OSEM's own limit-cycle oscillation if applied more often). gamma=0
- * (default) skips the momentum kernel entirely -- zero extra buffer,
- * zero extra kernel launch, exactly the pre-C5 epoch loop.
- * v_{k+1} = u_k * (u_k/v_k)^gamma is positive by construction (no
- * clamp needed for positivity, unlike naive additive momentum which
- * can drive voxels negative and get stuck there under MLEM's
- * multiplicative update).
  */
 void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          const float *proj_measured, float *volume,
-                         int epochs, const char *conv_log, int subsets,
-                         float beta, float beta_delta, float gamma);
+                         int epochs, const char *conv_log, int subsets);
 
 /*
  * perf-v2 Phase A2/A3 diagnostic: repeat one fixed fp_buffer angle-slab
