@@ -16,7 +16,19 @@ static void print_usage(const char *prog)
         "           [--kernels <kernel_dir>]  (default: ../kernels)\n"
         "           [--half]        (use half-precision vol_img texture; default: float32)\n"
         "           [--op fp|bp]    (component test: run a single fp or bp call, CPU only,\n"
-        "                            on all-ones input; dumps to <out> instead of full MLEM)\n",
+        "                            on all-ones input; dumps to <out> instead of full MLEM)\n"
+        "           [--log-convergence <file.csv>]  (per-epoch loglik/residual/rel_change;\n"
+        "                            off by default, zero extra cost when unset)\n"
+        "           [--diag repeat-slab:<angle_offset>:<slab_size>:<n_repeats>[:<realloc_at>]]\n"
+        "                           (gpu-buf only; perf-v2 Phase A2/A3 variance diagnostic,\n"
+        "                            repeats one fixed fp_buffer angle-slab N times and exits;\n"
+        "                            optional realloc_at: reallocate d_vol before that repeat)\n"
+        "           [--subsets N]   (gpu-opt only; Ordered Subsets EM, default 1 = plain MLEM,\n"
+        "                            provably identical to N unset. N>1 permutes the angle\n"
+        "                            stack and requires N | num_projs for even subset sizes;\n"
+        "                            1 epoch = 1 full pass over all N subsets, i.e.\n"
+        "                            --epochs 20 --subsets 5 does the same total work as\n"
+        "                            --epochs 100 --subsets 1)\n",
         prog);
 }
 
@@ -30,6 +42,9 @@ int main(int argc, char **argv)
     int         n_samples    = 0;  /* 0 = auto (Nxz) */
     int         use_half     = 0;  /* default: float32 vol_img (accurate) */
     const char *op_str       = NULL; /* "fp" or "bp": component test mode */
+    const char *conv_log     = NULL; /* --log-convergence path, NULL = off */
+    const char *diag_str     = NULL; /* --diag repeat-slab:<off>:<size>:<reps> */
+    int         subsets      = 1;    /* --subsets N, default 1 = plain MLEM */
 
     /* ── Parse args ── */
     for (int i = 1; i < argc; i++) {
@@ -41,8 +56,13 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--samples") && i+1<argc) n_samples   = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--half"))                use_half    = 1;
         else if (!strcmp(argv[i], "--op")      && i+1<argc) op_str      = argv[++i];
+        else if (!strcmp(argv[i], "--log-convergence") && i+1<argc) conv_log = argv[++i];
+        else if (!strcmp(argv[i], "--diag")    && i+1<argc) diag_str    = argv[++i];
+        else if (!strcmp(argv[i], "--subsets") && i+1<argc) subsets     = atoi(argv[++i]);
         else { print_usage(argv[0]); return 1; }
     }
+
+    if (subsets < 1) { fprintf(stderr, "--subsets must be >= 1\n"); return 1; }
 
     if (!data_path || !out_path) { print_usage(argv[0]); return 1; }
 
@@ -60,11 +80,42 @@ int main(int argc, char **argv)
     printf("  Angles:    %d\n", para.num_projs);
     printf("  SOD/SDD:   %.1f / %.1f mm\n", para.SOD, para.SDD);
 
+    /* Reject subsets > num_projs here, before any permutation work: without
+     * this, main.c would permute the full angle stack for the requested S
+     * and then reconstruct_gpu_opt would silently clamp S back to 1 --
+     * mathematically fine but NOT byte-identical to unpermuted --subsets 1
+     * (permuted float summation order differs), contradicting the
+     * "provably identical to N unset" guarantee below for this one edge
+     * case. Fail fast instead of doing wasted, order-perturbing work. */
+    if (subsets > para.num_projs) {
+        fprintf(stderr, "--subsets %d exceeds num_projs %d\n", subsets, para.num_projs);
+        return 1;
+    }
+
+    /* perf-v2 Phase C1 (OSEM): permute the angle/projection stack BEFORE
+     * build_RT_buffers is ever called (that happens inside gpu_init's
+     * callers, later) so R_mats/T_vecs/ang_cs all inherit the permuted
+     * order automatically. subsets==1 computes and applies the identity
+     * permutation (a no-op memcpy-equivalent, verified as such via
+     * compute_osem_permutation's own S<=1 fast path) -- required so the
+     * default path is PROVABLY unchanged, not just assumed equivalent. */
+    if (subsets > 1 && !strcmp(mode_str, "gpu-opt")) {
+        int *perm = (int *)malloc((size_t)para.num_projs * sizeof(int));
+        compute_osem_permutation(para.num_projs, subsets, perm);
+        size_t block_elems = (size_t)para.detector_height * para.detector_width;
+        permute_projections_inplace(proj_measured, para.angles, para.num_projs, block_elems, perm);
+        free(perm);
+        printf("  OSEM subsets: %d (angle stack permuted)\n", subsets);
+    } else if (subsets > 1) {
+        fprintf(stderr, "--subsets > 1 is only implemented for --mode gpu-opt\n");
+        return 1;
+    }
+
     int Nxz = para.Volumen_num_xz;
     int Ny  = para.Volumen_num_y;
     size_t vol_n = (size_t)Nxz * Nxz * Ny;
 
-    /* ── Initial volume (all ones) ── */
+    /* ── Initial volume: all-ones ── */
     float *volume = (float *)malloc(vol_n * sizeof(float));
     for (size_t i = 0; i < vol_n; i++) volume[i] = 1.f;
 
@@ -120,12 +171,35 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    /* ── perf-v2 Phase A2/A3 diagnostic: repeat one fixed fp_buffer
+     * angle-slab N times and exit. gpu-buf only (fp_buffer is the kernel
+     * showing the variance). Format: repeat-slab:<angle_offset>:<slab_size>:<n_repeats> */
+    if (diag_str) {
+        if (strncmp(diag_str, "repeat-slab:", 12) != 0) {
+            fprintf(stderr, "Unknown --diag: %s (expected repeat-slab:<offset>:<size>:<reps>)\n", diag_str);
+            return 1;
+        }
+        int angle_offset = 0, slab_size = 8, n_repeats = 20, realloc_at = 0;
+        int n_parsed = sscanf(diag_str + 12, "%d:%d:%d:%d",
+                               &angle_offset, &slab_size, &n_repeats, &realloc_at);
+        if (n_parsed != 3 && n_parsed != 4) {
+            fprintf(stderr, "Malformed --diag repeat-slab spec: %s\n", diag_str);
+            return 1;
+        }
+        CLState cl;
+        if (gpu_init(&cl, GPU_MODE_BUFFER, kernel_dir) != 0) return 1;
+        gpu_diag_repeat_slab(&cl, &para, volume, angle_offset, slab_size, n_repeats, realloc_at);
+        gpu_cleanup(&cl);
+        free(volume); free(proj_measured); free(para.angles);
+        return 0;
+    }
+
     /* ── Run selected mode ── */
     if (!strcmp(mode_str, "cpu")) {
         printf("\n=== CPU mode, %d epochs ===\n", epochs);
 
         t_start = get_time_sec();
-        reconstruct_cpu(proj_measured, volume, &para, epochs);
+        reconstruct_cpu(proj_measured, volume, &para, epochs, conv_log);
         t_end = get_time_sec();
         printf("CPU time: %.2f s\n", t_end - t_start);
 
@@ -135,9 +209,15 @@ int main(int argc, char **argv)
 
         CLState cl;
         if (gpu_init(&cl, gmode, kernel_dir) != 0) return 1;
+        if (use_half && !cl.has_fp16) {
+            fprintf(stderr, "--half requires cl_khr_fp16, which this device does not support "
+                            "(see \"cl_khr_fp16: no\" above). Re-run without --half.\n");
+            gpu_cleanup(&cl);
+            return 1;
+        }
 
         t_start = get_time_sec();
-        reconstruct_gpu(&cl, &para, proj_measured, volume, epochs);
+        reconstruct_gpu(&cl, &para, proj_measured, volume, epochs, conv_log);
         t_end = get_time_sec();
 
         printf("GPU time: %.2f s\n", t_end - t_start);
@@ -148,9 +228,15 @@ int main(int argc, char **argv)
 
         CLState cl;
         if (gpu_init(&cl, GPU_MODE_OPT, kernel_dir) != 0) return 1;
+        if (use_half && !cl.has_fp16) {
+            fprintf(stderr, "--half requires cl_khr_fp16, which this device does not support "
+                            "(see \"cl_khr_fp16: no\" above). Re-run without --half.\n");
+            gpu_cleanup(&cl);
+            return 1;
+        }
 
         t_start = get_time_sec();
-        reconstruct_gpu_opt(&cl, &para, proj_measured, volume, epochs);
+        reconstruct_gpu_opt(&cl, &para, proj_measured, volume, epochs, conv_log, subsets);
         t_end = get_time_sec();
 
         printf("GPU-opt time: %.2f s\n", t_end - t_start);
