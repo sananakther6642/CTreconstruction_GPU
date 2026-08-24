@@ -468,19 +468,28 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,12, sizeof(float),  &vs);
     clSetKernelArg(k,13, sizeof(float),  &px);
 
-    /* Swept 16,16,1 / 8,32,1 / 4,64,1 / 32,8,1 / 8,16,1 at 512^3 (10-epoch
-     * confirmation, after an earlier noisy 3-epoch pass suggested the
-     * same trend): 4,64,1 gave 75.37s/10ep vs 321.19s/10ep for the old
-     * 16,16,1 default -- >4x faster, and far more stable epoch-to-epoch
-     * (mostly 5-10s vs 9-48s for the old default). 32,8,1 and 8,16,1 were
-     * catastrophically worse (~4-8x slower), matching the same wide-short
-     * shape being bad on this GPU that fp_image's sweep also found.
-     * fp_buffer.cl's manual uncoalesced global-memory gather (no texture
-     * cache, unlike fp_image) is far more sensitive to work-group shape
-     * than fp_image was. FP_BUFFER_LWS=X,Y,Z still overrides for further
-     * testing — keep Z=1, the angle-slab chunking below requires lws[2]
-     * to divide ANG_SLAB=8 evenly. */
-    size_t lws[3] = {4, 64, 1};
+    /* perf-v2: hardware target switched from pool15-01 (AMD Hawaii PRO,
+     * GCN 1.1, 64-wide wavefront) to kale (NVIDIA GTX 680, Kepler,
+     * 32-wide warp) -- work-group tuning does not transfer between them,
+     * confirmed by direct sweep rather than assumed.
+     *
+     * Hawaii (pool15-01) history: swept 16,16,1 / 8,32,1 / 4,64,1 /
+     * 32,8,1 / 8,16,1 at 512^3 (10-epoch confirmation) -- 4,64,1 gave
+     * 75.37s/10ep vs 321.19s/10ep for the old 16,16,1 default, >4x
+     * faster. Wide-short shapes (32,8,1 / 8,16,1) were catastrophic
+     * (~4-8x slower) on that GPU.
+     *
+     * GTX 680 (kale) re-sweep: 4,64,1 (the Hawaii winner) was NOT best
+     * here -- 10.53s/10ep @ 256^3. Swept 2,32,1 / 4,32,1 / 2,16,2 /
+     * 8,32,1 / 1,32,1 / 2,16,1 / 4,16,2 / 1,16,2 / 2,8,2: 2,16,2 won
+     * (9.77s, ~7.2% faster than 4,64,1), with 2,32,1 close behind
+     * (9.83s). 8,32,1 was worst (12.88s, ~30% slower) -- the same
+     * wide-short-shape penalty as on Hawaii, but the specific optimum
+     * shifted with the warp width, confirming this needs re-tuning per
+     * GPU rather than reusing one card's numbers. FP_BUFFER_LWS=X,Y,Z
+     * still overrides for further testing on other hardware -- keep Z a
+     * divisor of ANG_SLAB=8, the angle-slab chunking below requires it. */
+    size_t lws[3] = {2, 16, 2};
     const char *lws_env = getenv("FP_BUFFER_LWS");
     if (lws_env) {
         unsigned long a=4, b=64, c=1;
