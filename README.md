@@ -499,6 +499,21 @@ chased further, but the actionable conclusion holds either way: the
 current default (`nproc`-detected, 12 on this machine) is already
 at or near the best available, no Makefile change indicated.
 
+**Per-slab `clFinish` batching (Phase E), measured no win on kale.**
+`run_fp_buffer` (`gpu-buf`) syncs after every angle-slab launch — the
+plan flagged this as a candidate 2-5% win if batched into one sync at
+the end. That sync is also a watchdog: it's what makes the
+SLOW/HOST-SIDE-GAP diagnostic printout possible (used throughout the
+gpu-buf variance investigation above). Added `FP_BUFFER_SKIP_SLAB_FINISH=1`
+as an opt-in flag rather than changing the default, so the diagnostic
+path isn't silently lost. Measured at 256³, 10 epochs on kale: **9.54s
+baseline vs 9.51s batched — no measurable difference (~0.3%, within
+noise)**. MSE vs CPU unchanged (`4.195e-13`). Matches the plan's own
+low-confidence framing of this item; kale's per-slab overhead is
+apparently already small enough that batching doesn't help at this
+scale. Kept as an opt-in flag (real, zero-cost-when-unused) rather
+than reverted.
+
 **Two dataset/device facts checked, not assumed.** `cl_khr_3d_image_writes`
 is supported on this Hawaii device (printed once at `gpu_init`) — the
 extension OpenCL 1.2 requires for 3D read-write images, gating the
