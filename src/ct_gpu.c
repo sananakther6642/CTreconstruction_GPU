@@ -11,6 +11,9 @@
         fprintf(stderr, "OpenCL error %d at %s\n", (err), (msg)); \
         exit(1); } } while(0)
 
+static cl_program build_program_opts(cl_context ctx, cl_device_id dev,
+                                       const char *src, const char *extra_opts);
+
 /* ── Load a text file into a malloc'd buffer ────────────────────────────── */
 static char *load_source(const char *path)
 {
@@ -30,12 +33,24 @@ static char *load_source(const char *path)
 static cl_program build_program(cl_context ctx, cl_device_id dev,
                                   const char *src)
 {
+    return build_program_opts(ctx, dev, src, "-cl-fast-relaxed-math");
+}
+
+/* extra_opts is appended after the always-on -cl-fast-relaxed-math, e.g.
+ * "-DHAVE_FP16" when the device supports cl_khr_fp16 (see gpu_init) --
+ * lets a kernel source #ifdef out device-unsupported code paths instead
+ * of failing the whole program's build. */
+static cl_program build_program_opts(cl_context ctx, cl_device_id dev,
+                                       const char *src, const char *extra_opts)
+{
     cl_int err;
     cl_program prog = clCreateProgramWithSource(ctx, 1, (const char **)&src,
                                                 NULL, &err);
     CL_CHECK(err, "clCreateProgramWithSource");
 
-    err = clBuildProgram(prog, 1, &dev, "-cl-fast-relaxed-math", NULL, NULL);
+    char opts[256];
+    snprintf(opts, sizeof(opts), "-cl-fast-relaxed-math %s", extra_opts ? extra_opts : "");
+    err = clBuildProgram(prog, 1, &dev, opts, NULL, NULL);
     if (err != CL_SUCCESS) {
         size_t log_sz;
         clGetProgramBuildInfo(prog, dev, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_sz);
@@ -130,6 +145,14 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
      * clEnqueueCopyBufferToImage each epoch). OpenCL 1.2 has no 3D
      * read-write images without this extension. Printed once at init,
      * not gated behind an env var since it costs nothing. */
+    /* perf-v2: also check cl_khr_fp16 -- required for --half mode's
+     * float_to_half kernel (kernels/fp_image.cl). Confirmed present on
+     * the original AMD Hawaii target but ABSENT on this project's other
+     * target, an NVIDIA GTX 680 (kale) -- without this check, --half
+     * mode's kernel source fails to compile there and takes down the
+     * whole image-mode program build, not just --half. Remembered on
+     * CLState so main.c can refuse --half cleanly instead of crashing,
+     * and passed as -DHAVE_FP16 to the image-mode program build below. */
     {
         size_t ext_sz = 0;
         clGetDeviceInfo(cl->device, CL_DEVICE_EXTENSIONS, 0, NULL, &ext_sz);
@@ -138,6 +161,8 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         ext_str[ext_sz] = '\0';
         int has_3d_image_writes = (strstr(ext_str, "cl_khr_3d_image_writes") != NULL);
         printf("  cl_khr_3d_image_writes: %s\n", has_3d_image_writes ? "yes" : "no");
+        cl->has_fp16 = (strstr(ext_str, "cl_khr_fp16") != NULL);
+        printf("  cl_khr_fp16: %s\n", cl->has_fp16 ? "yes" : "no");
         free(ext_str);
     }
 
@@ -191,15 +216,20 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         char *src_bp  = load_source(path_bp_img);
         char *src_fp  = load_source(path_fp_img);
         char *combined = concat_src(src_bp, src_fp);
-        cl->prog_image = build_program(cl->ctx, cl->device, combined);
+        cl->prog_image = build_program_opts(cl->ctx, cl->device, combined,
+                                            cl->has_fp16 ? "-DHAVE_FP16" : "");
         free(src_bp); free(src_fp); free(combined);
 
         cl->k_bp_img = clCreateKernel(cl->prog_image, "bp_image", &err);
         CL_CHECK(err, "bp_image");
         cl->k_fp_img = clCreateKernel(cl->prog_image, "fp_image", &err);
         CL_CHECK(err, "fp_image");
-        cl->k_f2h    = clCreateKernel(cl->prog_image, "float_to_half", &err);
-        CL_CHECK(err, "float_to_half");
+        /* float_to_half only exists in the compiled program when
+         * HAVE_FP16 was defined (see kernels/fp_image.cl's #ifdef) --
+         * k_f2h stays NULL on devices without cl_khr_fp16, and --half
+         * is refused in main.c before this would ever be dereferenced. */
+        cl->k_f2h = cl->has_fp16 ? clCreateKernel(cl->prog_image, "float_to_half", &err) : NULL;
+        if (cl->has_fp16) CL_CHECK(err, "float_to_half");
     }
 
     /* ── Optimized program ── */
@@ -238,7 +268,7 @@ void gpu_cleanup(CLState *cl)
     }
     if (cl->mode == GPU_MODE_IMAGE) {
         clReleaseKernel(cl->k_bp_img); clReleaseKernel(cl->k_fp_img);
-        clReleaseKernel(cl->k_f2h);
+        if (cl->k_f2h) clReleaseKernel(cl->k_f2h);
         clReleaseProgram(cl->prog_image);
     }
     if (cl->mode == GPU_MODE_OPT) {
@@ -248,7 +278,7 @@ void gpu_cleanup(CLState *cl)
         clReleaseKernel(cl->k_divide_preproc_img); clReleaseKernel(cl->k_update_img);
         clReleaseKernel(cl->k_cone_hw);
         clReleaseKernel(cl->k_fp_img); clReleaseKernel(cl->k_bp_img);
-        clReleaseKernel(cl->k_f2h);
+        if (cl->k_f2h) clReleaseKernel(cl->k_f2h);
         clReleaseProgram(cl->prog_opt);
         clReleaseProgram(cl->prog_image);
     }

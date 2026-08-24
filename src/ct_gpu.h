@@ -48,6 +48,7 @@ typedef struct {
     cl_mem d_T_vecs;  /* [num_projs * 3] float */
 
     GPUMode mode;
+    int has_fp16; /* cl_khr_fp16 support -- gates --half; false on e.g. NVIDIA GTX 680 (kale) */
 } CLState;
 
 /* Initialize OpenCL, compile kernels. Returns 0 on success. */
