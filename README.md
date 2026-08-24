@@ -280,18 +280,29 @@ optimization there had negligible effect since bp's cost is dominated by
 the same kind of gather, just at a fraction of fp's time budget) — the win
 is entirely from fp_cpu.
 
-### Phase D: CPU path, one negative result and two correctly-skipped items
+### Phase D: CPU path, one reverted regression and two correctly-skipped items
 
-perf-v2 Phase D, after the fp_cpu tiling rewrite above. **D1**: removed
-the `continue` guard in `bp_cpu`'s inner `iz` loop (a documented
+perf-v2 Phase D, after the fp_cpu tiling rewrite above. **D1** (removed
+the `continue` guard in `bp_cpu`'s inner `iz` loop — a documented
 leftover safety net after `iz_lo`/`iz_hi` already narrows the range
-analytically) in favor of a branch-free clamp. Validated correct
-(MSE vs CPU unchanged: `4.195e-13` gpu-buf, `8.423e-10` gpu-img/opt) —
-but `-fopt-info-vec-optimized` shows the loop still does not
-auto-vectorize, and `bp_cpu` epoch time stayed flat/noisy before and
-after (~1.1-1.4s either way at 256³). **No measurable win — a real
-negative result**, kept in the tree (branch-free is not worse, just
-not better) rather than reverted.
+analytically — in favor of a branch-free clamp): initially reported as
+"no measurable win" from single noisy runs (~1.1-1.4s bp time either
+way), MSE-correct but with `-fopt-info-vec-optimized` confirming the
+loop still didn't auto-vectorize. **A rigorous 3-trial-each comparison
+during pre-merge validation found this was actually a small, real,
+consistent regression**, not a wash: total CPU time 45.59s mean on
+this branch vs 43.96s mean on `features` (~3.7%), every trial slower.
+Isolated by reverting just this change and re-measuring (43.59s mean,
+matching `features`) — confirmed the branch-free version costs more
+because it always computes the full 4-tap interpolation and does a
+conditional add, while the original `continue` skips the interpolation
+entirely for out-of-range taps; branch-free traded a skipped
+computation for an unconditional one and never actually unlocked
+vectorization. **Reverted** — this branch keeps the original
+`continue`-based code. Kept as documentation here since it's a useful
+lesson: a "no measurable win" call from a small number of noisy
+samples can hide a real small loss — the fix was to measure harder
+(more trials, direct isolation), not to trust the first read.
 
 **D2** (tile `bp_cpu` for L2 residency) and **D3** (branch-free
 `fp_cpu` inner loop) were not pursued after investigating what they'd
