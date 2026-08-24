@@ -169,16 +169,19 @@ void bp_cpu(const float *proj, float *volume, const CBpara *p)
                     float zpr = ((float)iz - radius_z) * vs;
                     float bi  = zpr * zf;
                     float vf  = (bi - b_min) / db;
-                    /* keep the check as a safety net against the boundary
-                     * rounding in ceilf above — cost is negligible since the
-                     * range is now tight */
-                    if (vf < 0.f || vf >= (float)(H-1)) continue;
-                    int v0 = (int)vf; float dv = vf - v0;
+                    /* iz_lo/iz_hi already bound vf to [0, H-1) analytically;
+                     * clamp instead of branch as a safety net against the
+                     * boundary rounding in ceilf above -- branch-free so the
+                     * loop can vectorize. Clamped taps contribute 0 via
+                     * inside/outside below rather than being skipped. */
+                    int inside = (vf >= 0.f && vf < (float)(H-1));
+                    float vfc = vf < 0.f ? 0.f : (vf > (float)(H-2) ? (float)(H-2) : vf);
+                    int v0 = (int)vfc; float dv = vfc - v0;
 
                     float val = (slice[u0*H+v0]   *(1-du) + slice[(u0+1)*H+v0]   *du)*(1-dv)
                               + (slice[u0*H+v0+1] *(1-du) + slice[(u0+1)*H+v0+1] *du)*dv;
 
-                    strip[iz] += val * w;
+                    strip[iz] += inside ? val * w : 0.f;
                 }
             }
 
