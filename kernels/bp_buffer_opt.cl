@@ -15,6 +15,12 @@ __constant sampler_t samp =
     CLK_ADDRESS_CLAMP           |
     CLK_FILTER_LINEAR;
 
+/* perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+ * subrange for the compute loop (see bp_buffer.cl for the full
+ * rationale, identical here). lcs is still sized/loaded for the FULL
+ * num_projs regardless of ip_count -- it's only 600 bytes even at
+ * num_projs=75, not worth shrinking, and the compute loop below simply
+ * indexes into the subrange it already has cached. */
 __kernel void bp_opt(
     __read_only  image2d_array_t proj_images, /* [num_projs][W][H] */
     __global const float2       *angle_cs,    /* [num_projs] (.x=cos, .y=sin) */
@@ -28,7 +34,9 @@ __kernel void bp_opt(
     float SOD,
     float SDD,
     float voxelSize,
-    float pixelSize
+    float pixelSize,
+    int   ip_start,
+    int   ip_count
 )
 {
     /* Cooperatively load angle_cs into local memory.
@@ -61,37 +69,34 @@ __kernel void bp_opt(
     float half_W = (W - 1) * 0.5f;
     float half_H = (H - 1) * 0.5f;
 
-    /* Large volumes (>=512): unroll x2 hides texture latency with acceptable register cost.
-     * Small volumes (<512): scalar loop — occupancy more valuable than ILP. */
-    int ip = 0;
-    if (Nxz >= 512) {
-        for (; ip <= num_projs - 2; ip += 2) {
-            float2 cs0 = lcs[ip+0], cs1 = lcs[ip+1];
+    /* Whole-cell zero rule matching the Python reference (see bp_buffer.cl):
+     * CLK_ADDRESS_CLAMP zero-pads individual texels, which differs from
+     * scipy's all-or-nothing fill_value=0 — gate explicitly instead.
+     * floor() computed once per value and reused (matches bp_image.cl's
+     * single-floor pattern) instead of calling floor(u)/floor(v) twice
+     * each inside the OOB test. */
 
-            float U0 = SOD + ypr*cs0.y + xpr*cs0.x;
-            float U1 = SOD + ypr*cs1.y + xpr*cs1.x;
-
-            float inv_U0 = native_recip(U0), inv_U1 = native_recip(U1);
-
-            float uf0 = -(SDD*(ypr*cs0.x - xpr*cs0.y)*inv_U0)*inv_px + half_W;
-            float uf1 = -(SDD*(ypr*cs1.x - xpr*cs1.y)*inv_U1)*inv_px + half_W;
-
-            float vf0 = (zpr*SDD*inv_U0)*inv_px + half_H;
-            float vf1 = (zpr*SDD*inv_U1)*inv_px + half_H;
-
-            float4 v0 = read_imagef(proj_images, samp, (float4)(vf0+.5f, uf0+.5f, (float)(ip+0), 0.f));
-            float4 v1 = read_imagef(proj_images, samp, (float4)(vf1+.5f, uf1+.5f, (float)(ip+1), 0.f));
-
-            sum += v0.x * sod2 * inv_U0 * inv_U0;
-            sum += v1.x * sod2 * inv_U1 * inv_U1;
-        }
-    }
-    for (; ip < num_projs; ip++) {
+    /* Unroll-x2 was tried here (gated Nxz>=512) on the theory that hiding
+     * texture latency across two overlapped fetches would help large
+     * volumes. Measured on this hardware (AMD Hawaii, pool15-01) it did
+     * the opposite: gpu-opt at 512^3 (0.930-0.945s/epoch, unrolled) was
+     * marginally SLOWER than plain gpu-img (0.930s, scalar bp_image.cl),
+     * despite gpu-opt otherwise having strictly more optimizations
+     * layered on (LUT + local mem). Disabling unroll-x2 dropped gpu-opt
+     * to 0.923-0.927s — faster than gpu-img, as the LUT/local-mem win was
+     * supposed to deliver. The extra registers from unrolling (two live
+     * float2/float4/etc sets instead of one) apparently cost more in
+     * occupancy than the ILP saved in latency-hiding on GCN 1.1's
+     * register file — confirmed by isolated before/after measurement,
+     * not assumed. Kept as scalar-only unconditionally now. */
+    for (int ip = ip_start; ip < ip_start + ip_count; ip++) {
         float2 cs = lcs[ip];
         float U = SOD + ypr*cs.y + xpr*cs.x;
         float inv_U = native_recip(U);
         float uf = -(SDD*(ypr*cs.x - xpr*cs.y)*inv_U)*inv_px + half_W;
         float vf = (zpr*SDD*inv_U)*inv_px + half_H;
+        int u0 = (int)floor(uf), v0 = (int)floor(vf);
+        if (u0 < 0 || u0+1 >= W || v0 < 0 || v0+1 >= H) continue;
         float4 val = read_imagef(proj_images, samp, (float4)(vf+.5f, uf+.5f, (float)ip, 0.f));
         sum += val.x * sod2 * inv_U * inv_U;
     }

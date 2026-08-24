@@ -15,6 +15,9 @@ __constant sampler_t samp =
     CLK_ADDRESS_CLAMP           |
     CLK_FILTER_LINEAR;
 
+/* perf-v2 Phase C1 (OSEM): see bp_buffer.cl's kernel comment for the
+ * full ip_start/ip_count/M_PI_F-num_projs-cancellation rationale --
+ * identical here. */
 __kernel void bp_image(
     __read_only  image2d_array_t proj_images, /* [num_projs][W][H] as 2D array */
     __global const float2 *angle_cs,          /* [num_projs] (.x=cos,.y=sin) LUT */
@@ -27,7 +30,9 @@ __kernel void bp_image(
     float SOD,
     float SDD,
     float voxelSize,
-    float pixelSize
+    float pixelSize,
+    int   ip_start,
+    int   ip_count
 )
 {
     int ix = get_global_id(0);
@@ -45,7 +50,7 @@ __kernel void bp_image(
 
     float sum = 0.f;
 
-    for (int ip = 0; ip < num_projs; ip++) {
+    for (int ip = ip_start; ip < ip_start + ip_count; ip++) {
         float2 cs = angle_cs[ip];
         float ca = cs.x, sa = cs.y;
 
@@ -63,6 +68,12 @@ __kernel void bp_image(
          */
         float uf = -(ai / pixelSize) + (W - 1) * 0.5f;
         float vf =  (bi / pixelSize) + (H - 1) * 0.5f;
+
+        /* Whole-cell zero rule matching the Python reference (see bp_buffer.cl):
+         * CLK_ADDRESS_CLAMP zero-pads individual texels, which differs from
+         * scipy's all-or-nothing fill_value=0 — gate explicitly instead. */
+        int u0 = (int)floor(uf), v0 = (int)floor(vf);
+        if (u0 < 0 || u0+1 >= W || v0 < 0 || v0+1 >= H) continue;
 
         float texel_u = vf + 0.5f;
         float texel_v = uf + 0.5f;
