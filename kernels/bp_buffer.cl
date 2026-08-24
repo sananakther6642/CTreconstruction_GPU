@@ -412,6 +412,63 @@ __kernel void vol_update_img_reg(
     write_imagef(vol_img, (int4)(z, y, x, 0), (float4)(val, 0.f, 0.f, 0.f));
 }
 
+/*
+ * momentum_extrapolate — multiplicative (log-domain) Nesterov-style
+ * momentum for MLEM/OSEM, applied AFTER the regular vol_update(_img)(_reg)
+ * step:
+ *   v_{k+1} = u_k * (u_k / v_k)^gamma
+ * where u_k is this step's plain MLEM/OSEM output (currently sitting in
+ * `u`, i.e. d_vol right after vol_update) and v_k is the previous
+ * momentum-extrapolated iterate (`v_prev`).
+ *
+ * perf-v2 Phase C5. Naive additive momentum on MLEM can drive voxels
+ * negative, which is unrecoverable under the multiplicative update (a
+ * zero/negative voxel stays stuck). This formulation is additive
+ * momentum in LOG space (log(v_{k+1}) = log(u_k) + gamma*(log(u_k) -
+ * log(v_k))) and is positive by construction: a positive base raised to
+ * any real power, times a positive number, stays positive -- no clamp
+ * needed for positivity itself, though u_k/v_k is still guarded against
+ * div-by-near-zero for numerical safety (v_k should already be positive
+ * from the previous iteration's own extrapolation, but floating-point
+ * edge cases near the volume's positivity floor are cheap to guard).
+ *
+ * Writes the extrapolated result into BOTH `u` (so it becomes next
+ * epoch's fp input) and `v_prev` (so it's this step's u_k for next
+ * epoch's momentum calculation) -- v_prev holds the extrapolated
+ * iterate, u then gets overwritten by next epoch's fresh MLEM output
+ * before this kernel runs again.
+ */
+__kernel void momentum_extrapolate(
+    __global       float *u,        /* in: plain MLEM/OSEM output; out: extrapolated v_{k+1} */
+    __global       float *v_prev,   /* in: previous extrapolated v_k; out: this v_{k+1} (== u after) */
+    __write_only   image3d_t vol_img,
+    int   Nxz,
+    int   Ny,
+    float gamma,
+    int   n
+)
+{
+    int j = get_global_id(0);
+    if (j >= n) return;
+
+    float uk = u[j];
+    float vk = v_prev[j];
+    float ratio = (vk > 1e-10f) ? (uk / vk) : 1.f;
+    float extrap = uk * pow(ratio, gamma);
+    /* extrap is positive by construction (uk, ratio > 0 whenever the
+     * guard above doesn't trip); the 1e-10f guard only protects the
+     * division, not positivity, which needs no separate clamp here. */
+
+    u[j] = extrap;
+    v_prev[j] = extrap;
+
+    int x = j / (Nxz * Ny);
+    int rem = j % (Nxz * Ny);
+    int y = rem / Ny;
+    int z = rem % Ny;
+    write_imagef(vol_img, (int4)(z, y, x, 0), (float4)(extrap, 0.f, 0.f, 0.f));
+}
+
 __kernel void vol_update_img(
     __global       float *volume,
     __global const float *bp_ratio,

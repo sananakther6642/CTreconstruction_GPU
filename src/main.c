@@ -40,7 +40,10 @@ static void print_usage(const char *prog)
         "                            default 0 = exactly plain MLEM/OSEM, same code path as\n"
         "                            beta unset. Split as beta/subsets internally under OSEM.)\n"
         "           [--beta-delta D]  (Huber quadratic/linear transition point, default 0.01;\n"
-        "                            ignored when --beta is 0)\n",
+        "                            ignored when --beta is 0)\n"
+        "           [--gamma G]     (gpu-opt only; log-domain Nesterov-style momentum,\n"
+        "                            v_(k+1) = u_k*(u_k/v_k)^gamma, applied once per epoch;\n"
+        "                            default 0 = off, exactly the pre-C5 epoch loop)\n",
         prog);
 }
 
@@ -60,6 +63,7 @@ int main(int argc, char **argv)
     const char *init_str     = "ones"; /* --init fdk|ones */
     float       beta         = 0.f;  /* --beta B, default 0 = plain MLEM/OSEM */
     float       beta_delta   = 0.01f; /* --beta-delta D, Huber transition point */
+    float       gamma        = 0.f;  /* --gamma G, default 0 = no momentum */
 
     /* ── Parse args ── */
     for (int i = 1; i < argc; i++) {
@@ -77,6 +81,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--init")    && i+1<argc) init_str    = argv[++i];
         else if (!strcmp(argv[i], "--beta")    && i+1<argc) beta        = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--beta-delta") && i+1<argc) beta_delta = (float)atof(argv[++i]);
+        else if (!strcmp(argv[i], "--gamma")   && i+1<argc) gamma       = (float)atof(argv[++i]);
         else { print_usage(argv[0]); return 1; }
     }
 
@@ -89,6 +94,11 @@ int main(int argc, char **argv)
     if (beta < 0.f) { fprintf(stderr, "--beta must be >= 0\n"); return 1; }
     if (beta > 0.f && strcmp(mode_str, "gpu-opt")) {
         fprintf(stderr, "--beta > 0 is only implemented for --mode gpu-opt\n");
+        return 1;
+    }
+    if (gamma < 0.f) { fprintf(stderr, "--gamma must be >= 0\n"); return 1; }
+    if (gamma > 0.f && strcmp(mode_str, "gpu-opt")) {
+        fprintf(stderr, "--gamma > 0 is only implemented for --mode gpu-opt\n");
         return 1;
     }
 
@@ -269,7 +279,7 @@ int main(int argc, char **argv)
         }
 
         t_start = get_time_sec();
-        reconstruct_gpu_opt(&cl, &para, proj_measured, volume, epochs, conv_log, subsets, beta, beta_delta);
+        reconstruct_gpu_opt(&cl, &para, proj_measured, volume, epochs, conv_log, subsets, beta, beta_delta, gamma);
         t_end = get_time_sec();
 
         printf("GPU-opt time: %.2f s\n", t_end - t_start);
