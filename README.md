@@ -702,9 +702,38 @@ launch range, not per-work-item subset membership checks.
 buffers instead of 1) doesn't fit alongside the rest of `gpu-opt`'s already
 ~4GB resident set on this project's cards; not implemented, see the plan.
 
-**Measured result** (256³, 30 epochs, `--log-convergence`, log-likelihood
-vs matched wall-clock time — the metric MLEM/OSEM actually optimizes, not
-just epoch count):
+**Measured result, report scale** (256³, **100 epochs**, `--log-convergence`,
+log-likelihood vs matched wall-clock time — the metric MLEM/OSEM actually
+optimizes, not just epoch count). An earlier 30-epoch smoke test (kept below
+for the record) found S=5 leading early and S=15 overtaking it — the full
+100-epoch run shows that was still an early transient:
+
+| Wall-clock time | S=1 | S=3 | S=5 | S=15 | S=25 |
+|---|---|---|---|---|---|
+| 10 s | −482,720 | −481,297 | **−481,109** | −480,543 | −480,577 |
+| 15 s | −481,109 | −480,391 | −480,304 | **−479,652** | −479,285 |
+| 20 s | −480,652 (plateaued) | −480,013 | −479,942 | −479,305 | **−478,917** |
+| 30 s | −480,652 (plateaued) | −479,701 | −479,653 | −479,042 | **−478,651** |
+| 36 s | −480,652 (plateaued) | −479,610 | −479,580 | −478,964 | **−478,571** |
+
+(higher/less-negative is better.) **The real story only appears at full
+epoch count: S=1 plateaus by ~20s and goes nowhere for the rest of the
+run (it has converged to its 100-epoch ceiling), while every OSEM
+configuration keeps improving for the entire 36s window and never
+visibly plateaus.** S=25 is the worst performer before ~10s (25
+sub-iterations per epoch means more per-epoch launch/normalizer
+overhead before the noisier updates pay off) but is the clear winner
+from ~15s onward and stays ahead through 36s — the opposite ranking
+from what an early-epoch-only measurement would suggest. **The earlier
+30-epoch finding ("S=5 leads early, S=15 overtakes") is confirmed as
+real but incomplete — it was the early transient of a curve that, given
+enough time, keeps favoring larger S.** Whether that trend continues
+past 36s or S=25 also plateaus eventually is not established by this
+data — report the time-matched curve, not a single "best S," and note
+the time budget it was measured under.
+
+<details>
+<summary>Earlier 30-epoch smoke-test table (superseded by the 100-epoch result above, kept for the record)</summary>
 
 | Wall-clock time | S=1 (plain MLEM) | S=5 | S=15 |
 |---|---|---|---|
@@ -712,20 +741,14 @@ just epoch count):
 | 8 s | (not yet this good) | −481,944 | **−481,603** |
 | 15 s | (not yet this good) | −480,306 | **−479,645** |
 
-(higher/less-negative is better.) **Every OSEM configuration tested beats
-plain MLEM at any matched wall-clock time past ~2s.** S=5 leads in the
-first ~6-8s; S=15 overtakes it from ~8s onward and stays ahead through the
-longest time both were measured to (15s) — more subsets means more
-updates per unit time but each is noisier, so which S wins depends on how
-close to convergence the run already is. This is the real, measured shape
-of the result, not assumed from theory: the naive "S=5 is simply the best
-default" story from the initial write-up did not hold once time-matched
-data existed. S=3 and S=25 were also tested and fall inside this envelope
-(S=3 behaves similarly to S=1 with a smaller but real speedup; S=25 is
-consistently the slowest per-unit-time of the five, more sub-iteration
-overhead than benefit at this angle count). Report a time-matched curve
-if citing this in a write-up, not a single number — which S "wins"
-depends on the time budget.
+S=5 leads in the first ~6-8s; S=15 overtakes it from ~8s onward and stays
+ahead through the longest time both were measured to (15s). S=3 and S=25
+were also tested at this scale and looked like they fell inside this
+envelope (S=25 looked like the consistently slowest of the five) — the
+100-epoch run above shows that read on S=25 was an artifact of not running
+long enough.
+
+</details>
 
 **Regression tests, both passed exactly:**
 1. `--subsets` unset vs the pre-OSEM baseline: MSE=8.423e-10 vs CPU,
@@ -782,10 +805,26 @@ job, FDK's head start is redundant, and FDK's own artifacts (the 49%
 clamped-negative voxels) may introduce a small bias OSEM's early
 sub-iterations spend some work correcting, which is the likely
 explanation for ones-init's late, small lead over fdk-init under OSEM.
-**Practical guidance: use `--init fdk` with plain MLEM (`--subsets 1`)
-for a real win; skip it when already using OSEM (`--subsets >1`) — it
-adds ~0.8s of setup for no measured benefit there, and a slight measured
-cost by epoch 20.**
+
+**Re-run at report scale (50 epochs) confirms and sharpens this — the
+OSEM gap does not close back up with more epochs, it widens:**
+
+| Epoch | ones+MLEM | fdk+MLEM | ones+OSEM(S=5) | fdk+OSEM(S=5) |
+|---|---|---|---|---|
+| 20 | −499,712 | **−497,293** | **−480,635** | −480,951 |
+| 50 (final) | −483,091 | **−483,057** | **−479,645** | −480,087 |
+
+By epoch 50, ones-init's lead over fdk-init under OSEM has grown from
+−480,635 vs −480,951 (epoch 20) to −479,645 vs −480,087 — fdk-init is
+not just redundant under OSEM, it measurably holds OSEM back over a
+full run, consistent with the clamped-voxel-bias explanation above.
+Under plain MLEM the two nearly converge to the same final value by
+epoch 50 (−483,091 vs −483,057) — FDK's early-epoch head start still
+doesn't change where plain MLEM ends up, it just gets there faster.
+**Practical guidance unchanged and now better supported: use
+`--init fdk` with plain MLEM (`--subsets 1`) for a real win; skip it
+when already using OSEM (`--subsets >1`) — it adds ~0.8s of setup for
+a measured net cost there, not just no benefit.**
 
 ### OSL-MLEM with a Huber prior — `--beta B`, image quality on sparse views
 
@@ -833,12 +872,42 @@ variation and center std both *increased* well past baseline (worse,
 not better) and its global max jumped to 2.73 from a baseline ~1.75 —
 a real, measured OSL failure mode (the plan's flagged "negative/near-zero
 denominator" risk, manifesting here as an overshoot rather than a NaN
-once the clamp is in place). **β=1000 is the strongest clean result
-found; β between 100 and 1000 is the working range at 256³ with
-`--beta-delta` at its default 0.01 — β=5000 is confirmed past the
-stability edge.** Sweep `--beta-delta` too before trusting these exact
-values on a different dataset/scale — it wasn't re-tuned here, only its
-default was used throughout.
+once the clamp is in place).
+
+**Correction after re-running at report scale (100 epochs, same β
+values, plus a β=500 bisection point): β=1000 does not actually
+converge — the 50-epoch sweep above stopped too early to see it.**
+`rel_change` (the per-epoch relative volume change from
+`--log-convergence`) should decay toward zero as MLEM/OSL settles; at
+100 epochs:
+
+| β | epoch-100 loglik | epoch-100 residual | epoch-100 rel_change | verdict |
+|---|---|---|---|---|
+| 0 | −480652 | 0.05109 | 0.00182 | converges cleanly |
+| 100 | −480610 | 0.05041 | 0.00130 | converges cleanly, matches baseline |
+| 500 | −480762 | 0.06843 | 0.02595 | still converging, but a real residual/rel_change floor ~15-20× baseline |
+| 1000 | −480958 | 0.08196 | **0.09174** | **stuck in a limit cycle, not converging** |
+| 5000 | −490585 | 0.47983 | 0.76373 | clearly diverging (residual climbs monotonically epoch 5→100) |
+
+β=0 and β=100 both decay `rel_change` below 0.002 by epoch 100 — real
+convergence. β=1000's `rel_change` never drops below ~0.09 for the
+entire second half of the run (oscillating, not decaying) — this was
+invisible at 50 epochs, where it still looked like it was on a
+downward trend. β=500 sits in between: residual keeps decreasing
+monotonically (real convergence, just slower/noisier than β≤100), so
+it's a genuine — if less clean — working point, not a failure mode.
+
+**Corrected working range at 256³ (`--beta-delta` default 0.01): β≤100
+converges cleanly; β=500 converges but with visibly more residual
+noise; β≥1000 does not converge (limit cycle at 1000, outright
+divergence by 5000).** The earlier "β=1000 is the strongest clean
+result" verdict is retracted — it was a 50-epoch snapshot of a
+trajectory that hadn't revealed its own instability yet, a reminder
+that *convergence* claims need enough epochs to actually observe
+convergence (or its absence), not just a improving trend. Sweep
+`--beta-delta` too before trusting these exact values on a different
+dataset/scale — it wasn't re-tuned here, only its default was used
+throughout.
 
 ### Log-domain momentum — `--gamma G`, negative result (implemented, not usable)
 
