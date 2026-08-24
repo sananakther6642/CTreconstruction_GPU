@@ -211,8 +211,9 @@ for each epoch (= one pass over all N subsets):
   subsets visited in a golden-ratio-derived coprime stride order.
   Permutation applied once at load time (`utils.c`), so each subset
   becomes a contiguous `(ip_start, ip_count)` launch range.
-- 256³ only — at 512³ the per-subset normalizer array doesn't fit
-  alongside `gpu-opt`'s ~4GB resident set.
+- 256³ only. Confirmed on kale (GTX 680, 4037MiB VRAM): plain `gpu-opt`
+  at 512³ (S=1) already uses ~3.27GB, leaving ~760MB headroom — not
+  enough for even one 512MB per-subset normalizer buffer at S=2.
 - Regression tests: `--subsets` unset vs baseline, MSE unchanged;
   `--subsets 1` vs unset, byte-identical.
 
