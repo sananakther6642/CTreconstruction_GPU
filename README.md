@@ -311,9 +311,10 @@ investigating D1 changes that assessment.
 > This section's numbers are a checkpoint taken immediately after the
 > unroll-x2 fix, *before* the work-group sweep below. They're kept as-is
 > because they isolate what unroll-x2 alone was costing. The Performance
-> Results table at the top of this README reflects both fixes together
-> and is the current, correct number — `gpu-opt` there (88.38s) is now a
-> little faster than `gpu-img` (88.58s), not tied.
+> Results table at the top of this README and the "Final 100-epoch
+> result" a few paragraphs below both reflect the complete, current
+> picture: `gpu-opt` and `gpu-img` are essentially tied (0.17% gap at
+> 100 epochs), with `gpu-img` very slightly ahead at 10-epoch scale.
 
 `gpu-opt` (`bp_opt` in `bp_buffer_opt.cl`) layers a float2 cos/sin LUT,
 cooperative local-memory caching, and (previously) an unroll-x2 loop on
@@ -448,7 +449,7 @@ AABB clipping on `W > 512`, disabling it entirely at 256³ (detector is
 exactly 512 wide). Geometry shows ~65% of the 256 samples/ray are outside
 the volume there — a large apparent opportunity. But the existing gate
 wasn't an oversight: it's a prior measured decision (see the 512³
-optimization table below, and the code's own comment). Re-tested via
+optimization table above, and the code's own comment). Re-tested via
 `FP_IMAGE_AABB=1` after the work-group sweep, in case that had changed the
 tradeoff — it hadn't: **0.098-0.100s/epoch with AABB forced on vs
 0.095-0.096s with it off**, a consistent ~4% regression. The 256³ launch
@@ -564,7 +565,7 @@ log-likelihood) rather than a true reconstruction-error metric.
 
 Both `gpu-img` and `gpu-opt` share the same `fp_image.cl` forward-projection
 kernel (only their bp kernel differs — `bp_image.cl` vs `bp_opt`), so AABB
-clipping (gated `W>512`, see "Two negative results" below) applies to both
+clipping (gated `W>512`, see "Two negative results" above) applies to both
 equally, not just `gpu-opt`.
 
 `vol_img` precision (`gpu-img`/`gpu-opt`) defaults to **float32**; pass
@@ -586,12 +587,12 @@ kernels/
   bp_image.cl         — bp (image): hardware bilinear on image2d_array_t + float2 LUT
   fp_image.cl         — fp (image): hardware trilinear on image3d_t + AABB clipping
   bp_buffer_opt.cl    — bp_opt: image2d_array_t + float2 LUT + local mem
-  fp_buffer_opt.cl    — dead code: never loaded by gpu_init, not wired to any dispatch
 validate.py           — load HDF5 outputs, print MSE + outlier-location diagnostics (supports 256/512)
 validate_ops.py       — per-operator fp/bp comparison vs Python reference, isolated from MLEM iteration
 run_python_reference.py — full MLEM loop in Python (fp_func/bp_func), --epochs to match C runs
 diag_fp.py             — fp_cpu vs Python fp_func comparison, parameterized for 256^3/512^3 (--data/--dump/--samples)
 diag_voxel.py, diag_voxel2.py — one-off scripts from the boundary-rule/truncation bug hunt; kept for reference, not part of the regular workflow
+Topic_2_CTreconstruction.py — original course-provided Python reference (fp_func/bp_func); superseded by run_python_reference.py for regular use, kept as the unmodified starting point
 ```
 
 ## Build
