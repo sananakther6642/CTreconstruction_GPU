@@ -361,9 +361,13 @@ static void run_divide_preprocess_img(CLState *cl, const CBpara *p,
 
 
 /* ── Internal: run backprojection on GPU (buffer mode) ─────────────────── */
+/* perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+ * subrange for bp's internal angle loop (kernel change only -- this
+ * function's own z-slab chunking is unrelated, it's over voxels, not
+ * angles, so no host-side offset-launch changes needed here). */
 static void run_bp_buffer(CLState *cl, const CBpara *p,
                            cl_mem d_proj, cl_mem d_ang_cs,
-                           cl_mem d_vol)
+                           cl_mem d_vol, int ip_start, int ip_count)
 {
     cl_int err;
     cl_kernel k = cl->k_bp_buf;
@@ -385,6 +389,8 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k, 9, sizeof(float),  &SDD);
     clSetKernelArg(k,10, sizeof(float),  &vs);
     clSetKernelArg(k,11, sizeof(float),  &px);
+    clSetKernelArg(k,12, sizeof(int),    &ip_start);
+    clSetKernelArg(k,13, sizeof(int),    &ip_count);
 
     /* {4,4,16} tuned once early on (718ms->290ms, the biggest measured win
      * at the time) and never re-swept until fp_image/fp_buffer's sweeps
@@ -440,8 +446,15 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
 }
 
 /* ── Internal: run forward projection on GPU (buffer mode) ─────────────── */
+/* perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+ * subrange, chunked the same way as the full-range path (ANG_SLAB=8 per
+ * launch, watchdog avoidance). Same rounding-edge-case fix as
+ * run_fp_image: the kernel's guard checks "ip >= ip_start + ip_count",
+ * not "ip >= num_projs", since a slab's rounded-up gws can exceed the
+ * subset's actual end while staying under num_projs. */
 static void run_fp_buffer(CLState *cl, const CBpara *p,
-                           cl_mem *d_vol_ptr, cl_mem d_proj)
+                           cl_mem *d_vol_ptr, cl_mem d_proj,
+                           int ip_start, int ip_count)
 {
     cl_int err;
     cl_kernel k = cl->k_fp_buf;
@@ -467,6 +480,8 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &SDD);
     clSetKernelArg(k,12, sizeof(float),  &vs);
     clSetKernelArg(k,13, sizeof(float),  &px);
+    clSetKernelArg(k,14, sizeof(int),    &ip_start);
+    clSetKernelArg(k,15, sizeof(int),    &ip_count);
 
     /* perf-v2: hardware target switched from pool15-01 (AMD Hawaii PRO,
      * GCN 1.1, 64-wide wavefront) to kale (NVIDIA GTX 680, Kepler,
@@ -497,12 +512,15 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
             lws[0]=a; lws[1]=b; lws[2]=c;
         }
     }
-    size_t gws_full[3] = {(size_t)W, (size_t)H, (size_t)np};
+    size_t gws_full[3] = {(size_t)W, (size_t)H, (size_t)ip_count};
     for (int d=0;d<3;d++)
         if (gws_full[d] % lws[d]) gws_full[d] += lws[d] - gws_full[d] % lws[d];
 
     /* Chunk over angles (dim 2, lws=1) — same watchdog-avoidance rationale
-     * as run_bp_buffer; fp_buffer's trilinear_buf is also uncoalesced. */
+     * as run_bp_buffer; fp_buffer's trilinear_buf is also uncoalesced.
+     * p0 ranges over the SUBSET's local offsets [0, gws_full[2]); the
+     * actual launch offset below is ip_start+p0 so the kernel's own
+     * get_global_id(2) lands on the correct absolute angle index. */
     const size_t ANG_SLAB = 8;
     int slab_idx = 0;
     /* FP_BUFFER_SLAB_PAUSE_US: experimental mitigation for the confirmed
@@ -596,7 +614,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
         }
 
         size_t slab = (gws_full[2] - p0 < ANG_SLAB) ? (gws_full[2] - p0) : ANG_SLAB;
-        size_t offset[3] = {0, 0, p0};
+        size_t offset[3] = {0, 0, (size_t)ip_start + p0};
         size_t gws[3]    = {gws_full[0], gws_full[1], slab};
         cl_event evt;
         double t0 = get_time_sec();
@@ -757,8 +775,11 @@ static void run_diag_repeat_slab(CLState *cl, const CBpara *p,
 }
 
 /* ── Internal: run backprojection (image mode) ──────────────────────────── */
+/* perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+ * subrange for bp's internal angle loop. */
 static void run_bp_image(CLState *cl, const CBpara *p,
-                          cl_mem proj_img, cl_mem d_ang_cs, cl_mem d_vol)
+                          cl_mem proj_img, cl_mem d_ang_cs, cl_mem d_vol,
+                          int ip_start, int ip_count)
 {
     cl_int err;
     cl_kernel k = cl->k_bp_img;
@@ -780,6 +801,8 @@ static void run_bp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k, 9, sizeof(float),  &SDD);
     clSetKernelArg(k,10, sizeof(float),  &vs);
     clSetKernelArg(k,11, sizeof(float),  &px);
+    clSetKernelArg(k,12, sizeof(int),    &ip_start);
+    clSetKernelArg(k,13, sizeof(int),    &ip_count);
 
     size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
     size_t lws[3] = {4, 4, 16};  /* see BP_LWS note in run_bp_buffer above */
@@ -800,8 +823,25 @@ static void run_bp_image(CLState *cl, const CBpara *p,
 }
 
 /* ── Internal: run forward projection (image mode) ─────────────────────── */
+/*
+ * perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+ * subrange. Launches with a global work-offset of ip_start in dim 2 and
+ * a global work-size of ip_count (rounded up to lws[2]) instead of the
+ * full num_projs -- get_global_id(2) then naturally ranges over
+ * [ip_start, ip_start+ip_count) inside the kernel.
+ *
+ * The rounding-up-to-lws step is exactly the bug risk the perf-v2 plan
+ * flagged before any code was written: rounding ip_count up can push
+ * gws[2] past ip_count while still being < num_projs, so a guard of
+ * "ip >= num_projs" alone would NOT catch the extra rounded-up
+ * work-items -- they'd process angles beyond the subset. Fixed by
+ * passing ip_start/ip_count into the kernel itself and guarding
+ * "ip >= ip_start + ip_count" there (see fp_image.cl), not just
+ * "ip >= num_projs".
+ */
 static void run_fp_image(CLState *cl, const CBpara *p,
-                          cl_mem vol_img, cl_mem d_proj)
+                          cl_mem vol_img, cl_mem d_proj,
+                          int ip_start, int ip_count)
 {
     cl_int err;
     cl_kernel k = cl->k_fp_img;
@@ -840,8 +880,10 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     const char *aabb_env = getenv("FP_IMAGE_AABB");
     if (aabb_env) use_aabb = atoi(aabb_env);
     clSetKernelArg(k,14, sizeof(int), &use_aabb);
+    clSetKernelArg(k,15, sizeof(int), &ip_start);
+    clSetKernelArg(k,16, sizeof(int), &ip_count);
 
-    size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
+    size_t gws[3] = {(size_t)W, (size_t)H, (size_t)ip_count};
     /* {8,32,1} measured ~5% faster than the previous {16,16,1} at 512^3 on
      * this hardware (AMD Hawaii): 0.873-0.879s/epoch vs 0.921-0.928s over
      * a 10-candidate sweep (64,1,1 through 32,16,1; the latter and
@@ -871,7 +913,8 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     for (int d=0;d<3;d++) {
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     }
-    err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0,NULL,NULL);
+    size_t offset[3] = {0, 0, (size_t)ip_start};
+    err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0,NULL,NULL);
     CL_CHECK(err, "fp_image enqueue");
 }
 
@@ -965,7 +1008,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                             0, vol_bytes, 0, NULL, NULL);
 
         if (cl->mode == GPU_MODE_BUFFER) {
-            run_bp_buffer(cl, p, d_ones_prep, d_ang_cs, d_bp_ones);
+            run_bp_buffer(cl, p, d_ones_prep, d_ang_cs, d_bp_ones, 0, np);
         } else {
             cl_image_format fmt = {CL_R, CL_FLOAT};
             cl_image_desc desc = {0};
@@ -980,7 +1023,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             err = clEnqueueCopyBufferToImage(cl->queue, d_ones_prep, ones_img,
                                              0, oorigin, oregion, 0, NULL, NULL);
             CL_CHECK(err,"CopyBufferToImage ones_prep");
-            run_bp_image(cl, p, ones_img, d_ang_cs, d_bp_ones);
+            run_bp_image(cl, p, ones_img, d_ang_cs, d_bp_ones, 0, np);
             clReleaseMemObject(ones_img);
         }
         clFinish(cl->queue);  /* wait for bp_ones before epoch loop */
@@ -1077,9 +1120,14 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
                                  (size_t)vol_n * sizeof(float), v_prev_host, 0, NULL, NULL);
 
-        /* forward project: b = F(v0) */
+        /* forward project: b = F(v0)
+         * perf-v2 Phase C1: reconstruct_gpu (buffer/image modes) does not
+         * get real OSEM subsetting in this pass -- always the full angle
+         * range, equivalent to --subsets 1. OSEM is implemented in
+         * reconstruct_gpu_opt only; ip_start=0/ip_count=np here keeps
+         * this path's behavior byte-identical to before. */
         if (cl->mode == GPU_MODE_BUFFER) {
-            run_fp_buffer(cl, p, &d_vol, d_proj_b);
+            run_fp_buffer(cl, p, &d_vol, d_proj_b, 0, np);
         } else {
             size_t vorigin[3]={0,0,0};
             size_t vregion[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
@@ -1101,7 +1149,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
              * the end of every epoch (Phase B4). --half still copies
              * every epoch (above), since float_to_half is a real format
              * conversion vol_update_img doesn't do. */
-            run_fp_image(cl, p, vol_img, d_proj_b);
+            run_fp_image(cl, p, vol_img, d_proj_b, 0, np);
         }
 
         if (conv_log)
@@ -1128,10 +1176,10 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"proj_divide");
             run_preprocess(cl, p, d_ratio, d_ratio_prep);  /* fused: cone_weight + flip + transpose */
-            run_bp_buffer(cl, p, d_ratio_prep, d_ang_cs, d_bp_ratio);
+            run_bp_buffer(cl, p, d_ratio_prep, d_ang_cs, d_bp_ratio, 0, np);
         } else {
             run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img_buf);
-            run_bp_image(cl, p, ratio_img_buf, d_ang_cs, d_bp_ratio);
+            run_bp_image(cl, p, ratio_img_buf, d_ang_cs, d_bp_ratio, 0, np);
         }
 
         /* v0 *= bp_ratio / bp_ones
@@ -1215,12 +1263,32 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
  * ═══════════════════════════════════════════════════════════════════════════ */
 void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          const float *proj_measured, float *volume,
-                         int epochs, const char *conv_log)
+                         int epochs, const char *conv_log, int subsets)
 {
     cl_int err;
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
     int W   = p->detector_width,  H  = p->detector_height;
     int np  = p->num_projs;
+    int S   = (subsets > 0) ? subsets : 1;
+    if (S > np) S = 1; /* degenerate guard: more subsets than angles makes no sense */
+
+    /* perf-v2 Phase C1 (OSEM): subset k is the contiguous angle range
+     * [subset_start[k], subset_start[k]+subset_count[k]) -- valid ONLY
+     * because the caller has already permuted p->angles/proj_measured
+     * (see utils.h) so that interleaved, max-separated subsets become
+     * contiguous ranges. Computed once here since it's needed both for
+     * the per-subset normalizer precompute and every epoch's inner loop. */
+    int *subset_start = (int *)malloc((size_t)S * sizeof(int));
+    int *subset_count  = (int *)malloc((size_t)S * sizeof(int));
+    {
+        int pos = 0;
+        for (int s = 0; s < S; s++) {
+            int count = np / S + (s < np % S ? 1 : 0);
+            subset_start[s] = pos;
+            subset_count[s] = count;
+            pos += count;
+        }
+    }
 
     size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
     size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
@@ -1259,8 +1327,18 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     CL_CHECK(err, "d_proj_prep opt");
     cl_mem d_bp_ratio  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
     CL_CHECK(err, "d_bp_ratio opt");
-    cl_mem d_bp_ones   = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
-    CL_CHECK(err, "d_bp_ones opt");
+    /* perf-v2 Phase C1 (OSEM): one normalizer bp(cone_weight(ones)) per
+     * subset -- each subset's sensitivity map differs since it only sums
+     * its own angle range. S=1 (default) allocates exactly one buffer,
+     * identical to the pre-OSEM single-normalizer behavior. 256^3 only
+     * for now (S=1..25 costs 32-800MB total there); the plan's VRAM
+     * analysis found this infeasible at 512^3 without fp16 normalizers,
+     * not implemented here -- see the plan's C1 section. */
+    cl_mem *d_bp_ones = (cl_mem *)malloc((size_t)S * sizeof(cl_mem));
+    for (int s = 0; s < S; s++) {
+        d_bp_ones[s] = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
+        CL_CHECK(err, "d_bp_ones[s] opt");
+    }
 
     /* local mem for angle_cs LUT cache in bp_opt */
     size_t lmem_bytes = (size_t)np * sizeof(cl_float2);
@@ -1272,7 +1350,11 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
 
     /* d_proj_meas stays raw — cone weight applied to ratio after divide, matching Python */
 
-    /* ── bp_ones: preprocess all-ones → image, run bp_opt ── */
+    /* ── bp_ones: preprocess all-ones → image, run bp_opt once per subset ──
+     * perf-v2 Phase C1: total precompute cost across all S subsets equals
+     * one full-angle bp_ones (each subset only sums its own 1/S of the
+     * angles) -- the ones_img/preprocess step is subset-independent and
+     * done once; only the bp_opt call and its ip_start/ip_count vary. */
     {
         cl_mem d_ones_raw  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
         CL_CHECK(err,"d_ones_raw opt");
@@ -1282,9 +1364,6 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         clEnqueueFillBuffer(cl->queue, d_ones_raw, &one, sizeof(float), 0, proj_bytes, 0, NULL, NULL);
         run_preprocess(cl, p, d_ones_raw, d_ones_prep);  /* fused: cone_weight + flip + transpose */
         clReleaseMemObject(d_ones_raw);
-
-        float zero=0.f;
-        clEnqueueFillBuffer(cl->queue,d_bp_ones,&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
 
         cl_image_desc idesc={0};
         idesc.image_type=CL_MEM_OBJECT_IMAGE2D_ARRAY;
@@ -1299,13 +1378,16 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         CL_CHECK(err,"CopyBufferToImage ones_prep opt");
         clReleaseMemObject(d_ones_prep);
 
-        {
+        for (int s = 0; s < S; s++) {
+            float zero=0.f;
+            clEnqueueFillBuffer(cl->queue,d_bp_ones[s],&zero,sizeof(float),0,vol_bytes,0,NULL,NULL);
+
             cl_kernel k = cl->k_bp_opt;
             float SOD=(float)p->SOD,SDD=(float)p->SDD;
             float vs=(float)p->voxelSize,px=(float)p->pixelSize;
             clSetKernelArg(k,0,sizeof(cl_mem),&ones_img);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_ang_cs);
-            clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
+            clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones[s]);
             clSetKernelArg(k,3,lmem_bytes,NULL);
             clSetKernelArg(k,4,sizeof(int),&Nxz);
             clSetKernelArg(k,5,sizeof(int),&Ny);
@@ -1316,6 +1398,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,10,sizeof(float),&SDD);
             clSetKernelArg(k,11,sizeof(float),&vs);
             clSetKernelArg(k,12,sizeof(float),&px);
+            clSetKernelArg(k,13,sizeof(int),&subset_start[s]);
+            clSetKernelArg(k,14,sizeof(int),&subset_count[s]);
             size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
             size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
             {
@@ -1331,9 +1415,9 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ones");
         }
-        clFinish(cl->queue);  /* wait for bp_opt(ones) before epoch loop */
+        clFinish(cl->queue);  /* wait for all subsets' bp_ones before epoch loop */
         clReleaseMemObject(ones_img);
-        printf("  bp_opt(ones) computed.\n");
+        printf("  bp_opt(ones) computed (%d subset%s).\n", S, S==1?"":"s");
     }
 
     int proj_n = np*H*W;
@@ -1394,107 +1478,136 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     float *v_prev_host = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
     float *v_cur_host  = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
 
+    /*
+     * perf-v2 Phase C1 (OSEM): one epoch = one full pass over all S
+     * subsets. S=1 makes the inner loop run exactly once with
+     * ip_start=0/ip_count=np, i.e. byte-identical to the pre-OSEM
+     * MLEM loop -- the only structural difference from before is this
+     * added (degenerate, S=1) inner loop.
+     *
+     * fp is still computed over the FULL angle range every
+     * sub-iteration (via vol_img, which holds the current whole
+     * volume) -- OSEM restricts which angles' DATA feed the update,
+     * not how fp is computed; only the ratio/bp/update stage uses the
+     * subset's ip_start/ip_count. Practically this means fp_image
+     * still does a full pass each sub-iteration rather than a 1/S
+     * pass -- an accepted cost of this implementation, not a
+     * correctness issue (fp(v) for angles outside the subset is wasted
+     * work this sub-iteration, but harmless: the divide+bp+update
+     * below only reads the subset's slice of ratio_img).
+     */
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
 
-        if (conv_log)
-            clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
-                                 (size_t)vol_n * sizeof(float), v_prev_host, 0, NULL, NULL);
+        for (int s = 0; s < S; s++) {
+            int ip_start = subset_start[s];
+            int ip_count = subset_count[s];
 
-        if (p->use_half_vol) {
-            /* ── float d_vol → vol_img (GPU-side, no PCIe) ── */
-            size_t origin[3]={0,0,0};
-            size_t region[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
-            cl_kernel k = cl->k_f2h;
-            clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
-            clSetKernelArg(k, 1, sizeof(cl_mem), &d_vol_half);
-            clSetKernelArg(k, 2, sizeof(int),    &vol_n);
-            size_t gws = ((size_t)vol_n + 255) / 256 * 256;
-            size_t lws = 256;
-            err = clEnqueueNDRangeKernel(cl->queue, k, 1, NULL, &gws, &lws, 0, NULL, NULL);
-            CL_CHECK(err,"float_to_half vol");
-            err=clEnqueueCopyBufferToImage(cl->queue, d_vol_half, vol_img,
-                                           0, origin, region, 0,NULL,NULL);
-            CL_CHECK(err,"CopyBufferToImage vol half");
-        }
-        /* float32 mode: no copy needed here -- vol_img was seeded before
-         * the loop and is kept current by vol_update_img at the end of
-         * every epoch (Phase B4). */
-        run_fp_image(cl, p, vol_img, d_proj_b);
+            if (conv_log && s == 0)
+                clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
+                                     (size_t)vol_n * sizeof(float), v_prev_host, 0, NULL, NULL);
 
-        if (conv_log)
-            clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
-                                 (size_t)proj_n * sizeof(float), b_host, 0, NULL, NULL);
+            if (p->use_half_vol) {
+                /* ── float d_vol → vol_img (GPU-side, no PCIe) ── */
+                size_t origin[3]={0,0,0};
+                size_t region[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
+                cl_kernel k = cl->k_f2h;
+                clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
+                clSetKernelArg(k, 1, sizeof(cl_mem), &d_vol_half);
+                clSetKernelArg(k, 2, sizeof(int),    &vol_n);
+                size_t gws = ((size_t)vol_n + 255) / 256 * 256;
+                size_t lws = 256;
+                err = clEnqueueNDRangeKernel(cl->queue, k, 1, NULL, &gws, &lws, 0, NULL, NULL);
+                CL_CHECK(err,"float_to_half vol");
+                err=clEnqueueCopyBufferToImage(cl->queue, d_vol_half, vol_img,
+                                               0, origin, region, 0,NULL,NULL);
+                CL_CHECK(err,"CopyBufferToImage vol half");
+            }
+            /* float32 mode: no copy needed here -- vol_img was seeded before
+             * the loop and is kept current by vol_update_img at the end of
+             * every sub-iteration (Phase B4). fp still covers the full
+             * angle range -- see function-level comment above. */
+            run_fp_image(cl, p, vol_img, d_proj_b, 0, np);
 
-        /* perf-v2 Phase B1+B2: fuses ratio=p0/b with cone_weight+flip+
-         * transpose+write-to-image into one kernel -- no d_ratio
-         * intermediate buffer, no buffer->image copy (was ~0.80GB/epoch
-         * at 512^3 plus two kernel launches). Same math, same values. */
-        run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img);
+            if (conv_log && s == 0)
+                clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
+                                     (size_t)proj_n * sizeof(float), b_host, 0, NULL, NULL);
 
-        /* ── bp_opt(ratio_img) ── */
-        {
-            cl_kernel k = cl->k_bp_opt;
-            clSetKernelArg(k,0,sizeof(cl_mem),&ratio_img);
-            clSetKernelArg(k,1,sizeof(cl_mem),&d_ang_cs);
-            clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ratio);
-            clSetKernelArg(k,3,lmem_bytes,NULL);
-            clSetKernelArg(k,4,sizeof(int),&Nxz);
-            clSetKernelArg(k,5,sizeof(int),&Ny);
-            clSetKernelArg(k,6,sizeof(int),&W);
-            clSetKernelArg(k,7,sizeof(int),&H);
-            clSetKernelArg(k,8,sizeof(int),&np);
-            clSetKernelArg(k,9,sizeof(float),&SOD);
-            clSetKernelArg(k,10,sizeof(float),&SDD);
-            clSetKernelArg(k,11,sizeof(float),&vs);
-            clSetKernelArg(k,12,sizeof(float),&px);
-            size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
-            size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
+            /* perf-v2 Phase B1+B2: fuses ratio=p0/b with cone_weight+flip+
+             * transpose+write-to-image into one kernel -- no d_ratio
+             * intermediate buffer, no buffer->image copy (was ~0.80GB/epoch
+             * at 512^3 plus two kernel launches). Same math, same values.
+             * Computed over the full angle range (ratio_img is shared by
+             * all subsets); bp below only reads the subset's slice. */
+            run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img);
+
+            /* ── bp_opt(ratio_img), this subset's angle range only ── */
             {
-                const char *bp_lws_env = getenv("BP_LWS");
-                if (bp_lws_env) {
-                    unsigned long a=4, b=4, c=16;
-                    if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
-                        lws[0]=a; lws[1]=b; lws[2]=c;
+                cl_kernel k = cl->k_bp_opt;
+                clSetKernelArg(k,0,sizeof(cl_mem),&ratio_img);
+                clSetKernelArg(k,1,sizeof(cl_mem),&d_ang_cs);
+                clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ratio);
+                clSetKernelArg(k,3,lmem_bytes,NULL);
+                clSetKernelArg(k,4,sizeof(int),&Nxz);
+                clSetKernelArg(k,5,sizeof(int),&Ny);
+                clSetKernelArg(k,6,sizeof(int),&W);
+                clSetKernelArg(k,7,sizeof(int),&H);
+                clSetKernelArg(k,8,sizeof(int),&np);
+                clSetKernelArg(k,9,sizeof(float),&SOD);
+                clSetKernelArg(k,10,sizeof(float),&SDD);
+                clSetKernelArg(k,11,sizeof(float),&vs);
+                clSetKernelArg(k,12,sizeof(float),&px);
+                clSetKernelArg(k,13,sizeof(int),&ip_start);
+                clSetKernelArg(k,14,sizeof(int),&ip_count);
+                size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
+                size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
+                {
+                    const char *bp_lws_env = getenv("BP_LWS");
+                    if (bp_lws_env) {
+                        unsigned long a=4, b=4, c=16;
+                        if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+                            lws[0]=a; lws[1]=b; lws[2]=c;
+                        }
                     }
                 }
+                for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
+                err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
+                CL_CHECK(err,"bp_opt ratio");
             }
-            for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
-            err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
-            CL_CHECK(err,"bp_opt ratio");
-        }
 
-        /* ── update (float4 vectorized) ──
-         * perf-v2 Phase B4: float32 mode uses vol_update_img, which also
-         * writes straight into vol_img (replacing the copy that used to
-         * run at the top of the NEXT epoch). --half keeps plain
-         * vol_update since its vol_img is refreshed via
-         * float_to_half+copy above instead. */
-        if (!p->use_half_vol) {
-            cl_kernel k = cl->k_update_img;
-            clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
-            clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
-            clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
-            clSetKernelArg(k,3,sizeof(cl_mem),&vol_img);
-            clSetKernelArg(k,4,sizeof(int),&Nxz);
-            clSetKernelArg(k,5,sizeof(int),&Ny);
-            clSetKernelArg(k,6,sizeof(int),&vol_n);
-            size_t gws=((size_t)vol_n + 3) / 4;
-            err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
-            CL_CHECK(err,"update_img opt");
-        } else {
-            cl_kernel k = cl->k_update;
-            clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
-            clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
-            clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
-            clSetKernelArg(k,3,sizeof(int),&vol_n);
-            size_t gws=((size_t)vol_n + 3) / 4;
-            err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
-            CL_CHECK(err,"update opt");
+            /* ── update (float4 vectorized), this subset's normalizer ──
+             * perf-v2 Phase B4: float32 mode uses vol_update_img, which
+             * also writes straight into vol_img (replacing the copy that
+             * used to run at the top of the NEXT sub-iteration). --half
+             * keeps plain vol_update since its vol_img is refreshed via
+             * float_to_half+copy above instead. */
+            if (!p->use_half_vol) {
+                cl_kernel k = cl->k_update_img;
+                clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
+                clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
+                clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones[s]);
+                clSetKernelArg(k,3,sizeof(cl_mem),&vol_img);
+                clSetKernelArg(k,4,sizeof(int),&Nxz);
+                clSetKernelArg(k,5,sizeof(int),&Ny);
+                clSetKernelArg(k,6,sizeof(int),&vol_n);
+                size_t gws=((size_t)vol_n + 3) / 4;
+                err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
+                CL_CHECK(err,"update_img opt");
+            } else {
+                cl_kernel k = cl->k_update;
+                clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
+                clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
+                clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones[s]);
+                clSetKernelArg(k,3,sizeof(int),&vol_n);
+                size_t gws=((size_t)vol_n + 3) / 4;
+                err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
+                CL_CHECK(err,"update opt");
+            }
         }
         clFinish(cl->queue);
         double t_ep_total = get_time_sec() - t_ep;
-        printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, t_ep_total);
+        printf("  epoch %3d/%d  %.3f s%s\n", epoch+1, epochs, t_ep_total,
+               (S>1) ? "  (S subsets)" : "");
 
         if (conv_log) {
             clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
@@ -1521,7 +1634,10 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     clReleaseMemObject(d_vol);
     clReleaseMemObject(d_proj_b);
     clReleaseMemObject(d_bp_ratio);
-    clReleaseMemObject(d_bp_ones);
+    for (int s = 0; s < S; s++) clReleaseMemObject(d_bp_ones[s]);
+    free(d_bp_ones);
+    free(subset_start);
+    free(subset_count);
     clReleaseMemObject(cl->d_R_mats);
     clReleaseMemObject(cl->d_T_vecs);
     free(ang_cs);

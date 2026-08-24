@@ -68,10 +68,27 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                      const float *proj_measured, float *volume,
                      int epochs, const char *conv_log);
 
-/* Optimized reconstruction (LUT + local mem + float4 + loop unroll) */
+/*
+ * Optimized reconstruction (LUT + local mem + float4 + loop unroll).
+ *
+ * perf-v2 Phase C1: subsets implements Ordered Subsets EM (OSEM).
+ * subsets=1 (default) is EXACTLY the pre-OSEM MLEM path -- no
+ * permutation, one full-angle normalizer, ip_start=0/ip_count=num_projs
+ * every sub-iteration. subsets=S>1 requires the caller to have already
+ * permuted p->angles AND proj_measured with the SAME permutation (see
+ * utils.h compute_osem_permutation/permute_projections_inplace) so that
+ * subset k is exactly the contiguous angle range
+ * [k*num_projs/S, (k+1)*num_projs/S).
+ *
+ * --epochs convention: one epoch is one full pass over all S subsets
+ * (S sub-iterations), matching plain MLEM's "one epoch = one full-angle
+ * update" in total work done, NOT in wall-clock number of volume
+ * updates -- --epochs 20 --subsets 5 does 100 sub-iterations total,
+ * the same fp/bp work as --epochs 100 --subsets 1.
+ */
 void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          const float *proj_measured, float *volume,
-                         int epochs, const char *conv_log);
+                         int epochs, const char *conv_log, int subsets);
 
 /*
  * perf-v2 Phase A2/A3 diagnostic: repeat one fixed fp_buffer angle-slab

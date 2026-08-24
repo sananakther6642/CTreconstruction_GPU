@@ -36,6 +36,19 @@ static float bilinear_buf(__global const float *img,
     return c00*(1-du)*(1-dv) + c10*du*(1-dv) + c01*(1-du)*dv + c11*du*dv;
 }
 
+/*
+ * perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+ * subrange instead of always summing all num_projs angles. Callers use
+ * ip_start=0, ip_count=num_projs for plain MLEM (--subsets 1, the
+ * default) -- identical to the pre-OSEM behavior. M_PI_F/num_projs is
+ * deliberately left as num_projs (not ip_count): it appears in both
+ * bp(ratio) and bp(ones) and cancels exactly in the v*=bp(ratio)/bp(ones)
+ * update regardless of which angle range is summed, so leaving it alone
+ * avoids a redundant rescale and keeps this kernel's only change the
+ * loop bounds. Requires the angle stack to have been permuted at load
+ * time (see utils.c compute_osem_permutation/permute_projections_inplace)
+ * so that subset k IS the contiguous range [ip_start, ip_start+ip_count).
+ */
 __kernel void bp_buffer(
     __global const float *proj,       /* [num_projs * W * H] cone-weighted */
     __constant float2    *angle_cs,   /* [num_projs] (.x=cos, .y=sin) */
@@ -48,7 +61,9 @@ __kernel void bp_buffer(
     float SOD,
     float SDD,
     float voxelSize,
-    float pixelSize
+    float pixelSize,
+    int   ip_start,
+    int   ip_count
 )
 {
     int ix = get_global_id(0);
@@ -66,7 +81,7 @@ __kernel void bp_buffer(
 
     float sum = 0.f;
 
-    for (int ip = 0; ip < num_projs; ip++) {
+    for (int ip = ip_start; ip < ip_start + ip_count; ip++) {
         float2 cs = angle_cs[ip];
         float ca = cs.x, sa = cs.y;
 
