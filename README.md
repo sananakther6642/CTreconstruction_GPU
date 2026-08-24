@@ -855,6 +855,34 @@ sound, but standalone log-domain momentum is not stable enough to use
 at any γ tested. Left in the tree at `γ=0` default (zero cost, honest
 negative result) rather than reverted.
 
+### SQS — evaluated, not implemented (C6)
+
+perf-v2 Phase C6. Separable Quadratic Surrogates was in scope as an
+alternative MLEM-acceleration algorithm; evaluated in writing per the
+plan rather than built, for four reasons:
+
+1. **Wrong objective.** SQS targets penalized *weighted least squares*.
+   This project's noise model is Poisson (photon-counting CT), which
+   MLEM/OSEM target directly. Using SQS here means optimizing the wrong
+   likelihood, not just a different algorithm for the same one.
+2. **New system-matrix machinery required.** SQS needs a precomputed
+   curvature volume, which means kernels that expose individual
+   system-matrix entries — nothing in the current fp/bp kernels does
+   this (they only ever produce the *projected* forward/back operators,
+   never per-ray-per-voxel weights). This is new kernel infrastructure,
+   not a parameter added to existing ones — unlike C1/C3/C5, which all
+   reused the existing fp/bp/vol_update kernels with small additions.
+3. **No capability gained.** SQS's headline property — guaranteed
+   monotone objective decrease — is a property plain MLEM already has.
+   There is nothing SQS adds on that axis for this project.
+4. **Worse convergence rate than what's already shipped.** SQS's
+   per-iteration convergence is typically slower than OSEM's, and OSEM
+   (C1) is implemented, validated, and measured in this repo already.
+
+Estimated cost to implement properly: 3+ days, for an algorithm that
+targets the wrong noise model and is expected to underperform the
+OSEM already in the tree. Not implemented.
+
 ## Optimizations
 
 | Optimization | Where | Effect |
