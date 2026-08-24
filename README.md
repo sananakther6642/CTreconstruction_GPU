@@ -159,11 +159,6 @@ make run-gpu-img-512 EPOCHS=100
 make run-gpu-opt-512 EPOCHS=100
 python3 validate.py 512
 
-# direct
-./build/ct_recon --data /lgrp/edu-2026-1-gpulab/proj_512_75.hdf5 \
-                 --out output.hdf5 --mode gpu-opt --epochs 100 \
-                 --samples 512 --kernels kernels
-
 # component tests (CPU only, isolate fp/bp correctness)
 make run-op-fp       # dumps fp_cpu.hdf5 (256³)
 make run-op-bp       # dumps bp_cpu.hdf5 (256³)
