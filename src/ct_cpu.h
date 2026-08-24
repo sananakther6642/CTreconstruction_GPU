@@ -28,8 +28,10 @@ void cone_weight_cpu(float *proj, const CBpara *p);
  * proj_measured: original measured projections [num_projs * H * W]
  * volume:        initial estimate (caller provides ones), output is here
  * epochs:        number of iterations
+ * conv_log: path for per-epoch convergence CSV (loglik/residual/rel_change),
+ *           or NULL to disable (default; no extra cost when NULL).
  */
 void reconstruct_cpu(const float *proj_measured, float *volume,
-                     const CBpara *p, int epochs);
+                     const CBpara *p, int epochs, const char *conv_log);
 
 #endif /* CT_CPU_H */

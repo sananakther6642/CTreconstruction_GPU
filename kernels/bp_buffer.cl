@@ -36,6 +36,19 @@ static float bilinear_buf(__global const float *img,
     return c00*(1-du)*(1-dv) + c10*du*(1-dv) + c01*(1-du)*dv + c11*du*dv;
 }
 
+/*
+ * perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+ * subrange instead of always summing all num_projs angles. Callers use
+ * ip_start=0, ip_count=num_projs for plain MLEM (--subsets 1, the
+ * default) -- identical to the pre-OSEM behavior. M_PI_F/num_projs is
+ * deliberately left as num_projs (not ip_count): it appears in both
+ * bp(ratio) and bp(ones) and cancels exactly in the v*=bp(ratio)/bp(ones)
+ * update regardless of which angle range is summed, so leaving it alone
+ * avoids a redundant rescale and keeps this kernel's only change the
+ * loop bounds. Requires the angle stack to have been permuted at load
+ * time (see utils.c compute_osem_permutation/permute_projections_inplace)
+ * so that subset k IS the contiguous range [ip_start, ip_start+ip_count).
+ */
 __kernel void bp_buffer(
     __global const float *proj,       /* [num_projs * W * H] cone-weighted */
     __constant float2    *angle_cs,   /* [num_projs] (.x=cos, .y=sin) */
@@ -48,7 +61,9 @@ __kernel void bp_buffer(
     float SOD,
     float SDD,
     float voxelSize,
-    float pixelSize
+    float pixelSize,
+    int   ip_start,
+    int   ip_count
 )
 {
     int ix = get_global_id(0);
@@ -66,7 +81,7 @@ __kernel void bp_buffer(
 
     float sum = 0.f;
 
-    for (int ip = 0; ip < num_projs; ip++) {
+    for (int ip = ip_start; ip < ip_start + ip_count; ip++) {
         float2 cs = angle_cs[ip];
         float ca = cs.x, sa = cs.y;
 
@@ -122,6 +137,61 @@ __kernel void preprocess_proj(
     /* flip H-axis, transpose, scale */
     float val = src[ip * H * W + (H - 1 - ih) * W + iw] * cw / voxelSize;
     dst[ip * W * H + iw * H + ih] = val;
+}
+
+/*
+ * divide_preprocess_img — fuses three former steps into one kernel:
+ *   1. proj_divide:      ratio = p0/b (with the same b>1e-3 guard)
+ *   2. preprocess_proj:  cone_weight + flip(H-axis) + transpose + /voxelSize
+ *   3. clEnqueueCopyBufferToImage: buffer -> ratio_img
+ * into a single pass that reads p0/b and writes straight into an
+ * image2d_array_t (width=H, height=W, depth=np).
+ *
+ * perf-v2 Phase B1+B2: the intermediate d_ratio and d_ratio_prep buffers
+ * were each write-once/read-once and never used anywhere else -- classic
+ * fusable intermediates, plus the buffer->image copy was pure data
+ * movement (~0.80GB/epoch at 512^3) the GPU already had the values for.
+ * Projection-side traffic per epoch drops from the original three steps'
+ * combined ~2.8x proj_bytes to this kernel's 2x (read p0, read b) -- the
+ * image write isn't counted as host-visible buffer traffic. Same
+ * divide-by-zero guard and same cone-weight/flip/transpose math as the
+ * kernels it replaces; only the fusion point moved, no arithmetic changed
+ * (see ct_gpu.c's run_divide_preprocess_img for the index-equivalence
+ * derivation against the original two-kernel version).
+ *
+ * Not float4-vectorized like proj_divide was: this kernel is 3D-indexed
+ * (iw,ih,ip) to match the flip+transpose, and on GCN a 64-wide wavefront
+ * issuing 64 consecutive scalar 4-byte loads along iw coalesces into the
+ * same memory transactions vload4 would -- no loss from dropping the
+ * explicit vectorization.
+ */
+__kernel void divide_preprocess_img(
+    __global const float *p0,
+    __global const float *b,
+    __write_only image2d_array_t dst,
+    int   W,
+    int   H,
+    float voxelSize,
+    float SDD,
+    float pixelSize
+)
+{
+    int iw = get_global_id(0);
+    int ih = get_global_id(1);
+    int ip = get_global_id(2);
+    if (iw >= W || ih >= H) return;
+
+    int src_idx = ip * H * W + (H - 1 - ih) * W + iw;
+    float p0v = p0[src_idx];
+    float bv  = b[src_idx];
+    float ratio = (bv > 1e-3f) ? p0v / bv : 0.f;
+
+    float u = (-(float)(iw - (W-1)*0.5f)) * pixelSize;
+    float v = (  (float)(ih - (H-1)*0.5f)) * pixelSize;
+    float cw = SDD / sqrt(SDD*SDD + u*u + v*v);
+
+    float val = ratio * cw / voxelSize;
+    write_imagef(dst, (int4)(ih, iw, ip, 0), (float4)(val, 0.f, 0.f, 0.f));
 }
 
 /*
@@ -198,6 +268,74 @@ __kernel void vol_update(
             float denom = bp_ones[j];
             if (denom > 1e-10f)
                 volume[j] *= bp_ratio[j] / denom;
+        }
+    }
+}
+
+/*
+ * vol_update_img — same update as vol_update, but also writes the result
+ * directly into vol_img (a 3D image), eliminating the separate
+ * clEnqueueCopyBufferToImage(d_vol -> vol_img) the epoch loop used to do
+ * right before fp_image's next call (~1.07GB/epoch at 512^3: 537MB read +
+ * 537MB write). Requires cl_khr_3d_image_writes (OpenCL 1.2 has no 3D
+ * read-write images without it) -- confirmed supported on this Hawaii
+ * device via perf-v2 Phase A7. float32 mode only; --half still uses the
+ * separate float_to_half + copy path since half-precision needs an
+ * actual format conversion this kernel doesn't do.
+ *
+ * perf-v2 Phase B4. Flat buffer index j decomposes as
+ * j = x*(Nxz*Ny) + y*Ny + z (matching the existing buffer layout), and
+ * the image is (width=Ny/z-axis, height=Nxz/y-axis, depth=Nxz/x-axis) --
+ * verified against fp_image.cl's own read_imagef(volume_img, samp,
+ * (zi,yi,xi)) coordinate convention. Since Ny (256 or 512) is always a
+ * multiple of 4, four consecutive flat indices in one vec4 always share
+ * the same (x,y) and differ only in z -- safe to decompose into four
+ * scalar write_imagef calls at (z,z+1,z+2,z+3) with the same (y,x).
+ */
+__kernel void vol_update_img(
+    __global       float *volume,
+    __global const float *bp_ratio,
+    __global const float *bp_ones,
+    __write_only image3d_t vol_img,
+    int Nxz,
+    int Ny,
+    int n
+)
+{
+    int i4 = get_global_id(0);
+    int base = i4 * 4;
+    if (base + 3 < n) {
+        float4 v  = vload4(i4, volume);
+        float4 br = vload4(i4, bp_ratio);
+        float4 bo = vload4(i4, bp_ones);
+        float4 out;
+        out.x = (bo.x > 1e-10f) ? v.x * br.x / bo.x : v.x;
+        out.y = (bo.y > 1e-10f) ? v.y * br.y / bo.y : v.y;
+        out.z = (bo.z > 1e-10f) ? v.z * br.z / bo.z : v.z;
+        out.w = (bo.w > 1e-10f) ? v.w * br.w / bo.w : v.w;
+        vstore4(out, i4, volume);
+
+        int x = base / (Nxz * Ny);
+        int rem = base % (Nxz * Ny);
+        int y = rem / Ny;
+        int z = rem % Ny;
+        write_imagef(vol_img, (int4)(z,   y, x, 0), (float4)(out.x, 0.f, 0.f, 0.f));
+        write_imagef(vol_img, (int4)(z+1, y, x, 0), (float4)(out.y, 0.f, 0.f, 0.f));
+        write_imagef(vol_img, (int4)(z+2, y, x, 0), (float4)(out.z, 0.f, 0.f, 0.f));
+        write_imagef(vol_img, (int4)(z+3, y, x, 0), (float4)(out.w, 0.f, 0.f, 0.f));
+    } else {
+        for (int j = base; j < n; j++) {
+            float denom = bp_ones[j];
+            float val = volume[j];
+            if (denom > 1e-10f) {
+                val = volume[j] * bp_ratio[j] / denom;
+                volume[j] = val;
+            }
+            int x = j / (Nxz * Ny);
+            int rem = j % (Nxz * Ny);
+            int y = rem / Ny;
+            int z = rem % Ny;
+            write_imagef(vol_img, (int4)(z, y, x, 0), (float4)(val, 0.f, 0.f, 0.f));
         }
     }
 }
