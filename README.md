@@ -144,7 +144,22 @@ the other modes' — see note below.
 > Not chased further given no root/`dmesg`/GPU sensor access on this
 > machine to directly confirm the driver-side mechanism, though the
 > reallocation-recovery evidence is strong indirect support.
-> Report a range, not a single number, when citing `gpu-buf` at 512³.
+> Report a range, not a single number, when citing `gpu-buf` at 512³
+> **on pool15-01/AMD Hawaii specifically.**
+>
+> **Cross-checked on different hardware — confirmed AMD-driver-specific,
+> not general.** The project's working machine later moved to `kale`
+> (NVIDIA GeForce GTX 680). Re-ran the exact same `--diag repeat-slab`
+> test that found this mechanism (`repeat-slab:64:8:40:20` — same angle
+> range, same repeat count, same mid-run reallocation point) there.
+> Result: **completely flat across all 40 repeats**, ~0.796-0.797s every
+> single time, `wall≈gpu` throughout, no change after the reallocation
+> at rep 21 (nothing to recover from). The variance does not reproduce
+> on NVIDIA's driver stack at all. This is a clean, decisive negative
+> result: the mechanism is genuinely AMD-driver-specific behavior, not a
+> universal OpenCL/GPU phenomenon this codebase needs to defend against.
+> `gpu-buf` on kale needs no variance mitigation and can be reported as
+> a single stable number, unlike pool15-01.
 >
 > These 10-epoch numbers aren't yet re-confirmed at 100 epochs — worth
 > doing before citing final numbers in a report; `gpu-img`/`gpu-opt`
