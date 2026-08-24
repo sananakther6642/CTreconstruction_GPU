@@ -761,6 +761,59 @@ for a real win; skip it when already using OSEM (`--subsets >1`) — it
 adds ~0.8s of setup for no measured benefit there, and a slight measured
 cost by epoch 20.**
 
+### OSL-MLEM with a Huber prior — `--beta B`, image quality on sparse views
+
+perf-v2 Phase C3. One-Step-Late MLEM (Green 1990): `v *= bp_ratio /
+(bp_ones + beta_eff·prior_grad)` instead of plain `v *= bp_ratio/bp_ones`.
+`prior_grad` is a 6-neighbour Huber-potential gradient (quadratic below
+`--beta-delta`, linear-and-bounded above it — edge-preserving, no TV
+staircasing), read from the plain volume buffer (exact integer
+neighbours, no benefit from the image sampler's interpolation here).
+`beta_eff = beta/subsets`, so the penalty is applied once per epoch's
+worth of work under OSEM, not once per sub-iteration. `--beta 0`
+(default) runs the original unregularized `vol_update`/`vol_update_img`
+kernels completely unchanged — not a `beta=0` branch of new code, the
+literal pre-C3 code path — confirmed byte-identical
+(`max abs diff: 0.0`) in testing. `gpu-opt` only; refused at the CLI for
+other modes. Overhead is negligible (~7.3-7.5s vs ~7.3s baseline at 50
+epochs, 256³ — well under the plan's 10% budget).
+
+**Calibration was not obvious and needed measuring, not guessing.** An
+initial sweep at `--beta` ∈ {1e-3, 1e-2, 1e-1} (chosen by analogy to
+typical regularization weights) showed the *correct direction* — total
+variation decreased monotonically — but a *negligible magnitude*
+(changes only in the 4th decimal place). Root cause: `bp_ones`'s real
+scale was never measured. Added a diagnostic (`PRINT_BP_ONES_STATS=1`)
+and found `bp_ones ≈ 364–443` (mean 413) at 256³ — `beta*prior_grad`
+needs to be a meaningful *fraction* of that to matter, and Huber-clipped
+gradients are bounded by `±beta_delta` (default 0.01) per neighbour, so
+the original β range was roughly 4 orders of magnitude too small.
+
+**Re-swept at the corrected scale** (`--beta` ∈ {100, 1000, 5000}, 256³,
+50 epochs, against the `bp_ones≈413` calibration), measuring total
+variation (mean absolute neighbour difference, a roughness proxy) and a
+40³ central-region std-dev:
+
+| β | Total variation | Center std | Global max | Verdict |
+|---|---|---|---|---|
+| 0 | 0.006880 | 0.119440 | 1.7489 | baseline |
+| 100 | 0.005074 (**−26%**) | 0.112110 | 1.5856 | clean smoothing |
+| 1000 | 0.003460 (**−50%**) | 0.091516 | 1.8698 | strongest clean result |
+| 5000 | 0.019694 (**+186%**) | 0.248329 | 2.7265 | **unstable — overshoot** |
+
+No NaN/inf at any β tested — the mandatory denominator clamp held even
+in the unstable case, preventing an outright blow-up, but β=5000's total
+variation and center std both *increased* well past baseline (worse,
+not better) and its global max jumped to 2.73 from a baseline ~1.75 —
+a real, measured OSL failure mode (the plan's flagged "negative/near-zero
+denominator" risk, manifesting here as an overshoot rather than a NaN
+once the clamp is in place). **β=1000 is the strongest clean result
+found; β between 100 and 1000 is the working range at 256³ with
+`--beta-delta` at its default 0.01 — β=5000 is confirmed past the
+stability edge.** Sweep `--beta-delta` too before trusting these exact
+values on a different dataset/scale — it wasn't re-tuned here, only its
+default was used throughout.
+
 ## Optimizations
 
 | Optimization | Where | Effect |
