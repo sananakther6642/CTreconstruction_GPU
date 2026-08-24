@@ -15,7 +15,7 @@ Project methodology narrative: `sessions/2026-08-25-project-methodology-start-to
 | Mode | 256³ time/epoch | 512³ time/epoch | Speedup vs CPU |
 |---|---|---|---|
 | `cpu` | 2.60 s | 22.9-23.3 s | 1× |
-| `gpu-buf` | 0.44 s | 4.87-10.19 s (run-to-run variance, AMD-specific) | 5.9× / 2.3-4.8× |
+| `gpu-buf` | 0.44 s | 4.87-10.19 s (run-to-run variance, AMD-specific) | 5.9× / 2.2-4.8× |
 | `gpu-img` | 0.095 s | 0.870-0.876 s | 27.4× / 26.6× |
 | `gpu-opt` | 0.093 s | 0.873-0.879 s | 28.0× / 26.5× |
 
@@ -47,7 +47,7 @@ writeup in the session log.
 
 Earlier full-scale validation run, on the original AMD hardware — MSE
 values here differ slightly from the kale numbers in Performance above
-(different GPU, different texture-sampler rounding), not a regression.
+(different GPU — likely different texture-sampler rounding, not verified), not a regression.
 
 ### 256³
 ```
@@ -233,9 +233,10 @@ for each epoch (= one pass over all N subsets):
 | 36s | −480,652 (plateaued) | −479,610 | −479,580 | −478,964 | **−478,571** |
 
 S=1 plateaus by ~20s (100-epoch ceiling). Every OSEM config keeps
-improving through 36s, never plateaus. S=25 is worst before ~10s
-(sub-iteration overhead) but wins from ~15s on. Report the
-time-matched curve, not a single "best S."
+improving through 36s, never plateaus. S=15 leads at 10s, S=25 is a
+close second there (sub-iteration overhead still amortizing) but
+overtakes and wins clearly from 15s on. Report the time-matched curve,
+not a single "best S."
 
 ## Optimizations
 
