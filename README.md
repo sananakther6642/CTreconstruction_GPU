@@ -38,8 +38,8 @@ The tables above are `pool15-01` (AMD Hawaii) at 10-epoch scale, from
 earlier in the project. Work has since moved to `kale` (NVIDIA GTX 680,
 Kepler architecture) as the standing development machine — a different
 GPU vendor/architecture, so none of the AMD-tuned work-group values
-transfer directly (re-tuned separately, see "gpu-buf variance confirmed
-AMD-driver-specific" below). These are full 100-epoch runs, matching the
+transfer directly (re-tuned separately — see the `gpu-buf` variance note
+below). These are full 100-epoch runs, matching the
 epoch count actually used for the report's convergence/quality claims,
 not a 10-epoch spot-check.
 
@@ -443,7 +443,7 @@ in `sessions/2026-08-25-readme-cleanup-investigation-log.md`.
 | Half-precision `vol_img` (`CL_HALF_FLOAT`, opt-in via `--half`) | `fp_image.cl`, `ct_gpu.c` | halves texture bandwidth for volume reads; float\_to\_half kernel on GPU, no PCIe roundtrip; ~3-decimal-digit accuracy cost, so off by default |
 | AABB slab ray clipping (gated W>512) | `fp_image.cl`, `fp_buffer.cl` | tightens per-ray sample range on large detectors; skips empty cone-beam edge rays |
 | `native_recip` in bp kernels | `bp_buffer_opt.cl`, `bp_buffer.cl`, `bp_image.cl` | hardware SFU reciprocal, ~4× faster than IEEE division |
-| ~~Unroll-x2 gated Nxz≥512~~ (removed) | `bp_buffer_opt.cl` | tried, measured harmful on this GPU — see "gpu-opt vs gpu-img" below |
+| ~~Unroll-x2 gated Nxz≥512~~ (removed) | `bp_buffer_opt.cl` | tried, measured harmful on this GPU — see "gpu-opt vs gpu-img" above |
 | OMP\_NUM\_THREADS=nproc | `Makefile` cpu targets | uses all available cores on lab node |
 | Ray tiling (`FP_TILE`, sample-index-outer loop) | `fp_cpu` | groups neighboring rays' 8-tap gathers close in time for cache reuse; 2.1× on fp_cpu at 512³ when introduced (tile=8), later swept to 32 for a further ~19% |
 | `schedule(guided,4)` | `fp_cpu` | lower scheduling overhead than `dynamic` at 512³'s larger iteration count (75×1120=84000 work items), still handles AABB-clipped load imbalance |
