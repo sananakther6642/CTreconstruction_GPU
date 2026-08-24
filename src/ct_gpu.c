@@ -854,6 +854,13 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     size_t lws[3] = {8, 32, 1};
     /* FP_IMAGE_LWS=X,Y,Z overrides the work-group shape for further
      * sweeping without a rebuild. */
+    /* perf-v2: re-swept on kale (NVIDIA GTX 680, 32-wide warp) after the
+     * hardware switch from pool15-01. Unlike fp_buffer, this shape did
+     * NOT need re-tuning -- {8,32,1} (the Hawaii-era default) is still
+     * the best on kale too. Swept {2,32,1}/{2,16,2}/{4,32,1}/{1,32,1}/
+     * {4,16,1} at 256^3, gpu-opt, 10 epochs: every alternative was
+     * worse (4,32,1 closest at -6.5%, 1,32,1 catastrophic at -87%
+     * i.e. nearly 2x slower). Negative result, kept as-is. */
     const char *lws_env = getenv("FP_IMAGE_LWS");
     if (lws_env) {
         unsigned long a=8, b=32, c=1;
