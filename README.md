@@ -32,6 +32,48 @@ the other modes' — see note below.
 
 **Hardware:** Intel Core i7-5820K @ 3.30GHz (12 logical cores) · AMD Hawaii PRO (Radeon R9 290/390, 2560 shaders, 2.56 TFLOPS) · `pool15-01.cis.iti.uni-stuttgart.de`
 
+### Current hardware: kale (NVIDIA GTX 680), 100-epoch confirmed numbers
+
+The tables above are `pool15-01` (AMD Hawaii) at 10-epoch scale, from
+earlier in the project. Work has since moved to `kale` (NVIDIA GTX 680,
+Kepler architecture) as the standing development machine — a different
+GPU vendor/architecture, so none of the AMD-tuned work-group values
+transfer directly (re-tuned separately, see "gpu-buf variance confirmed
+AMD-driver-specific" below). These are full 100-epoch runs, matching the
+epoch count actually used for the report's convergence/quality claims,
+not a 10-epoch spot-check.
+
+**256³** (512×512 detector, 75 angles):
+
+| Mode | Time/epoch (steady) | Total (100 epochs) | Speedup vs CPU |
+|---|---|---|---|
+| `cpu` (24-thread OpenMP) | ~4.20s | 423.86s | 1× |
+| `gpu-buf` | 0.855-0.860s | 86.46s | **4.9×** |
+| `gpu-img` | 0.142-0.148s | 14.67s | **28.9×** |
+| `gpu-opt` | 0.138-0.143s | 14.29s | **29.7×** |
+
+**512³** (1120×1184 detector, 75 angles):
+
+| Mode | Time/epoch (steady) | Total (100 epochs) | Speedup vs CPU |
+|---|---|---|---|
+| `cpu` (24-thread OpenMP) | ~34s | 3415.58s | 1× |
+| `gpu-buf` | 7.13-7.20s | 722.59s | **4.7×** |
+| `gpu-img` | 1.226-1.256s | 126.74s | **27.0×** |
+| `gpu-opt` | 1.226-1.245s | 125.77s | **27.2×** |
+
+**Hardware:** Intel Xeon E5-2620 0 @ 2.00GHz (24 logical cores) · NVIDIA
+GeForce GTX 680 (Kepler, no `cl_khr_fp16` — `--half` unavailable on this
+card) · `kale.cis.iti.uni-stuttgart.de`
+
+Validated at both scales (`validate.py` / `validate.py 512`): all four
+modes agree, no NaN/inf. 256³: MSE vs CPU `1.148e-10` (`gpu-buf`),
+`1.128e-07` (`gpu-img`/`gpu-opt`). 512³: MSE vs CPU `9.534e-11`
+(`gpu-buf`), `1.232e-09` (`gpu-img`/`gpu-opt`).
+
+OSEM (`--subsets 5`), 256³, 100 epochs: 57.17s total (~0.57s/epoch
+steady state) — scales with subset count as expected (~5× a single
+sub-iteration's angle-range cost, since one epoch is 5 sub-iterations).
+
 > **Two more sweeps landed, both confirmed at matched 10-epoch runs with
 > correctness validated (`validate.py` at the float32 noise floor, both
 > scales):**
