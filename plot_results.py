@@ -31,17 +31,28 @@ def plot_convergence():
                 logliks.append(float(row["loglik"]))
         # time_s is per-epoch elapsed, not cumulative -- integrate
         cum_t = np.cumsum(times)
+        # epoch 1 is a cold-start value (~-2e7) that dwarfs the converged
+        # range (~-4.8e5 to -6e5) on a linear axis -- drop it, matching the
+        # 10s-onward window already used in the OSEM report table.
+        cum_t, logliks = cum_t[1:], logliks[1:]
         label = "S=1 (plain MLEM)" if s == 1 else f"S={s}"
         ax.plot(cum_t, logliks, label=label, linewidth=1.6)
 
     ax.set_xlabel("Wall-clock time (s)")
     ax.set_ylabel("Poisson log-likelihood")
     ax.set_title("OSEM convergence: log-likelihood vs wall-clock (256³, 100 epochs)")
+    ax.set_xlim(0, 40)  # early crossover window; full runs go to ~280s (S=1)
     ax.legend(loc="lower right")
     ax.grid(alpha=0.3)
     fig.tight_layout()
     fig.savefig("convergence.png", dpi=150)
     print("Saved: convergence.png")
+
+    # full-range companion plot, no x cap, so the S=1 plateau is visible
+    # against the whole 100-epoch horizon
+    ax.set_xlim(auto=True)
+    fig.savefig("convergence_full.png", dpi=150)
+    print("Saved: convergence_full.png")
 
 
 def plot_slices():
