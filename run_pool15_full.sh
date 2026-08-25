@@ -76,5 +76,11 @@ python3 validate.py     2>&1 | tee "$OUT/validate_256.txt" || true
 python3 validate.py 512 2>&1 | tee "$OUT/validate_512.txt" || true
 
 echo ""
+echo "=== plotting figures (--source pool15) ==="
+python3 plot_results.py mlem --source pool15 2>&1 | tee "$OUT/plot_mlem.log" || true
+python3 plot_results.py slices --source pool15 2>&1 | tee "$OUT/plot_slices.log" || true
+mv -f mlem_convergence_*_pool15.png slices_*_pool15.png "$OUT/" 2>/dev/null || true
+
+echo ""
 echo "=== done. Everything under $OUT/ ==="
 find "$OUT" -type f | sort
