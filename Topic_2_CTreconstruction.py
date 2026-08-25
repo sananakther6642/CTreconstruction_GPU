@@ -222,27 +222,36 @@ if __name__ == '__main__':
             }
 
         projection_0=f['Projection'][:,:,:]
-        v0=np.ones((Volumen_num_xz,Volumen_num_xz,Volumen_num_xz)).astype(np.float32)
-       
-    
+        # was (Volumen_num_xz,Volumen_num_xz,Volumen_num_xz) -- z-axis must
+        # use Volumen_num_y, matching bp_func's own reconstructed array shape
+        # (line 42) and every other axis-size use in this file. Latent on
+        # the cubic datasets actually used here, fixed for correctness.
+        v0=np.ones((Volumen_num_xz,Volumen_num_xz,Volumen_num_y)).astype(np.float32)
+
+
         proj_f= lambda vol: fp_func(cb_para, vol,sample_ratio=2)
         bp_f = lambda projection:  bp_func(projection,cb_para)
 
         ## input parameters, (which can be load later)
         Epochs=100   # can choose any number until get good reconstruction results
 
+        # bp(ones) is the MLEM normalizer -- it does not depend on v0 and is
+        # identical every epoch. Was recomputed inside the loop 100 times;
+        # hoisted out to match how the C/GPU implementations in this project
+        # compute it once before the iterative loop.
+        bp_ones = bp_f(np.ones_like(projection_0))
 
         for i in range(Epochs):
-            b=proj_f(v0) 
+            b=proj_f(v0)
             result = np.divide( projection_0,b, out=np.zeros_like( projection_0), where=(b != 0))
-            ratio=bp_f( result  )/bp_f(np.ones_like(projection_0))
+            ratio=bp_f( result  )/bp_ones
             v0*=ratio
-          
+
         # save v0  to a hdf5 file
-        out_path=...
+        out_path = 'output_python_reconstruction.hdf5'  # was '...' (Ellipsis) -- crashed on save
         with h5py.File(out_path,'w') as file:
             file.create_dataset('voxelSize', data=voxelSize)
-            file.create_dataset('Volume', data=v0)  
+            file.create_dataset('Volume', data=v0)
 
 
 
