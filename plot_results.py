@@ -2,24 +2,30 @@
 """
 Report figures: OSEM convergence, plain-MLEM convergence (all modes,
 both dataset sizes), and reconstructed slice visualization (both
-sizes). Run after run_convergence_sweep.sh has produced conv_csv/*.csv,
-and after generating output_*.hdf5 / output_*_512.hdf5 via the normal
-make targets.
+sizes). Works against either kale's layout (run_convergence_sweep.sh,
+conv_csv/*.csv + output_*.hdf5 in cwd) or pool15-01's layout
+(run_pool15_full.sh, pool15/conv_csv/*.csv + pool15/hdf5/*.hdf5).
 
 Usage:
-  python3 plot_results.py osem        # conv_csv/osem_s*.csv -> convergence.png / convergence_full.png
-  python3 plot_results.py mlem        # conv_csv/mlem_*.csv -> mlem_convergence_256.png / _512.png
-  python3 plot_results.py slices      # output_*.hdf5 -> slices_256.png / slices_diff_256.png
-  python3 plot_results.py slices512   # output_*_512.hdf5 -> slices_512.png / slices_diff_512.png
-  python3 plot_results.py all
+  python3 plot_results.py osem                        # kale, 256^3 OSEM sweep only (pool15 has no OSEM data)
+  python3 plot_results.py mlem   [--source pool15]
+  python3 plot_results.py slices [--source pool15] [--scale 256|512]
+  python3 plot_results.py all    [--source pool15]
+
+--source kale (default): conv_csv/mlem_{scale}_{mode}.csv, output_{mode}{_512}.hdf5
+--source pool15:         pool15/conv_csv/{mode}_{scale}.csv, pool15/hdf5/{mode}_{scale}.hdf5
+Output filenames get a suffix matching --source (kale runs stay
+unsuffixed for backward compatibility with earlier report drafts).
 """
-import sys
+import argparse
 import csv
 import numpy as np
 import h5py
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+MODES = ["cpu", "gpu-buf", "gpu-img", "gpu-opt"]
 
 
 def _read_csv(path):
@@ -34,7 +40,28 @@ def _read_csv(path):
     return cum_t[1:], logliks[1:]
 
 
-def plot_osem_convergence():
+def _suffix(source):
+    return "" if source == "kale" else f"_{source}"
+
+
+def _mlem_csv_path(source, scale, mode):
+    if source == "kale":
+        return f"conv_csv/mlem_{scale}_{mode}.csv"
+    return f"{source}/conv_csv/{mode}_{scale}.csv"
+
+
+def _hdf5_path(source, scale, mode):
+    if source == "kale":
+        suffix = "" if scale == "256" else "_512"
+        return f"output_{mode.replace('-', '_')}{suffix}.hdf5"
+    return f"{source}/hdf5/{mode}_{scale}.hdf5"
+
+
+def plot_osem_convergence(source="kale"):
+    if source != "kale":
+        print("OSEM sweep is kale/gpu-opt/256^3 only (pool15-01 has no OSEM "
+              "data) -- skipping osem for --source", source)
+        return
     configs = [1, 3, 5, 15, 25]
     fig, ax = plt.subplots(figsize=(8, 5.5))
     for s in configs:
@@ -57,38 +84,42 @@ def plot_osem_convergence():
     print("Saved: convergence.png")
 
 
-def plot_mlem_convergence():
-    modes = ["cpu", "gpu-buf", "gpu-img", "gpu-opt"]
+def plot_mlem_convergence(source="kale"):
+    suf = _suffix(source)
+    hw_label = "AMD Hawaii PRO / pool15-01" if source == "pool15" else "kale"
     for scale in ("256", "512"):
         fig, ax = plt.subplots(figsize=(8, 5.5))
-        for mode in modes:
-            key = mode.replace("-", "_")
-            path = f"conv_csv/mlem_{scale}_{mode}.csv"
-            cum_t, logliks = _read_csv(path)
+        for mode in MODES:
+            path = _mlem_csv_path(source, scale, mode)
+            try:
+                cum_t, logliks = _read_csv(path)
+            except FileNotFoundError:
+                print(f"  missing {path}, skipping {mode} in this plot")
+                continue
             ax.plot(cum_t, logliks, label=mode, linewidth=1.6)
         ax.set_xlabel("Wall-clock time (s)")
         ax.set_ylabel("Poisson log-likelihood")
-        ax.set_title(f"Plain MLEM convergence, all modes ({scale}³, 100 epochs)")
+        ax.set_title(f"Plain MLEM convergence, all modes ({scale}³, 100 epochs, {hw_label})")
         ax.legend(loc="lower right")
         ax.grid(alpha=0.3)
         fig.tight_layout()
-        out = f"mlem_convergence_{scale}.png"
+        out = f"mlem_convergence_{scale}{suf}.png"
         fig.savefig(out, dpi=150)
         print(f"Saved: {out}")
 
 
-def plot_slices(scale="256"):
-    suffix = "" if scale == "256" else "_512"
-    files = {
-        "cpu":     f"output_cpu{suffix}.hdf5",
-        "gpu-buf": f"output_gpu_buf{suffix}.hdf5",
-        "gpu-img": f"output_gpu_img{suffix}.hdf5",
-        "gpu-opt": f"output_gpu_opt{suffix}.hdf5",
-    }
+def plot_slices(source="kale", scale="256"):
+    suf = _suffix(source)
+    hw_label = "AMD Hawaii PRO / pool15-01" if source == "pool15" else "kale"
     vols = {}
-    for name, path in files.items():
-        with h5py.File(path, "r") as f:
-            vols[name] = f["Volume"][:]
+    for mode in MODES:
+        path = _hdf5_path(source, scale, mode)
+        try:
+            with h5py.File(path, "r") as f:
+                vols[mode] = f["Volume"][:]
+        except FileNotFoundError:
+            print(f"  missing {path}, skipping slices for {scale}^3 ({source})")
+            return
 
     ref = vols["cpu"]
     mid = ref.shape[2] // 2
@@ -100,9 +131,9 @@ def plot_slices(scale="256"):
         ax.set_title(name)
         ax.axis("off")
         plt.colorbar(im, ax=ax, fraction=0.046)
-    fig.suptitle(f"Reconstructed volume, middle slice (z={mid}), {scale}³")
+    fig.suptitle(f"Reconstructed volume, middle slice (z={mid}), {scale}³, {hw_label}")
     fig.tight_layout()
-    out = f"slices_{scale}.png"
+    out = f"slices_{scale}{suf}.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     print(f"Saved: {out}")
 
@@ -114,20 +145,27 @@ def plot_slices(scale="256"):
         ax.set_title(f"cpu - {name}")
         ax.axis("off")
         plt.colorbar(im, ax=ax, fraction=0.046)
-    fig2.suptitle(f"Difference maps vs CPU reference (middle slice), {scale}³")
+    fig2.suptitle(f"Difference maps vs CPU reference (middle slice), {scale}³, {hw_label}")
     fig2.tight_layout()
-    out2 = f"slices_diff_{scale}.png"
+    out2 = f"slices_diff_{scale}{suf}.png"
     fig2.savefig(out2, dpi=150, bbox_inches="tight")
     print(f"Saved: {out2}")
 
 
 if __name__ == "__main__":
-    mode = sys.argv[1] if len(sys.argv) > 1 else "all"
-    if mode in ("osem", "all"):
-        plot_osem_convergence()
-    if mode in ("mlem", "all"):
-        plot_mlem_convergence()
-    if mode in ("slices", "all"):
-        plot_slices("256")
-    if mode in ("slices512", "all"):
-        plot_slices("512")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("what", choices=["osem", "mlem", "slices", "all"], default="all", nargs="?")
+    parser.add_argument("--source", default="kale", choices=["kale", "pool15"],
+                         help="which machine's data to plot (default: kale)")
+    parser.add_argument("--scale", default=None, choices=["256", "512"],
+                         help="for 'slices': only this scale (default: both)")
+    args = parser.parse_args()
+
+    if args.what in ("osem", "all"):
+        plot_osem_convergence(args.source)
+    if args.what in ("mlem", "all"):
+        plot_mlem_convergence(args.source)
+    if args.what in ("slices", "all"):
+        scales = [args.scale] if args.scale else ["256", "512"]
+        for scale in scales:
+            plot_slices(args.source, scale)
