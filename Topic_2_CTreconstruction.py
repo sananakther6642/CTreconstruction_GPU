@@ -241,11 +241,14 @@ if __name__ == '__main__':
         # compute it once before the iterative loop.
         bp_ones = bp_f(np.ones_like(projection_0))
 
+        import time
         for i in range(Epochs):
+            t0 = time.time()
             b=proj_f(v0)
             result = np.divide( projection_0,b, out=np.zeros_like( projection_0), where=(b != 0))
             ratio=bp_f( result  )/bp_ones
             v0*=ratio
+            print(f"epoch {i+1}/{Epochs}  {time.time()-t0:.1f}s", flush=True)
 
         # save v0  to a hdf5 file
         out_path = 'output_python_reconstruction.hdf5'  # was '...' (Ellipsis) -- crashed on save
