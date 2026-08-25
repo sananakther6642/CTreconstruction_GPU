@@ -12,6 +12,51 @@
 # All output lands under pool15/ so it's easy to scp/rsync back as one unit.
 set -e
 
+echo "=== pre-flight checks ==="
+
+# Kerberos ticket -- home dir/NFS access dies silently without one
+if command -v klist >/dev/null 2>&1; then
+  if ! klist -s 2>/dev/null; then
+    echo "WARNING: no valid Kerberos ticket. Home dir / NFS access may fail."
+    echo "  Fix: kinit -R   (or kinit <username> if not renewable)"
+    echo "  Continuing anyway in 5s -- Ctrl+C to abort and fix first."
+    sleep 5
+  else
+    echo "kerberos ticket: OK"
+  fi
+fi
+
+# Disk space -- need room for ~8 output volumes (256^3 ~65MB each,
+# 512^3 ~513MB each) plus logs/csv, call it ~2.5GB with margin
+AVAIL_KB=$(df -Pk . | tail -1 | awk '{print $4}')
+AVAIL_GB=$((AVAIL_KB / 1024 / 1024))
+echo "disk available here: ${AVAIL_GB}GB"
+if [ "$AVAIL_GB" -lt 3 ]; then
+  echo "ERROR: less than 3GB free -- likely to fail partway through."
+  echo "  Run ./cleanup_before_run.sh first, or free space manually."
+  exit 1
+fi
+
+# Memory -- cpu-512 alone needs a few GB resident; warn if the machine
+# is under heavy pressure (this is what killed cpu-512 on kale)
+if command -v free >/dev/null 2>&1; then
+  AVAIL_MEM_GB=$(free -g | awk '/^Mem:/{print $7}')
+  echo "memory available: ${AVAIL_MEM_GB}GB"
+  if [ -n "$AVAIL_MEM_GB" ] && [ "$AVAIL_MEM_GB" -lt 4 ]; then
+    echo "WARNING: less than 4GB free RAM. cpu-512 in particular may get"
+    echo "  OOM-killed partway through (this happened on kale). Check"
+    echo "  'ps aux --sort=-%mem | head' for what's using memory before"
+    echo "  committing to an unattended run, or proceed and just rerun"
+    echo "  this script later -- it's resumable and will pick up where"
+    echo "  it left off."
+    echo "  Continuing anyway in 5s -- Ctrl+C to abort and check first."
+    sleep 5
+  fi
+fi
+
+echo "=== pre-flight checks done ==="
+echo ""
+
 DATA256=/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5
 DATA512=/lgrp/edu-2026-1-gpulab/proj_512_75.hdf5
 EPOCHS=100
