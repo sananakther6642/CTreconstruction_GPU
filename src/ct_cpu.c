@@ -251,6 +251,14 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
     int   n_samples = p->n_samples;
     float dt        = (far_t - near_t) / (float)(n_samples - 1);
 
+    /* perf-v2 Phase A6: histogram actual AABB-clipped sample range instead
+     * of assuming it -- see the dump site below for details. Read once. */
+    int diag_aabb_range = 0;
+    {
+        const char *dr_env = getenv("FP_CPU_DIAG_AABB_RANGE");
+        if (dr_env && atoi(dr_env) != 0) diag_aabb_range = 1;
+    }
+
     /* constants for world→voxel mapping */
     float inv_sv_xz = (float)Nxz / sVoxel_xz;
     float inv_sv_y  = (float)Ny  / sVoxel_y;
@@ -288,14 +296,18 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
      * per-sample bounds check exactly as before — this only reorders when
      * each ray's reads happen relative to its neighbors', not what is read
      * or how it's weighted. */
-/* FP_TILE was tuned once (=8) and never swept, unlike fp_image's
- * work-group shape which went through a 10-candidate sweep and found
- * {8,32,1} ~5-7% faster than the untested {16,16,1} default. Arrays below
- * are sized to FP_TILE_MAX so FP_TILE_ENV can pick any tile size up to
- * that without touching array declarations; unset defaults to 8
- * (unchanged behavior). */
+/* FP_TILE swept 4/8/16/32/48/64 at 512^3 (3-epoch runs, fp time only):
+ *   4->26.05s(*)  8->16.84s  16->14.72s  32->13.58s  48->13.79s  64->13.64s
+ * (*4's result carried contention noise from a preceding GPU sweep on the
+ * same machine; treated as unreliable, not re-tested since the trend from
+ * 8 onward is already clean and monotonic-then-flat). 32-64 are within
+ * noise of each other — curve plateaus at 32, no benefit to going larger,
+ * and 32 costs less stack/cache footprint per tile than 48/64. 32 is now
+ * the default (was 8, a ~19% win: 16.84s->13.58s fp/epoch at 512^3).
+ * Arrays sized to FP_TILE_MAX so FP_TILE_ENV can still override for
+ * further testing without touching declarations. */
 #define FP_TILE_MAX 64
-    int FP_TILE = 8;
+    int FP_TILE = 32;
     {
         const char *tile_env = getenv("FP_TILE_ENV");
         if (tile_env) {
@@ -431,6 +443,19 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
 
                 for (int t = 0; t < tile_n; t++)
                     proj[ip*H*W + (iv0+t)*W + iu] = val[t] * step_val[t];
+
+                /* perf-v2 Phase A6 diagnostic: dump (s_end-s_start) per ray
+                 * instead of the accumulated value, so the actual AABB
+                 * clip tightness can be histogrammed in Python rather than
+                 * assumed. Only active with FP_CPU_DIAG_AABB_RANGE=1 and
+                 * only meaningful when W>512 (the AABB gate) -- off by
+                 * default, zero cost/behavior change otherwise. Use with
+                 * --op fp so proj is dumped directly (no MLEM iteration
+                 * folded in). */
+                if (diag_aabb_range) {
+                    for (int t = 0; t < tile_n; t++)
+                        proj[ip*H*W + (iv0+t)*W + iu] = (float)(s_end[t] - s_start[t]);
+                }
             }
         }
     }
@@ -440,7 +465,7 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
 
 /* ── iterative reconstruction loop ────────────────────────────────────── */
 void reconstruct_cpu(const float *proj_measured, float *volume,
-                     const CBpara *p, int epochs)
+                     const CBpara *p, int epochs, const char *conv_log)
 {
     int Nxz = p->Volumen_num_xz;
     int Ny   = p->Volumen_num_y;
@@ -458,6 +483,10 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
     float *bp_ratio = (float *)malloc(vol_size    * sizeof(float));
     float *bp_ones  = (float *)malloc(vol_size    * sizeof(float));
 
+    /* v_prev scratch for --log-convergence's rel_change; unused if conv_log
+     * is NULL, so no extra allocation cost in the default (off) path. */
+    float *v_prev = conv_log ? (float *)malloc(vol_size * sizeof(float)) : NULL;
+
     float *ones_raw = (float *)malloc(proj_size * sizeof(float));
     float *ones_p   = (float *)malloc(proj_size_t * sizeof(float));
     for (size_t i = 0; i < proj_size; i++) ones_raw[i] = 1.f;
@@ -468,6 +497,8 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
 
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
+
+        if (conv_log) memcpy(v_prev, volume, vol_size * sizeof(float));
 
         double t0 = get_time_sec();
         fp_cpu(volume, b, p);
@@ -487,9 +518,16 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
             if (denom > 1e-10f)
                 volume[i] *= bp_ratio[i] / denom;
         }
+        double t_ep_total = get_time_sec() - t_ep;
         printf("  epoch %3d/%d  total=%.2fs  fp=%.2fs  bp=%.2fs\n",
-               epoch+1, epochs, get_time_sec()-t_ep, t1-t0, t3-t2);
+               epoch+1, epochs, t_ep_total, t1-t0, t3-t2);
+
+        if (conv_log)
+            log_convergence(conv_log, epoch, t_ep_total,
+                             proj_measured, b, proj_size,
+                             volume, (epoch == 0) ? NULL : v_prev, vol_size);
     }
 
     free(b); free(ratio); free(ratio_bp); free(bp_ratio); free(bp_ones);
+    if (v_prev) free(v_prev);
 }

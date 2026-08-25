@@ -32,6 +32,11 @@ static float trilinear_buf(__global const float *vol,
          + c011*(1-dx)*dy*dz         + c111*dx*dy*dz;
 }
 
+/* perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+ * subrange. See fp_image.cl's kernel comment for why the guard checks
+ * "ip >= ip_start + ip_count" rather than "ip >= num_projs" -- the host's
+ * per-slab gws rounding (run_fp_buffer, ct_gpu.c) can otherwise let
+ * extra rounded-up work-items process angles past the intended subset. */
 __kernel void fp_buffer(
     __global const float *volume,    /* [Nxz * Nxz * Ny] */
     __constant float     *R_mats,    /* [num_projs * 9] row-major R per angle */
@@ -46,14 +51,16 @@ __kernel void fp_buffer(
     float SOD,
     float SDD,
     float voxelSize,
-    float pixelSize
+    float pixelSize,
+    int   ip_start,
+    int   ip_count
 )
 {
     int iu = get_global_id(0);
     int iv = get_global_id(1);
     int ip = get_global_id(2);
 
-    if (iu >= W || iv >= H || ip >= num_projs) return;
+    if (iu >= W || iv >= H || ip >= ip_start + ip_count) return;
 
     float sVoxel_xz = Nxz * voxelSize;
     float sVoxel_y  = Ny  * voxelSize;

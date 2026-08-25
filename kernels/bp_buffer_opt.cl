@@ -15,6 +15,12 @@ __constant sampler_t samp =
     CLK_ADDRESS_CLAMP           |
     CLK_FILTER_LINEAR;
 
+/* perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+ * subrange for the compute loop (see bp_buffer.cl for the full
+ * rationale, identical here). lcs is still sized/loaded for the FULL
+ * num_projs regardless of ip_count -- it's only 600 bytes even at
+ * num_projs=75, not worth shrinking, and the compute loop below simply
+ * indexes into the subrange it already has cached. */
 __kernel void bp_opt(
     __read_only  image2d_array_t proj_images, /* [num_projs][W][H] */
     __global const float2       *angle_cs,    /* [num_projs] (.x=cos, .y=sin) */
@@ -28,7 +34,9 @@ __kernel void bp_opt(
     float SOD,
     float SDD,
     float voxelSize,
-    float pixelSize
+    float pixelSize,
+    int   ip_start,
+    int   ip_count
 )
 {
     /* Cooperatively load angle_cs into local memory.
@@ -63,7 +71,27 @@ __kernel void bp_opt(
     float sdd_inv_px = SDD * inv_px;
     float zpr_sdd_inv_px = zpr * sdd_inv_px;
 
-    for (int ip = 0; ip < num_projs; ip++) {
+    /* Whole-cell zero rule matching the Python reference (see bp_buffer.cl):
+     * CLK_ADDRESS_CLAMP zero-pads individual texels, which differs from
+     * scipy's all-or-nothing fill_value=0 — gate explicitly instead.
+     * floor() computed once per value and reused (matches bp_image.cl's
+     * single-floor pattern) instead of calling floor(u)/floor(v) twice
+     * each inside the OOB test. */
+
+    /* Unroll-x2 was tried here (gated Nxz>=512) on the theory that hiding
+     * texture latency across two overlapped fetches would help large
+     * volumes. Measured on this hardware (AMD Hawaii, pool15-01) it did
+     * the opposite: gpu-opt at 512^3 (0.930-0.945s/epoch, unrolled) was
+     * marginally SLOWER than plain gpu-img (0.930s, scalar bp_image.cl),
+     * despite gpu-opt otherwise having strictly more optimizations
+     * layered on (LUT + local mem). Disabling unroll-x2 dropped gpu-opt
+     * to 0.923-0.927s — faster than gpu-img, as the LUT/local-mem win was
+     * supposed to deliver. The extra registers from unrolling (two live
+     * float2/float4/etc sets instead of one) apparently cost more in
+     * occupancy than the ILP saved in latency-hiding on GCN 1.1's
+     * register file — confirmed by isolated before/after measurement,
+     * not assumed. Kept as scalar-only unconditionally now. */
+    for (int ip = ip_start; ip < ip_start + ip_count; ip++) {
         float2 cs = lcs[ip];
         float U = SOD + ypr*cs.y + xpr*cs.x;
         float inv_U = native_recip(U);
