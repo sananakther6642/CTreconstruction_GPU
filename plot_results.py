@@ -41,18 +41,20 @@ def plot_convergence():
     ax.set_xlabel("Wall-clock time (s)")
     ax.set_ylabel("Poisson log-likelihood")
     ax.set_title("OSEM convergence: log-likelihood vs wall-clock (256³, 100 epochs)")
-    ax.set_xlim(0, 40)  # early crossover window; full runs go to ~280s (S=1)
     ax.legend(loc="lower right")
     ax.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig("convergence.png", dpi=150)
-    print("Saved: convergence.png")
 
-    # full-range companion plot, no x cap, so the S=1 plateau is visible
-    # against the whole 100-epoch horizon
-    ax.set_xlim(auto=True)
+    # full-range version first (no x cap) -- shows the S=1 plateau against
+    # the whole 100-epoch horizon (S=1 takes ~280s total; higher-S runs
+    # finish sooner in wall-clock since they do less work per epoch)
+    fig.tight_layout()
     fig.savefig("convergence_full.png", dpi=150)
     print("Saved: convergence_full.png")
+
+    # zoomed version: the actual crossover happens in the first ~40s
+    ax.set_xlim(0, 40)
+    fig.savefig("convergence.png", dpi=150)
+    print("Saved: convergence.png")
 
 
 def plot_slices():
