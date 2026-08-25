@@ -129,12 +129,14 @@ kernels/
   bp_image.cl         — bp (image): hardware bilinear + float2 LUT
   fp_image.cl         — fp (image): hardware trilinear + AABB
   bp_buffer_opt.cl    — bp_opt: image2d_array_t + float2 LUT + local mem
-validate.py                 — MSE + outlier diagnostics (256/512)
-validate_ops.py             — per-operator fp/bp vs Python reference
-run_python_reference.py     — full MLEM loop in Python
-diag_fp.py                  — fp_cpu vs Python fp_func comparison
-diag_voxel.py, diag_voxel2.py — one-off debugging scripts, kept for reference
-Topic_2_CTreconstruction.py — original course-provided Python reference
+validate.py                 — MSE vs CPU + vs Topic2 reference, outlier diagnostics (256/512)
+validate_ops.py             — per-operator fp/bp vs Topic_2_CTreconstruction.py
+diag_voxel.py                — one-off debugging script, kept for reference
+Topic_2_CTreconstruction.py — the professor-provided reference script (fp_func/
+                               bp_func, unmodified algorithm); the "Reference
+                               code (python)" grading refers to. Two real bugs
+                               fixed (out_path placeholder, volume z-axis size)
+                               so it actually runs and saves; algorithm untouched.
 ```
 
 ## Build
@@ -171,9 +173,9 @@ make run-op-bp-512   # dumps bp_cpu_512.hdf5 (512³)
 python3 validate_ops.py fp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --dump fp_cpu.hdf5
 python3 validate_ops.py bp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --dump bp_cpu.hdf5
 
-# Python reference (--epochs must match the C run being compared against)
-make run-python     EPOCHS=10   # 256³, slow
-make run-python-512 EPOCHS=10   # 512³, slower; sample_ratio mismatch, see session log
+# Reference (python) -- the professor-provided script, 256³ only,
+# hardcoded to 100 epochs (no --data/--epochs flags, EPOCHS not honored)
+make run-python
 ```
 
 ## Algorithm

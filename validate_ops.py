@@ -25,7 +25,7 @@ except ImportError:
     sys.exit("h5py not found: pip install h5py")
 
 sys.path.insert(0, '.')
-from run_python_reference import bp_func, fp_func  # noqa: E402
+from Topic_2_CTreconstruction import bp_func, fp_func  # noqa: E402
 
 
 def load_cb_para(data_path):
