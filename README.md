@@ -240,32 +240,21 @@ untouched) — this also matches the C/GPU modes' default sample count at
 most of fp_func's cost is fixed per-pixel Python/interpreter overhead
 across its 1.3M-pixel loop, not proportional to ray length; bp_func's cost
 is unaffected by sample_ratio at all). Full 100 epochs at this rate would be
-~4.3 days; per the professor (fewer epochs than 100 is acceptable for this
-script — results converge less but that's an explicit, expected tradeoff,
-not a defect), `Epochs` set to 20 (~20hrs) instead. Run started on the NVIDIA GeForce GTX 680
+~4.3 days; fewer epochs than 100 is an accepted tradeoff for this
+script — results converge less but that's expected, not a defect —
+so `Epochs` set to 20 (~20hrs) instead. Run started on the NVIDIA GeForce GTX 680
 under `tmux -s topic2` to run unattended.
 
-The validation numbers below are from an earlier `Epochs=2`, `sample_ratio=2`
-run (NVIDIA GeForce GTX 680, 2026-08-26) — will be replaced with the 20-epoch result once
-that run completes:
-
-```
-=== 256^3 validation ===
-Mode              min        max       mean    nan    inf  MSE vs CPU     MSE vs Topic2
-----------------------------------------------------------------------------------------------------
-topic2         0.0000     0.1462     0.0067      0      0  (topic2 ref)
-cpu            0.0000     1.7303     0.0067      0      0  (reference)    MSE=9.826e-04
-gpu-buf        0.0000     1.7292     0.0067      0      0  MSE=1.148e-10  max=0.0203 MSE=9.826e-04
-gpu-img        0.0000     1.6577     0.0067      0      0  MSE=1.128e-07  max=0.8966 MSE=9.827e-04
-gpu-opt        0.0000     1.6577     0.0067      0      0  MSE=1.128e-07  max=0.8966 MSE=9.827e-04
-```
-
-MSE-vs-topic2 (~9.8e-04) reflects topic2 being only 2 epochs into MLEM
-convergence (max=0.1462 vs ~1.73 for the 100-epoch C/GPU runs), not an
-algorithmic disagreement — cpu/gpu-buf/gpu-img/gpu-opt still agree with each
-other at the float32 noise floor (1e-7 to 1e-10), confirming the four
-implementations share the same fixed point Topic_2's algorithm converges
-toward.
+Full MSE-vs-CPU numbers are in the "Validation (NVIDIA GeForce GTX 680...)"
+section above. An early `Epochs=2` smoke test of the Topic2 comparison
+(2026-08-26, before the real 20-epoch run was started) gave MSE-vs-Topic2
+~9.8e-04 for every mode alike — expected, since 2 epochs is barely into
+MLEM convergence (Topic2's max=0.1462 vs ~1.73 for the 100-epoch C/GPU
+runs), not an algorithmic disagreement. cpu/gpu-buf/gpu-img/gpu-opt
+already agreed with each other at the float32 noise floor (1e-7 to
+1e-10) even then, confirming the four implementations share the same
+fixed point Topic_2's algorithm converges toward. Real MSE-vs-Topic2 at
+the actual `Epochs=20` will replace this once that run completes.
 
 ## Algorithm
 

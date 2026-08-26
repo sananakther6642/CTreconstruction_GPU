@@ -91,7 +91,7 @@ __constant sampler_t samp_exact =
  * (u, v)) is required to hit the same four corners bilinear_buf does. */
 #endif /* HYBRID_PRECISION */
 
-/* perf-v2 Phase C1 (OSEM): see bp_buffer.cl's kernel comment for the
+/* OSEM: see bp_buffer.cl's kernel comment for the
  * full ip_start/ip_count/M_PI_F-num_projs-cancellation rationale --
  * identical here. */
 __kernel void bp_image(
