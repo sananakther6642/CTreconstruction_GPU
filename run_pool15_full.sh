@@ -169,10 +169,10 @@ checkpoint "plotting"
 
 echo ""
 echo "=== Python reference (Topic_2_CTreconstruction.py), 256^3, 100 epochs ==="
-echo "  hardcoded to 256^3, pure Python fp/bp -- slow (~2400s/epoch est. at"
-echo "  sample_ratio=1, half the ~4690s/epoch measured at sample_ratio=2 on"
-echo "  kale), runs last so it never blocks the faster C/GPU configs above."
-echo "  100 epochs ~= 2.8 days -- runs unattended, check back later."
+echo "  hardcoded to 256^3, pure Python fp/bp -- slow (~3679s/epoch measured"
+echo "  on kale at sample_ratio=1, vs ~4690s/epoch at sample_ratio=2), runs"
+echo "  last so it never blocks the faster C/GPU configs above."
+echo "  100 epochs ~= 4.3 days -- runs unattended, check back later."
 python3 Topic_2_CTreconstruction.py 2>&1 | tee "$OUT/topic2_python.log" || true
 if [ -f output_python_reconstruction.hdf5 ]; then
   mv -f output_python_reconstruction.hdf5 "$OUT/hdf5/python_256.hdf5"

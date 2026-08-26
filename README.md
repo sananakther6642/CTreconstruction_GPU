@@ -179,14 +179,17 @@ make run-python
 ```
 
 Pure-Python fp/bp (scipy `RegularGridInterpolator` rebuilt per-angle, no
-vectorization/GPU) measured ~4660s/epoch at 256^3 on kale at the script's
+vectorization/GPU) measured ~4690s/epoch at 256^3 on kale at the script's
 default `sample_ratio=2`. `sample_ratio` reduced to 1 (call-site only, in
 `fp_func(cb_para, vol, sample_ratio=1)`; `fp_func`/`bp_func` internals
-untouched) to roughly halve per-epoch cost — this also matches the C/GPU
-modes' default sample count at 256^3 (`n_samples = Nxz = 256`, see
-`src/main.c`), which `sample_ratio=2`'s 512 samples/ray did not. Full 100
-epochs at the reduced cost is estimated at ~2.8 days; run started on kale
-under `tmux -s topic2` to run unattended.
+untouched) — this also matches the C/GPU modes' default sample count at
+256^3 (`n_samples = Nxz = 256`, see `src/main.c`), which `sample_ratio=2`'s
+512 samples/ray did not. Measured ~3679s/epoch at sample_ratio=1 (only
+~21% faster, not the ~50% a naive samples-per-ray scaling would suggest —
+most of fp_func's cost is fixed per-pixel Python/interpreter overhead
+across its 1.3M-pixel loop, not proportional to ray length; bp_func's cost
+is unaffected by sample_ratio at all). Full 100 epochs at this rate is
+~4.3 days; run started on kale under `tmux -s topic2` to run unattended.
 
 The validation numbers below are from an earlier `Epochs=2`, `sample_ratio=2`
 run (kale, 2026-08-26) — will be replaced with the 100-epoch result once
