@@ -2,20 +2,20 @@
 """
 Report figures: OSEM convergence, plain-MLEM convergence (all modes,
 both dataset sizes), and reconstructed slice visualization (both
-sizes). Reads from submission_outputs/{kale,pool15}/, the archived
+sizes). Reads from submission_outputs/{gtx680,hawaii}/, the archived
 results layout (each source self-contained: conv_csv/ + hdf5 outputs).
 
 Usage:
-  python3 plot_results.py osem                        # kale, 256^3 OSEM sweep only (pool15 has no OSEM data)
-  python3 plot_results.py mlem   [--source pool15]
-  python3 plot_results.py slices [--source pool15] [--scale 256|512]
-  python3 plot_results.py all    [--source pool15]
+  python3 plot_results.py osem                        # gtx680, 256^3 OSEM sweep only (hawaii has no OSEM data)
+  python3 plot_results.py mlem   [--source hawaii]
+  python3 plot_results.py slices [--source hawaii] [--scale 256|512]
+  python3 plot_results.py all    [--source hawaii]
 
---source kale (default): submission_outputs/kale/conv_csv/mlem_{scale}_{mode}.csv,
-                          submission_outputs/kale/output_{mode}{_512}.hdf5
---source pool15:         submission_outputs/pool15/conv_csv/{mode}_{scale}.csv,
-                          submission_outputs/pool15/{mode}_{scale}.hdf5
-Output filenames get a suffix matching --source (kale runs stay
+--source gtx680 (default): submission_outputs/gtx680/conv_csv/mlem_{scale}_{mode}.csv,
+                            submission_outputs/gtx680/output_{mode}{_512}.hdf5
+--source hawaii:           submission_outputs/hawaii/conv_csv/{mode}_{scale}.csv,
+                            submission_outputs/hawaii/{mode}_{scale}.hdf5
+Output filenames get a suffix matching --source (gtx680 runs stay
 unsuffixed for backward compatibility with earlier report drafts).
 """
 import argparse
@@ -42,31 +42,31 @@ def _read_csv(path):
 
 
 def _suffix(source):
-    return "" if source == "kale" else f"_{source}"
+    return "" if source == "gtx680" else f"_{source}"
 
 
 def _mlem_csv_path(source, scale, mode):
-    if source == "kale":
-        return f"submission_outputs/kale/conv_csv/mlem_{scale}_{mode}.csv"
+    if source == "gtx680":
+        return f"submission_outputs/gtx680/conv_csv/mlem_{scale}_{mode}.csv"
     return f"submission_outputs/{source}/conv_csv/{mode}_{scale}.csv"
 
 
 def _hdf5_path(source, scale, mode):
-    if source == "kale":
+    if source == "gtx680":
         suffix = "" if scale == "256" else "_512"
-        return f"submission_outputs/kale/output_{mode.replace('-', '_')}{suffix}.hdf5"
+        return f"submission_outputs/gtx680/output_{mode.replace('-', '_')}{suffix}.hdf5"
     return f"submission_outputs/{source}/{mode}_{scale}.hdf5"
 
 
-def plot_osem_convergence(source="kale"):
-    if source != "kale":
-        print("OSEM sweep is kale/gpu-opt/256^3 only (pool15-01 has no OSEM "
+def plot_osem_convergence(source="gtx680"):
+    if source != "gtx680":
+        print("OSEM sweep is gtx680/gpu-opt/256^3 only (hawaii has no OSEM "
               "data) -- skipping osem for --source", source)
         return
     configs = [1, 3, 5, 15, 25]
     fig, ax = plt.subplots(figsize=(8, 5.5))
     for s in configs:
-        cum_t, logliks = _read_csv(f"submission_outputs/kale/conv_csv/osem_s{s}.csv")
+        cum_t, logliks = _read_csv(f"submission_outputs/gtx680/conv_csv/osem_s{s}.csv")
         label = "S=1 (plain MLEM)" if s == 1 else f"S={s}"
         ax.plot(cum_t, logliks, label=label, linewidth=1.6)
 
@@ -85,9 +85,9 @@ def plot_osem_convergence(source="kale"):
     print("Saved: convergence.png")
 
 
-def plot_mlem_convergence(source="kale"):
+def plot_mlem_convergence(source="gtx680"):
     suf = _suffix(source)
-    hw_label = "AMD Hawaii PRO / pool15-01" if source == "pool15" else "kale"
+    hw_label = "AMD Hawaii PRO" if source == "hawaii" else "NVIDIA GTX 680"
     for scale in ("256", "512"):
         fig, ax = plt.subplots(figsize=(8, 5.5))
         for mode in MODES:
@@ -109,9 +109,9 @@ def plot_mlem_convergence(source="kale"):
         print(f"Saved: {out}")
 
 
-def plot_slices(source="kale", scale="256"):
+def plot_slices(source="gtx680", scale="256"):
     suf = _suffix(source)
-    hw_label = "AMD Hawaii PRO / pool15-01" if source == "pool15" else "kale"
+    hw_label = "AMD Hawaii PRO" if source == "hawaii" else "NVIDIA GTX 680"
     vols = {}
     for mode in MODES:
         path = _hdf5_path(source, scale, mode)
@@ -156,8 +156,8 @@ def plot_slices(source="kale", scale="256"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("what", choices=["osem", "mlem", "slices", "all"], default="all", nargs="?")
-    parser.add_argument("--source", default="kale", choices=["kale", "pool15"],
-                         help="which machine's data to plot (default: kale)")
+    parser.add_argument("--source", default="gtx680", choices=["gtx680", "hawaii"],
+                         help="which machine's data to plot (default: gtx680)")
     parser.add_argument("--scale", default=None, choices=["256", "512"],
                          help="for 'slices': only this scale (default: both)")
     args = parser.parse_args()

@@ -1,16 +1,16 @@
 #!/bin/bash
 # gpu-buf-speed Part B: batched, unattended test of gpu-buf's run-to-run
-# timing variance mitigations, for pool15-01 (AMD Hawaii PRO) ONLY.
+# timing variance mitigations, for AMD Hawaii PRO ONLY.
 #
 # WHY THIS SCRIPT EXISTS AND IS SHAPED THIS WAY:
 # The variance is confirmed AMD-driver-specific (--diag repeat-slab is flat
-# to the millisecond on kale/NVIDIA, ~0.796-0.797s across 40 repeats -- see
-# README.md and the perf-v2 session logs) and pool15-01 is SSH-blocked
-# (pam_restrict_login, unresolved, confirmed multiple times this project).
-# So there is no remote iteration possible -- this script runs everything
-# in ONE unattended pass so a single in-person visit returns complete data.
-# It has NEVER BEEN RUN. Treat every number in it as a plan, not a result,
-# until it actually executes on pool15-01.
+# to the millisecond on the NVIDIA GTX 680, ~0.796-0.797s across 40 repeats
+# -- see README.md and the session logs) and AMD Hawaii PRO (pool15-01) is
+# SSH-blocked (pam_restrict_login, unresolved, confirmed multiple times
+# this project). So there is no remote iteration possible -- this script
+# runs everything in ONE unattended pass so a single in-person visit
+# returns complete data. It has NEVER BEEN RUN. Treat every number in it
+# as a plan, not a result, until it actually executes on AMD Hawaii PRO.
 #
 # Tests two new trigger heuristics (ct_gpu.c, both off by default) against
 # the documented failed baseline mitigation:
@@ -71,7 +71,7 @@ make clean && make
 
 WORKTREE_DIR="../pool15-variance-worktree"
 
-# Same worktree-based checkpoint pattern as run_pool15_full.sh -- an
+# Same worktree-based checkpoint pattern as run_hawaii_full.sh -- an
 # in-place `git checkout` on the live working directory corrupted a real
 # run earlier this project (ct_recon reading/writing the exact files git
 # was switching branches on). Never touch the main working directory's

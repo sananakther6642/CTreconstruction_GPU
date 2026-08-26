@@ -12,7 +12,7 @@ diff vs CPU. Those can come from different voxels, so this checks, in order:
      angle => 1/U^2 blows up and amplifies float32 differences)?
   4. How many voxels are actually affected, and where do they sit radially?
 
-Run on kale/pool15 where the .hdf5 outputs live:
+Run on the machine (NVIDIA GTX 680 or AMD Hawaii PRO) where the .hdf5 outputs live:
     python3 diag_maxgap.py                     # 256^3, default files
     python3 diag_maxgap.py 512                 # 512^3
 """

@@ -2,17 +2,20 @@
 # ARCHIVED: paths assume this script runs from repo root (its original
 # location before the temp scripts/ cleanup move) -- "../python/X.py" and
 # any "../*-worktree" paths need re-checking before rerunning from here.
-# Full pool15-01 (AMD Hawaii PRO) capture: speed-table timings + convergence
+# Full AMD Hawaii PRO capture: speed-table timings + convergence
 # CSVs, all four modes, both dataset sizes, 100 epochs. Resumable -- safe to
 # rerun; skips anything already complete.
 #
 # Run inside tmux so it survives a disconnect:
 #   tmux new -s pool15
-#   ./run_pool15_full.sh
+#   ./run_hawaii_full.sh
 #   (detach: Ctrl+B then D)
 # Reattach later: tmux attach -t pool15
 #
-# All output lands under pool15/ so it's easy to scp/rsync back as one unit.
+# All output lands under pool15/ (the pool15-01 output dir/branch naming
+# predates this hardware-name cleanup and is left as-is -- it's a real,
+# in-progress directory/branch convention on the actual machine, not just
+# prose) so it's easy to scp/rsync back as one unit.
 set -e
 
 echo "=== pre-flight checks ==="
@@ -41,13 +44,13 @@ if [ "$AVAIL_GB" -lt 3 ]; then
 fi
 
 # Memory -- cpu-512 alone needs a few GB resident; warn if the machine
-# is under heavy pressure (this is what killed cpu-512 on kale)
+# is under heavy pressure (this is what killed cpu-512 on AMD Hawaii PRO)
 if command -v free >/dev/null 2>&1; then
   AVAIL_MEM_GB=$(free -g | awk '/^Mem:/{print $7}')
   echo "memory available: ${AVAIL_MEM_GB}GB"
   if [ -n "$AVAIL_MEM_GB" ] && [ "$AVAIL_MEM_GB" -lt 4 ]; then
     echo "WARNING: less than 4GB free RAM. cpu-512 in particular may get"
-    echo "  OOM-killed partway through (this happened on kale). Check"
+    echo "  OOM-killed partway through (this happened on AMD Hawaii PRO). Check"
     echo "  'ps aux --sort=-%mem | head' for what's using memory before"
     echo "  committing to an unattended run, or proceed and just rerun"
     echo "  this script later -- it's resumable and will pick up where"
@@ -72,7 +75,7 @@ is_complete() {
 }
 
 # Commit+push whatever's landed under $OUT so far to a dedicated results
-# branch. Called after every stage below -- pool15-01 isn't remotely
+# branch. Called after every stage below -- AMD Hawaii PRO isn't remotely
 # reachable, so partial progress must reach git incrementally rather than
 # in one commit at the very end (a mid-run reboot/hang would otherwise
 # lose everything already finished). .hdf5 volumes are never committed
@@ -80,7 +83,7 @@ is_complete() {
 #
 # Uses a separate `git worktree` for pool15-results rather than checking
 # out branches in-place. `git checkout` on the main working directory was
-# tried first and caused real corruption on pool15-01: it flips every
+# tried first and caused real corruption on AMD Hawaii PRO: it flips every
 # tracked file to match the target branch's snapshot in-place, and running
 # that against the exact directory ct_recon/python were actively reading
 # and writing (pool15/conv_csv/*.csv, pool15/hdf5/*.hdf5) produced
@@ -113,7 +116,7 @@ checkpoint() {
     # checkpoint) makes bash pass the literal unexpanded string, which git
     # add rejects with "pathspec did not match any files" and a nonzero
     # exit -- killing the ENTIRE add, including paths that did match.
-    # Verified: this silently dropped cpu_256's csv/log on pool15-01's
+    # Verified: this silently dropped cpu_256's csv/log on AMD Hawaii PRO's
     # first real checkpoint ("nothing new to commit" despite real output
     # existing on disk).
     git add -f "$OUT"/logs 2>/dev/null
@@ -189,16 +192,16 @@ python3 ../python/validate.py 512 2>&1 | tee "$OUT/validate_512.txt" || true
 checkpoint "validation"
 
 echo ""
-echo "=== plotting figures (--source pool15) ==="
-python3 ../python/plot_results.py mlem --source pool15 2>&1 | tee "$OUT/plot_mlem.log" || true
-python3 ../python/plot_results.py slices --source pool15 2>&1 | tee "$OUT/plot_slices.log" || true
+echo "=== plotting figures (--source hawaii) ==="
+python3 ../python/plot_results.py mlem --source hawaii 2>&1 | tee "$OUT/plot_mlem.log" || true
+python3 ../python/plot_results.py slices --source hawaii 2>&1 | tee "$OUT/plot_slices.log" || true
 mv -f mlem_convergence_*_pool15.png slices_*_pool15.png "$OUT/" 2>/dev/null || true
 checkpoint "plotting"
 
 echo ""
 echo "=== Python reference (Topic_2_CTreconstruction.py), 256^3, 20 epochs ==="
 echo "  hardcoded to 256^3, pure Python fp/bp -- slow (~3679s/epoch measured"
-echo "  on kale at sample_ratio=1, vs ~4690s/epoch at sample_ratio=2)."
+echo "  on NVIDIA GTX 680 at sample_ratio=1, vs ~4690s/epoch at sample_ratio=2)."
 echo "  Fewer than 100 epochs is an accepted quality tradeoff for this"
 echo "  specific script, not a hard requirement -- 20 epochs ~= 20hrs, runs"
 echo "  unattended, last so it never blocks the faster C/GPU configs above."

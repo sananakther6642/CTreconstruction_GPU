@@ -161,7 +161,7 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
     /* perf-v2: also check cl_khr_fp16 -- required for --half mode's
      * float_to_half kernel (kernels/fp_image.cl). Confirmed present on
      * the original AMD Hawaii target but ABSENT on this project's other
-     * target, an NVIDIA GTX 680 (kale) -- without this check, --half
+     * target, an NVIDIA GTX 680 -- without this check, --half
      * mode's kernel source fails to compile there and takes down the
      * whole image-mode program build, not just --half. Remembered on
      * CLState so main.c can refuse --half cleanly instead of crashing,
@@ -522,18 +522,18 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,14, sizeof(int),    &ip_start);
     clSetKernelArg(k,15, sizeof(int),    &ip_count);
 
-    /* perf-v2: hardware target switched from pool15-01 (AMD Hawaii PRO,
-     * GCN 1.1, 64-wide wavefront) to kale (NVIDIA GTX 680, Kepler,
+    /* perf-v2: hardware target switched from AMD Hawaii PRO,
+     * GCN 1.1, 64-wide wavefront) to NVIDIA GTX 680 (Kepler,
      * 32-wide warp) -- work-group tuning does not transfer between them,
      * confirmed by direct sweep rather than assumed.
      *
-     * Hawaii (pool15-01) history: swept 16,16,1 / 8,32,1 / 4,64,1 /
+     * AMD Hawaii PRO history: swept 16,16,1 / 8,32,1 / 4,64,1 /
      * 32,8,1 / 8,16,1 at 512^3 (10-epoch confirmation) -- 4,64,1 gave
      * 75.37s/10ep vs 321.19s/10ep for the old 16,16,1 default, >4x
      * faster. Wide-short shapes (32,8,1 / 8,16,1) were catastrophic
      * (~4-8x slower) on that GPU.
      *
-     * GTX 680 (kale) re-sweep: 4,64,1 (the Hawaii winner) was NOT best
+     * GTX 680 re-sweep: 4,64,1 (the Hawaii winner) was NOT best
      * here -- 10.53s/10ep @ 256^3. Swept 2,32,1 / 4,32,1 / 2,16,2 /
      * 8,32,1 / 1,32,1 / 2,16,1 / 4,16,2 / 1,16,2 / 2,8,2: 2,16,2 won
      * (9.77s, ~7.2% faster than 4,64,1), with 2,32,1 close behind
@@ -979,10 +979,10 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     size_t lws[3] = {8, 32, 1};
     /* FP_IMAGE_LWS=X,Y,Z overrides the work-group shape for further
      * sweeping without a rebuild. */
-    /* perf-v2: re-swept on kale (NVIDIA GTX 680, 32-wide warp) after the
-     * hardware switch from pool15-01. Unlike fp_buffer, this shape did
+    /* Re-swept on NVIDIA GTX 680 (32-wide warp) after the
+     * hardware switch from AMD Hawaii PRO. Unlike fp_buffer, this shape did
      * NOT need re-tuning -- {8,32,1} (the Hawaii-era default) is still
-     * the best on kale too. Swept {2,32,1}/{2,16,2}/{4,32,1}/{1,32,1}/
+     * the best on GTX 680 too. Swept {2,32,1}/{2,16,2}/{4,32,1}/{1,32,1}/
      * {4,16,1} at 256^3, gpu-opt, 10 epochs: every alternative was
      * worse (4,32,1 closest at -6.5%, 1,32,1 catastrophic at -87%
      * i.e. nearly 2x slower). Negative result, kept as-is. */

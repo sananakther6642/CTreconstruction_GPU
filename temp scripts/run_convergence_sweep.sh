@@ -1,6 +1,6 @@
 #!/bin/bash
 # Convergence sweeps with full per-epoch log-convergence CSVs, for plotting.
-# Run on kale. Resumable: skips any config whose CSV already has EPOCHS rows.
+# Run on the NVIDIA GTX 680. Resumable: skips any config whose CSV already has EPOCHS rows.
 set -e
 
 DATA256=/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5

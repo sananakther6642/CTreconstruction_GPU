@@ -231,7 +231,7 @@ if __name__ == '__main__':
 
         # sample_ratio halved 2->1 (call-site only, fp_func/bp_func algorithm
         # untouched): fp_func's per-pixel Python loop dominates runtime
-        # (~4660s/epoch measured at sample_ratio=2, 256^3, kale) -- fewer
+        # (~4660s/epoch measured at sample_ratio=2, 256^3, NVIDIA GTX 680) -- fewer
         # samples/ray cuts that loop's per-call cost roughly in half.
         proj_f= lambda vol: fp_func(cb_para, vol,sample_ratio=1)
         bp_f = lambda projection:  bp_func(projection,cb_para)

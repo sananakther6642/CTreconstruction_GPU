@@ -5,7 +5,7 @@
 # diffing gpu-buf's output against the pre-change `features` baseline,
 # same data, same epoch count.
 #
-# Run on kale (has the GPU/OpenCL runtime). Uses a worktree for the
+# Run on the NVIDIA GTX 680 (has the GPU/OpenCL runtime). Uses a worktree for the
 # baseline checkout so it never touches this directory's live branch.
 set -e
 

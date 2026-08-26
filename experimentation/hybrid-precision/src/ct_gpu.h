@@ -48,7 +48,7 @@ typedef struct {
     cl_mem d_T_vecs;  /* [num_projs * 3] float */
 
     GPUMode mode;
-    int has_fp16; /* cl_khr_fp16 support -- gates --half; false on e.g. NVIDIA GTX 680 (kale) */
+    int has_fp16; /* cl_khr_fp16 support -- gates --half; false on e.g. NVIDIA GTX 680 */
     int hybrid_precision; /* HYBRID_PRECISION env var, read once at gpu_init --
                             * whether k_bp_img/k_bp_opt were compiled with the
                             * two extra threshold args (see bp_image.cl /
