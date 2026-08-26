@@ -110,10 +110,10 @@ gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
 ## Validation (NVIDIA GeForce GTX 680, 100 epochs, both datasets, all four modes)
 
 MSE vs CPU matches the Performance section's numbers exactly (same
-`validate.py` output). MSE vs Topic2 (the course-provided Python
-reference) not yet available here -- that run uses `Epochs=20` at this
-scale and is still in progress as of this writing; will be added once it
-completes.
+`validate.py` output). MSE vs Topic2 (`validate.py`'s label for the
+course-provided Python reference, `Topic_2_CTreconstruction.py`) not yet
+available here -- that run uses `Epochs=20` at this scale and is still
+in progress as of this writing; will be added once it completes.
 
 ### 256³
 ```
@@ -265,15 +265,16 @@ so `Epochs` set to 20 (~20hrs) instead. Run started on the NVIDIA GeForce GTX 68
 under `tmux -s topic2` to run unattended.
 
 Full MSE-vs-CPU numbers are in the "Validation (NVIDIA GeForce GTX 680...)"
-section above. An early `Epochs=2` smoke test of the Topic2 comparison
-(2026-08-26, before the real 20-epoch run was started) gave MSE-vs-Topic2
-~9.8e-04 for every mode alike — expected, since 2 epochs is barely into
-MLEM convergence (Topic2's max=0.1462 vs ~1.73 for the 100-epoch C/GPU
-runs), not an algorithmic disagreement. cpu/gpu-buf/gpu-img/gpu-opt
-already agreed with each other at the float32 noise floor (1e-7 to
-1e-10) even then, confirming the four implementations share the same
-fixed point Topic_2's algorithm converges toward. Real MSE-vs-Topic2 at
-the actual `Epochs=20` will replace this once that run completes.
+section above. An early `Epochs=2` smoke test against
+`Topic_2_CTreconstruction.py` (2026-08-26, before the real 20-epoch run
+was started) gave MSE-vs-Topic2 ~9.8e-04 for every mode alike — expected,
+since 2 epochs is barely into MLEM convergence (the reference's
+max=0.1462 vs ~1.73 for the 100-epoch C/GPU runs), not an algorithmic
+disagreement. cpu/gpu-buf/gpu-img/gpu-opt already agreed with each other
+at the float32 noise floor (1e-7 to 1e-10) even then, confirming the four
+implementations share the same fixed point `Topic_2_CTreconstruction.py`'s
+algorithm converges toward. Real MSE-vs-Topic2 at the actual `Epochs=20`
+will replace this once that run completes.
 
 ## Algorithm
 
