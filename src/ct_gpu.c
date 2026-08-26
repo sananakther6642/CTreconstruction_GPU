@@ -190,7 +190,27 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         char *src_bp  = load_source(path_bp_buf);
         char *src_fp  = load_source(path_fp_buf);
         char *combined = concat_src(src_bp, src_fp);
-        cl->prog_buffer = build_program(cl->ctx, cl->device, combined);
+        /* perf-v2 gpu-buf-speed A2: FP_UNROLL=N (env var, off by default)
+         * unrolls fp_buffer's per-sample loop by N via a -D flag. Genuinely
+         * untried on this kernel/hardware -- the only precedent (bp_opt's
+         * unroll-x2, README.md) was a DIFFERENT kernel on DIFFERENT
+         * hardware (AMD Hawaii, GCN) and was a measured 1.6% regression
+         * from register pressure. kale is NVIDIA Kepler; treat that
+         * precedent as a reason to expect a similar regression here, not
+         * as evidence this specific case is dead -- hence testing it
+         * rather than skipping it. build_program (not _opts) has no room
+         * for extra -D flags, so this program is built via
+         * build_program_opts directly instead. */
+        char fp_unroll_opt[32] = "";
+        {
+            const char *unroll_env = getenv("FP_UNROLL");
+            if (unroll_env) {
+                int n = atoi(unroll_env);
+                if (n > 0 && n <= 8)
+                    snprintf(fp_unroll_opt, sizeof(fp_unroll_opt), "-DFP_UNROLL=%d", n);
+            }
+        }
+        cl->prog_buffer = build_program_opts(cl->ctx, cl->device, combined, fp_unroll_opt);
         free(src_bp); free(src_fp); free(combined);
 
         cl->k_bp_buf = clCreateKernel(cl->prog_buffer, "bp_buffer", &err);

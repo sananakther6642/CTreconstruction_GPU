@@ -9,6 +9,19 @@
  */
 
 
+/* perf-v2 gpu-buf-speed A1: VGET used to bounds-check every one of the 8
+ * taps (6 comparisons each, 48/sample) via a ternary zero-pad. That is
+ * dead weight: this function's only caller (fp_buffer's sample loop,
+ * below) already guards "xi>=0 && xi<Nxz-1 && yi>=0 && yi<Ny-1 &&
+ * zi>=0 && zi<Nxz-1" before ever calling trilinear_buf. Given that
+ * guard, x0=floor(xi)>=0 and x1=x0+1<=Nxz-1<Nxz always -- same for y,z
+ * -- so every corner is provably in-bounds and the check can never
+ * fire. Removed entirely; direct unguarded loads instead. If the
+ * caller's guard is ever loosened or removed, this function must regain
+ * bounds checking or it will read out of the volume buffer.
+ * Nxz*Ny (the y-stride) is also loop-invariant across all 8 taps --
+ * hoisted into stride_x once instead of recomputed per VGET call
+ * (A3; expect the compiler already did this, kept for clarity). */
 static float trilinear_buf(__global const float *vol,
                             int Nxz, int Ny,
                             float xi, float yi, float zi)
@@ -18,8 +31,8 @@ static float trilinear_buf(__global const float *vol,
     int z0=(int)floor(zi), z1=z0+1;
     float dx=xi-x0, dy=yi-y0, dz=zi-z0;
 
-#define VGET(x,y,z) (((x)>=0&&(x)<Nxz&&(y)>=0&&(y)<Nxz&&(z)>=0&&(z)<Ny) \
-                     ? vol[(x)*Nxz*Ny+(y)*Ny+(z)] : 0.f)
+    int stride_x = Nxz * Ny;
+#define VGET(x,y,z) vol[(x)*stride_x+(y)*Ny+(z)]
     float c000=VGET(x0,y0,z0), c100=VGET(x1,y0,z0);
     float c010=VGET(x0,y1,z0), c110=VGET(x1,y1,z0);
     float c001=VGET(x0,y0,z1), c101=VGET(x1,y0,z1);
@@ -125,6 +138,16 @@ __kernel void fp_buffer(
     float dox = rd[0] * dt, doy = rd[1] * dt, doz = rd[2] * dt;
 
     float val = 0.f;
+    /* A2: FP_UNROLL (host -D flag, off by default) unrolls this loop.
+     * Untested on this kernel before -- bp_opt's unroll-x2 regressed on
+     * AMD Hawaii from register pressure, but that was a different kernel
+     * on different hardware; testing here rather than assuming the same
+     * result. #pragma unroll on a variable-trip-count loop is valid
+     * OpenCL C -- the compiler unrolls by the hinted factor and handles
+     * the remainder itself. */
+#ifdef FP_UNROLL
+    #pragma unroll FP_UNROLL
+#endif
     for (int s = s_start; s < s_end; s++) {
         float xi = wx * inv_sv_xz + shift_xz;
         float yi = wy * inv_sv_y  + shift_y;
