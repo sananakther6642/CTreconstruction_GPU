@@ -127,10 +127,11 @@ python3 plot_results.py slices --source pool15 2>&1 | tee "$OUT/plot_slices.log"
 mv -f mlem_convergence_*_pool15.png slices_*_pool15.png "$OUT/" 2>/dev/null || true
 
 echo ""
-echo "=== Python reference (Topic_2_CTreconstruction.py), 256^3, 10 epochs ==="
-echo "  hardcoded to 256^3, pure Python fp/bp -- slow (~2400s/epoch est.,"
-echo "  half the ~4690s/epoch measured at sample_ratio=2), runs last so it"
-echo "  never blocks the faster C/GPU configs above. 10 epochs ~= 6-7 hours."
+echo "=== Python reference (Topic_2_CTreconstruction.py), 256^3, 100 epochs ==="
+echo "  hardcoded to 256^3, pure Python fp/bp -- slow (~2400s/epoch est. at"
+echo "  sample_ratio=1, half the ~4690s/epoch measured at sample_ratio=2 on"
+echo "  kale), runs last so it never blocks the faster C/GPU configs above."
+echo "  100 epochs ~= 2.8 days -- runs unattended, check back later."
 python3 Topic_2_CTreconstruction.py 2>&1 | tee "$OUT/topic2_python.log" || true
 if [ -f output_python_reconstruction.hdf5 ]; then
   mv -f output_python_reconstruction.hdf5 "$OUT/hdf5/python_256.hdf5"
