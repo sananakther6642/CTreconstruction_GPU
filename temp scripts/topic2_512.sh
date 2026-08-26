@@ -26,13 +26,27 @@
 # under AMD Hawaii PRO's 15GB total so the OS/other processes aren't
 # starved too). On kale (188GB RAM) you can raise this, e.g.
 # MEM_CAP_GB=32 ./topic2_512.sh
+#
+# LOG_NAME: override the log filename (default topic2_512.log) -- set
+# this per machine/run so a second run never silently overwrites a
+# previous one's log, e.g. LOG_NAME=topic2_512_kale.log ./topic2_512.sh
 set -e
 
 MEM_CAP_GB=${MEM_CAP_GB:-8}
 MEM_CAP_KB=$((MEM_CAP_GB * 1024 * 1024))
+LOG_NAME=${LOG_NAME:-topic2_512.log}
+
+if [ -e "$LOG_NAME" ]; then
+  echo "ERROR: $LOG_NAME already exists -- refusing to overwrite."
+  echo "  Set LOG_NAME=something_else.log to use a different file, or"
+  echo "  move/rename the existing log first if you're intentionally"
+  echo "  restarting this run."
+  exit 1
+fi
 
 echo "=== pre-flight ==="
 echo "memory cap: ${MEM_CAP_GB}GB (override with MEM_CAP_GB=N)"
+echo "log file: $LOG_NAME (override with LOG_NAME=...)"
 if command -v free >/dev/null 2>&1; then
   free -g
 fi
@@ -43,7 +57,7 @@ echo "raise MEM_CAP_GB (if RAM allows) or treat 512^3 as infeasible here,"
 echo "matching the earlier AMD Hawaii PRO finding."
 echo ""
 
-( ulimit -v "$MEM_CAP_KB"; python3 ../python/Topic_2_CTreconstruction_512.py ) 2>&1 | tee topic2_512.log
+( ulimit -v "$MEM_CAP_KB"; python3 ../python/Topic_2_CTreconstruction_512.py ) 2>&1 | tee "$LOG_NAME"
 
 echo ""
 echo "=== done (or killed -- check exit status above) ==="
