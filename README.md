@@ -90,6 +90,32 @@ gpu-img  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
 gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
 ```
 
+## Validation (NVIDIA GeForce GTX 680, 100 epochs, both datasets, all four modes)
+
+MSE vs CPU matches the Performance section's numbers exactly (same
+`validate.py` output). MSE vs Topic2 (the course-provided Python
+reference) not yet available here -- that run uses `Epochs=20` at this
+scale and is still in progress as of this writing; will be added once it
+completes.
+
+### 256³
+```
+Mode       min      max     mean   nan  inf  MSE vs CPU
+cpu      0.0000   1.7303   0.0067    0    0  (reference)
+gpu-buf  0.0000   1.7292   0.0067    0    0  MSE=1.148e-10  max=0.0203
+gpu-img  0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  max=0.8966
+gpu-opt  0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  max=0.8966
+```
+
+### 512³
+```
+Mode       min      max     mean   nan  inf  MSE vs CPU
+cpu      0.0000   1.0055   0.0330    0    0  (reference)
+gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.534e-11  max=0.0114
+gpu-img  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
+gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
+```
+
 Correctness fixes that got here (full detail in session log):
 - `fp_cpu` used `(int)xi` (truncation) instead of `floorf(xi)` — wrong
   bounds-check pass for `xi` in `(-1,0)`. Fixed.
