@@ -29,8 +29,8 @@ typedef struct {
     cl_kernel  k_divide;
     cl_kernel  k_update;
     cl_kernel  k_preproc;
-    cl_kernel  k_divide_preproc_img; /* perf-v2 Phase B1+B2: fuses proj_divide + preprocess, writes straight to ratio_img */
-    cl_kernel  k_update_img; /* perf-v2 Phase B4: vol_update that also writes straight to vol_img (float32 mode only) */
+    cl_kernel  k_divide_preproc_img; /* Kernel fusion: fuses proj_divide + preprocess, writes straight to ratio_img */
+    cl_kernel  k_update_img; /* vol_img fusion: vol_update that also writes straight to vol_img (float32 mode only) */
     cl_kernel  k_cone_hw;
 
     /* image-mode kernels */
@@ -71,7 +71,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 /*
  * Optimized reconstruction (LUT + local mem + float4 + loop unroll).
  *
- * perf-v2 Phase C1: subsets implements Ordered Subsets EM (OSEM).
+ * OSEM: subsets implements Ordered Subsets EM (OSEM).
  * subsets=1 (default) is EXACTLY the pre-OSEM MLEM path -- no
  * permutation, one full-angle normalizer, ip_start=0/ip_count=num_projs
  * every sub-iteration. subsets=S>1 requires the caller to have already
@@ -91,7 +91,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          int epochs, const char *conv_log, int subsets);
 
 /*
- * perf-v2 Phase A2/A3 diagnostic: repeat one fixed fp_buffer angle-slab
+ * Repeat-slab variance diagnostic: repeat one fixed fp_buffer angle-slab
  * n_repeats times, printing wall + GPU-event-profiled time per repeat.
  * Distinguishes thermal throttling (monotone degradation) from
  * TLB/page-residency effects (bimodal) from channel camping (uniform).

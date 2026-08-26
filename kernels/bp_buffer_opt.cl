@@ -15,7 +15,7 @@ __constant sampler_t samp =
     CLK_ADDRESS_CLAMP           |
     CLK_FILTER_LINEAR;
 
-/* perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+/* OSEM: ip_start/ip_count select a contiguous angle
  * subrange for the compute loop (see bp_buffer.cl for the full
  * rationale, identical here). lcs is still sized/loaded for the FULL
  * num_projs regardless of ip_count -- it's only 600 bytes even at

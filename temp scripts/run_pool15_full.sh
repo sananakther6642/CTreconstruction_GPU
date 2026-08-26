@@ -198,9 +198,9 @@ checkpoint "plotting"
 echo ""
 echo "=== Python reference (Topic_2_CTreconstruction.py), 256^3, 20 epochs ==="
 echo "  hardcoded to 256^3, pure Python fp/bp -- slow (~3679s/epoch measured"
-echo "  on kale at sample_ratio=1, vs ~4690s/epoch at sample_ratio=2). Per"
-echo "  the professor, fewer than 100 epochs is acceptable here (quality"
-echo "  tradeoff, not a hard requirement) -- 20 epochs ~= 20hrs, runs"
+echo "  on kale at sample_ratio=1, vs ~4690s/epoch at sample_ratio=2)."
+echo "  Fewer than 100 epochs is an accepted quality tradeoff for this"
+echo "  specific script, not a hard requirement -- 20 epochs ~= 20hrs, runs"
 echo "  unattended, last so it never blocks the faster C/GPU configs above."
 python3 ../python/Topic_2_CTreconstruction.py 2>&1 | tee "$OUT/topic2_python.log" || true
 if [ -f output_python_reconstruction.hdf5 ]; then

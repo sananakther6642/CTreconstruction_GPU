@@ -73,8 +73,8 @@ run-gpu-opt-512:
 # Reference (python): the reference script, unmodified
 # algorithm (random jitter; sample_ratio=1, reduced from the script's
 # default 2 to cut runtime, call-site only). Hardcoded to the 256^3 dataset
-# and 20 epochs -- fewer than 100 confirmed acceptable by the professor
-# (quality tradeoff, not a hard requirement). No --data/--epochs flags, so
+# and 20 epochs -- fewer than 100 is an accepted quality tradeoff for this
+# specific script, not a hard requirement. No --data/--epochs flags, so
 # no -512 target exists and EPOCHS below is not honored. Output lands at
 # output_python_reconstruction.hdf5, matching validate.py's 'topic2' entry.
 run-python:

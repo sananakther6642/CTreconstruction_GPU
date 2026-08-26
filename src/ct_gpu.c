@@ -140,12 +140,12 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
     clGetDeviceInfo(cl->device, CL_DEVICE_NAME, sizeof(dev_name), dev_name, NULL);
     printf("OpenCL device: %s\n", dev_name);
 
-    /* perf-v2 Phase A7: check cl_khr_3d_image_writes -- gates Phase B4
+    /* Check cl_khr_3d_image_writes -- gates the float32 vol_img fusion path
      * (vol_update writing directly into vol_img instead of a separate
      * clEnqueueCopyBufferToImage each epoch). OpenCL 1.2 has no 3D
      * read-write images without this extension. Printed once at init,
      * not gated behind an env var since it costs nothing. */
-    /* perf-v2: also check cl_khr_fp16 -- required for --half mode's
+    /* Also check cl_khr_fp16 -- required for --half mode's
      * float_to_half kernel (kernels/fp_image.cl). Confirmed present on
      * the original AMD Hawaii target but ABSENT on this project's other
      * target, an NVIDIA GTX 680 (kale) -- without this check, --half
@@ -319,7 +319,7 @@ static void run_preprocess(CLState *cl, const CBpara *p,
 }
 
 /*
- * perf-v2 Phase B1+B2: fuses proj_divide (ratio=p0/b) with cone_weight +
+ * Kernel fusion: fuses proj_divide (ratio=p0/b) with cone_weight +
  * flip + transpose, writing straight into an image2d_array_t (ratio_img)
  * instead of a buffer. Replaces what was three steps (proj_divide into a
  * d_ratio buffer, preprocess into a d_ratio_prep buffer,
@@ -361,7 +361,7 @@ static void run_divide_preprocess_img(CLState *cl, const CBpara *p,
 
 
 /* ── Internal: run backprojection on GPU (buffer mode) ─────────────────── */
-/* perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+/* OSEM: ip_start/ip_count select a contiguous angle
  * subrange for bp's internal angle loop (kernel change only -- this
  * function's own z-slab chunking is unrelated, it's over voxels, not
  * angles, so no host-side offset-launch changes needed here). */
@@ -446,7 +446,7 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
 }
 
 /* ── Internal: run forward projection on GPU (buffer mode) ─────────────── */
-/* perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+/* OSEM: ip_start/ip_count select a contiguous angle
  * subrange, chunked the same way as the full-range path (ANG_SLAB=8 per
  * launch, watchdog avoidance). Same rounding-edge-case fix as
  * run_fp_image: the kernel's guard checks "ip >= ip_start + ip_count",
@@ -483,7 +483,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,14, sizeof(int),    &ip_start);
     clSetKernelArg(k,15, sizeof(int),    &ip_count);
 
-    /* perf-v2: hardware target switched from pool15-01 (AMD Hawaii PRO,
+    /* Hardware target switched from pool15-01 (AMD Hawaii PRO,
      * GCN 1.1, 64-wide wavefront) to kale (NVIDIA GTX 680, Kepler,
      * 32-wide warp) -- work-group tuning does not transfer between them,
      * confirmed by direct sweep rather than assumed.
@@ -537,7 +537,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
         const char *pause_env = getenv("FP_BUFFER_SLAB_PAUSE_US");
         if (pause_env) slab_pause_us = atol(pause_env);
     }
-    /* perf-v2 Phase E: the per-slab clFinish below is a watchdog, not just
+    /* Watchdog diagnostic: the per-slab clFinish below is a watchdog, not just
      * a sync point -- it's what lets each slab be individually timed for
      * the SLOW/HOST-SIDE-GAP diagnostic printout (used throughout this
      * project's variance investigation, see --diag repeat-slab and the
@@ -557,7 +557,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
      * (CL_PROFILING_COMMAND_START/END, already enabled on the queue via
      * CL_QUEUE_PROFILING_ENABLE) confirmed slow slabs are GPU-bound
      * (wall==gpu to the ms), and a follow-up diagnostic (--diag
-     * repeat-slab, perf-v2 Phase A2/A3) found the actual mechanism: NOT
+     * repeat-slab, the variance diagnostic) found the actual mechanism: NOT
      * thermal throttling (Hawaii's ~3.2x DVFS range can't produce the
      * observed ~5.8-6x jump, and gpu-img/gpu-opt stay stable in the same
      * sessions gpu-buf goes slow). Repeating one fixed angle-slab many
@@ -678,7 +678,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
 /*
  * ── Diagnostic: repeat one fp_buffer angle-slab N times ─────────────────
  *
- * perf-v2 plan Phase A2/A3: the README's "thermal throttling" explanation
+ * The README's "thermal throttling" explanation
  * for gpu-buf's run-to-run variance is disputed (6.6x discrete jump is
  * beyond Hawaii's ~3.2x DVFS range, and gpu-img/gpu-opt stay stable in the
  * same sessions gpu-buf goes slow -- device-wide throttling can't be
@@ -802,7 +802,7 @@ static void run_diag_repeat_slab(CLState *cl, const CBpara *p,
 }
 
 /* ── Internal: run backprojection (image mode) ──────────────────────────── */
-/* perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+/* OSEM: ip_start/ip_count select a contiguous angle
  * subrange for bp's internal angle loop. */
 static void run_bp_image(CLState *cl, const CBpara *p,
                           cl_mem proj_img, cl_mem d_ang_cs, cl_mem d_vol,
@@ -851,13 +851,13 @@ static void run_bp_image(CLState *cl, const CBpara *p,
 
 /* ── Internal: run forward projection (image mode) ─────────────────────── */
 /*
- * perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+ * OSEM: ip_start/ip_count select a contiguous angle
  * subrange. Launches with a global work-offset of ip_start in dim 2 and
  * a global work-size of ip_count (rounded up to lws[2]) instead of the
  * full num_projs -- get_global_id(2) then naturally ranges over
  * [ip_start, ip_start+ip_count) inside the kernel.
  *
- * The rounding-up-to-lws step is exactly the bug risk the perf-v2 plan
+ * The rounding-up-to-lws step is exactly the bug risk the original investigation plan
  * flagged before any code was written: rounding ip_count up can push
  * gws[2] past ip_count while still being < num_projs, so a guard of
  * "ip >= num_projs" alone would NOT catch the extra rounded-up
@@ -923,7 +923,7 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     size_t lws[3] = {8, 32, 1};
     /* FP_IMAGE_LWS=X,Y,Z overrides the work-group shape for further
      * sweeping without a rebuild. */
-    /* perf-v2: re-swept on kale (NVIDIA GTX 680, 32-wide warp) after the
+    /* Re-swept on kale (NVIDIA GTX 680, 32-wide warp) after the
      * hardware switch from pool15-01. Unlike fp_buffer, this shape did
      * NOT need re-tuning -- {8,32,1} (the Hawaii-era default) is still
      * the best on kale too. Swept {2,32,1}/{2,16,2}/{4,32,1}/{1,32,1}/
@@ -947,7 +947,7 @@ static void run_fp_image(CLState *cl, const CBpara *p,
 
 /*
  * ── gpu_diag_repeat_slab ────────────────────────────────────────────────
- * Public entry for the perf-v2 Phase A2/A3 diagnostic. Builds R/T buffers,
+ * Public entry for the repeat-slab variance diagnostic. Builds R/T buffers,
  * repeats one fixed angle-slab n_repeats times (optionally reallocating
  * d_vol partway through -- see run_diag_repeat_slab for realloc_at).
  * Does not run any epoch loop and does not write output -- diagnostic only.
@@ -1118,7 +1118,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     int proj_n = np * H * W;
     int vol_n  = Nxz * Nxz * Ny;
 
-    /* perf-v2 Phase B4: seed vol_img once with the initial volume
+    /* vol_img fusion: seed vol_img once with the initial volume
      * (float32 mode only; --half still uses its own per-epoch
      * float_to_half+copy path). After this, vol_update_img keeps vol_img
      * current at the end of every epoch, so the per-epoch
@@ -1148,7 +1148,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                                  (size_t)vol_n * sizeof(float), v_prev_host, 0, NULL, NULL);
 
         /* forward project: b = F(v0)
-         * perf-v2 Phase C1: reconstruct_gpu (buffer/image modes) does not
+         * OSEM: reconstruct_gpu (buffer/image modes) does not
          * get real OSEM subsetting in this pass -- always the full angle
          * range, equivalent to --subsets 1. OSEM is implemented in
          * reconstruct_gpu_opt only; ip_start=0/ip_count=np here keeps
@@ -1187,7 +1187,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
          * kernels unconditionally overwrite every voxel in range (plain
          * assignment, not accumulation), so pre-clearing is dead work.
          *
-         * perf-v2 Phase B1+B2: image mode fuses proj_divide (ratio=p0/b)
+         * Kernel fusion: image mode fuses proj_divide (ratio=p0/b)
          * with preprocess (cone_weight+flip+transpose) into one kernel
          * that writes straight into ratio_img_buf -- no d_ratio
          * intermediate buffer, no buffer->image copy. Buffer mode is
@@ -1211,7 +1211,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 
         /* v0 *= bp_ratio / bp_ones
          *
-         * perf-v2 Phase B4: image mode in float32 uses vol_update_img,
+         * vol_img fusion: image mode in float32 uses vol_update_img,
          * which does the same update AND writes straight into vol_img,
          * replacing the copy that used to run at the top of the NEXT
          * epoch. --half keeps the plain vol_update (its vol_img is
@@ -1299,7 +1299,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     int S   = (subsets > 0) ? subsets : 1;
     if (S > np) S = 1; /* degenerate guard: more subsets than angles makes no sense */
 
-    /* perf-v2 Phase C1 (OSEM): subset k is the contiguous angle range
+    /* OSEM: subset k is the contiguous angle range
      * [subset_start[k], subset_start[k]+subset_count[k]) -- valid ONLY
      * because the caller has already permuted p->angles/proj_measured
      * (see utils.h) so that interleaved, max-separated subsets become
@@ -1347,14 +1347,14 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
 
     cl_mem d_proj_b    = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
     CL_CHECK(err, "d_proj_b opt");
-    /* perf-v2 Phase B1+B2: d_ratio and d_ratio_prep both removed --
+    /* Kernel fusion: d_ratio and d_ratio_prep both removed --
      * run_divide_preprocess_img now fuses divide+preprocess and writes
      * straight into ratio_img, no intermediate buffers needed. */
     cl_mem d_proj_prep = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
     CL_CHECK(err, "d_proj_prep opt");
     cl_mem d_bp_ratio  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
     CL_CHECK(err, "d_bp_ratio opt");
-    /* perf-v2 Phase C1 (OSEM): one normalizer bp(cone_weight(ones)) per
+    /* OSEM: one normalizer bp(cone_weight(ones)) per
      * subset -- each subset's sensitivity map differs since it only sums
      * its own angle range. S=1 (default) allocates exactly one buffer,
      * identical to the pre-OSEM single-normalizer behavior. 256^3 only
@@ -1378,7 +1378,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     /* d_proj_meas stays raw — cone weight applied to ratio after divide, matching Python */
 
     /* ── bp_ones: preprocess all-ones → image, run bp_opt once per subset ──
-     * perf-v2 Phase C1: total precompute cost across all S subsets equals
+     * OSEM: total precompute cost across all S subsets equals
      * one full-angle bp_ones (each subset only sums its own 1/S of the
      * angles) -- the ones_img/preprocess step is subset-independent and
      * done once; only the bp_opt call and its ip_start/ip_count vary. */
@@ -1486,7 +1486,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         CL_CHECK(err,"d_vol_half");
     }
 
-    /* perf-v2 Phase B4: seed vol_img once with the initial volume
+    /* vol_img fusion: seed vol_img once with the initial volume
      * (float32 mode only). After this, vol_update_img keeps vol_img
      * current at the end of every epoch, so the per-epoch
      * clEnqueueCopyBufferToImage this loop used to do at the START of
@@ -1506,7 +1506,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     float *v_cur_host  = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
 
     /*
-     * perf-v2 Phase C1 (OSEM): one epoch = one full pass over all S
+     * OSEM: one epoch = one full pass over all S
      * subsets. S=1 makes the inner loop run exactly once with
      * ip_start=0/ip_count=np, i.e. byte-identical to the pre-OSEM
      * MLEM loop -- the only structural difference from before is this
@@ -1560,7 +1560,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                 clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
                                      (size_t)proj_n * sizeof(float), b_host, 0, NULL, NULL);
 
-            /* perf-v2 Phase B1+B2: fuses ratio=p0/b with cone_weight+flip+
+            /* Kernel fusion: fuses ratio=p0/b with cone_weight+flip+
              * transpose+write-to-image into one kernel -- no d_ratio
              * intermediate buffer, no buffer->image copy (was ~0.80GB/epoch
              * at 512^3 plus two kernel launches). Same math, same values.
@@ -1603,7 +1603,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             }
 
             /* ── update, this subset's normalizer ──
-             * perf-v2 Phase B4: float32 mode uses vol_update_img, which
+             * vol_img fusion: float32 mode uses vol_update_img, which
              * also writes straight into vol_img (replacing the copy that
              * used to run at the top of the NEXT sub-iteration). --half
              * keeps plain vol_update since its vol_img is refreshed via

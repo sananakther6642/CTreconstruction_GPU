@@ -20,7 +20,7 @@ static void print_usage(const char *prog)
         "           [--log-convergence <file.csv>]  (per-epoch loglik/residual/rel_change;\n"
         "                            off by default, zero extra cost when unset)\n"
         "           [--diag repeat-slab:<angle_offset>:<slab_size>:<n_repeats>[:<realloc_at>]]\n"
-        "                           (gpu-buf only; perf-v2 Phase A2/A3 variance diagnostic,\n"
+        "                           (gpu-buf only; variance diagnostic,\n"
         "                            repeats one fixed fp_buffer angle-slab N times and exits;\n"
         "                            optional realloc_at: reallocate d_vol before that repeat)\n"
         "           [--subsets N]   (gpu-opt only; Ordered Subsets EM, default 1 = plain MLEM,\n"
@@ -92,7 +92,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* perf-v2 Phase C1 (OSEM): permute the angle/projection stack BEFORE
+    /* OSEM: permute the angle/projection stack BEFORE
      * build_RT_buffers is ever called (that happens inside gpu_init's
      * callers, later) so R_mats/T_vecs/ang_cs all inherit the permuted
      * order automatically. subsets==1 computes and applies the identity
@@ -171,7 +171,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* ── perf-v2 Phase A2/A3 diagnostic: repeat one fixed fp_buffer
+    /* ── Repeat-slab variance diagnostic: repeat one fixed fp_buffer
      * angle-slab N times and exit. gpu-buf only (fp_buffer is the kernel
      * showing the variance). Format: repeat-slab:<angle_offset>:<slab_size>:<n_repeats> */
     if (diag_str) {
