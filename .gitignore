@@ -6,8 +6,9 @@ build/
 # Output data
 *.hdf5
 *.h5
-# Except the archived submission results (tracked via Git LFS)
-!submission_outputs/**/*.hdf5
+
+# Archived results (kept locally only, not pushed -- too large for the repo)
+submission_outputs/
 
 # macOS
 .DS_Store
