@@ -35,6 +35,20 @@ Intel Xeon E5-2620 0 (24 threads) · NVIDIA GTX 680 (Kepler, no
 
 MSE vs CPU: 256³ `1.148e-10` (`gpu-buf`) / `1.128e-07` (`gpu-img`/`gpu-opt`).
 512³ `9.534e-11` (`gpu-buf`) / `1.232e-09` (`gpu-img`/`gpu-opt`). No NaN/inf.
+RMS as % of signal range: 256³ 0.0255%, 512³ 0.0026% (`gpu-img`/`gpu-opt`;
+`gpu-buf` is ~300x tighter still). Improves at higher resolution, not worse.
+
+`gpu-img`/`gpu-opt` are not bit-exact vs CPU/`gpu-buf` — checked why with
+`diag_maxgap.py` rather than assumed. **Not** the earlier-suspected `1/U²`
+geometric singularity (measured: min|U| at the worst voxel is 82-91% of
+SOD at both scales, 1.2-1.5x amplification, nothing). It's a one-voxel
+spatial displacement of sharp features from the hardware `CLK_FILTER_LINEAR`
+sampler (all `+0.5f` half-texel offsets audited and correct — not a
+coordinate bug). Mass is conserved across the displaced voxel pair. Affects
+21/16.7M voxels at 256³, 138/134M at 512³ (>100×RMS), concentrated at the
+FOV edge (100% beyond 0.8×FOV radius at 512³). `gpu-buf` (manual float32
+trilinear, no hardware sampler) has none of this — use it when bit-level
+fidelity to the CPU reference matters more than speed.
 
 OSEM `--subsets 5`, 256³, 100 epochs: 57.17s total.
 
