@@ -188,11 +188,14 @@ untouched) — this also matches the C/GPU modes' default sample count at
 ~21% faster, not the ~50% a naive samples-per-ray scaling would suggest —
 most of fp_func's cost is fixed per-pixel Python/interpreter overhead
 across its 1.3M-pixel loop, not proportional to ray length; bp_func's cost
-is unaffected by sample_ratio at all). Full 100 epochs at this rate is
-~4.3 days; run started on kale under `tmux -s topic2` to run unattended.
+is unaffected by sample_ratio at all). Full 100 epochs at this rate would be
+~4.3 days; per the professor (fewer epochs than 100 is acceptable for this
+script — results converge less but that's an explicit, expected tradeoff,
+not a defect), `Epochs` set to 20 (~20hrs) instead. Run started on kale
+under `tmux -s topic2` to run unattended.
 
 The validation numbers below are from an earlier `Epochs=2`, `sample_ratio=2`
-run (kale, 2026-08-26) — will be replaced with the 100-epoch result once
+run (kale, 2026-08-26) — will be replaced with the 20-epoch result once
 that run completes:
 
 ```
