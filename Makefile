@@ -78,7 +78,7 @@ run-gpu-opt-512:
 # no -512 target exists and EPOCHS below is not honored. Output lands at
 # output_python_reconstruction.hdf5, matching validate.py's 'topic2' entry.
 run-python:
-	python3 Topic_2_CTreconstruction.py
+	python3 python/Topic_2_CTreconstruction.py
 
 # Component tests: isolate fp/bp correctness from accumulated MLEM iteration.
 # OMP_NUM_THREADS/PROC_BIND/PLACES matches run-cpu/run-cpu-512 — without

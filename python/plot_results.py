@@ -2,9 +2,8 @@
 """
 Report figures: OSEM convergence, plain-MLEM convergence (all modes,
 both dataset sizes), and reconstructed slice visualization (both
-sizes). Works against either kale's layout (run_convergence_sweep.sh,
-conv_csv/*.csv + output_*.hdf5 in cwd) or pool15-01's layout
-(run_pool15_full.sh, pool15/conv_csv/*.csv + pool15/hdf5/*.hdf5).
+sizes). Reads from submission_outputs/{kale,pool15}/, the archived
+results layout (each source self-contained: conv_csv/ + hdf5 outputs).
 
 Usage:
   python3 plot_results.py osem                        # kale, 256^3 OSEM sweep only (pool15 has no OSEM data)
@@ -12,8 +11,10 @@ Usage:
   python3 plot_results.py slices [--source pool15] [--scale 256|512]
   python3 plot_results.py all    [--source pool15]
 
---source kale (default): conv_csv/mlem_{scale}_{mode}.csv, output_{mode}{_512}.hdf5
---source pool15:         pool15/conv_csv/{mode}_{scale}.csv, pool15/hdf5/{mode}_{scale}.hdf5
+--source kale (default): submission_outputs/kale/conv_csv/mlem_{scale}_{mode}.csv,
+                          submission_outputs/kale/output_{mode}{_512}.hdf5
+--source pool15:         submission_outputs/pool15/conv_csv/{mode}_{scale}.csv,
+                          submission_outputs/pool15/{mode}_{scale}.hdf5
 Output filenames get a suffix matching --source (kale runs stay
 unsuffixed for backward compatibility with earlier report drafts).
 """
@@ -46,15 +47,15 @@ def _suffix(source):
 
 def _mlem_csv_path(source, scale, mode):
     if source == "kale":
-        return f"conv_csv/mlem_{scale}_{mode}.csv"
-    return f"{source}/conv_csv/{mode}_{scale}.csv"
+        return f"submission_outputs/kale/conv_csv/mlem_{scale}_{mode}.csv"
+    return f"submission_outputs/{source}/conv_csv/{mode}_{scale}.csv"
 
 
 def _hdf5_path(source, scale, mode):
     if source == "kale":
         suffix = "" if scale == "256" else "_512"
-        return f"output_{mode.replace('-', '_')}{suffix}.hdf5"
-    return f"{source}/hdf5/{mode}_{scale}.hdf5"
+        return f"submission_outputs/kale/output_{mode.replace('-', '_')}{suffix}.hdf5"
+    return f"submission_outputs/{source}/{mode}_{scale}.hdf5"
 
 
 def plot_osem_convergence(source="kale"):
@@ -65,7 +66,7 @@ def plot_osem_convergence(source="kale"):
     configs = [1, 3, 5, 15, 25]
     fig, ax = plt.subplots(figsize=(8, 5.5))
     for s in configs:
-        cum_t, logliks = _read_csv(f"conv_csv/osem_s{s}.csv")
+        cum_t, logliks = _read_csv(f"submission_outputs/kale/conv_csv/osem_s{s}.csv")
         label = "S=1 (plain MLEM)" if s == 1 else f"S={s}"
         ax.plot(cum_t, logliks, label=label, linewidth=1.6)
 

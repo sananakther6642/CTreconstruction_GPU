@@ -1,0 +1,13 @@
+
+=== 512^3 validation ===
+
+Mode              min        max       mean    nan    inf  MSE vs CPU     MSE vs Topic2
+----------------------------------------------------------------------------------------------------
+cpu            0.0000     1.0055     0.0330      0      0  (reference)    
+gpu-buf        0.0000     1.0054     0.0330      0      0  MSE=9.087e-11  max=0.0156 
+           outliers(diff>10*rms)=97601  worst_voxel_idx=(177, 26, 10)  radial_dist_from_center_xy=242.6 (Nxz/2=256)
+gpu-img        0.0000     1.0054     0.0330      0      0  MSE=6.849e-10  max=0.0169 
+           outliers(diff>10*rms)=130833  worst_voxel_idx=(228, 500, 11)  radial_dist_from_center_xy=246.0 (Nxz/2=256)
+gpu-opt        0.0000     1.0054     0.0330      0      0  MSE=6.849e-10  max=0.0169 
+           outliers(diff>10*rms)=130833  worst_voxel_idx=(228, 500, 11)  radial_dist_from_center_xy=246.0 (Nxz/2=256)
+

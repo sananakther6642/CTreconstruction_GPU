@@ -6,6 +6,8 @@ build/
 # Output data
 *.hdf5
 *.h5
+# Except the archived submission results (tracked via Git LFS)
+!submission_outputs/**/*.hdf5
 
 # macOS
 .DS_Store
@@ -27,9 +29,6 @@ build/
 .idea/
 *.code-workspace
 .code-review-graph/
-
-# clFFT (third-party, link as submodule or install separately)
-clFFT/
 
 # Session logs (local only, never pushed)
 sessions/

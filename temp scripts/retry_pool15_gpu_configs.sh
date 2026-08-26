@@ -1,4 +1,7 @@
 #!/bin/bash
+# ARCHIVED: paths assume this script runs from repo root (its original
+# location before the temp scripts/ cleanup move) -- "../python/X.py" and
+# any "../*-worktree" paths need re-checking before rerunning from here.
 # Retry the 4 configs that failed on pool15-01's main run with
 # "OpenCL error -1 at clGetDeviceIDs" (transient GPU unavailability,
 # confirmed recovered via clinfo). Runs standalone, safe alongside the
@@ -90,12 +93,12 @@ cp "$OUT/hdf5/cpu_512.hdf5"     output_cpu_512.hdf5     2>/dev/null || true
 cp "$OUT/hdf5/gpu-buf_512.hdf5" output_gpu_buf_512.hdf5 2>/dev/null || true
 cp "$OUT/hdf5/gpu-img_512.hdf5" output_gpu_img_512.hdf5 2>/dev/null || true
 cp "$OUT/hdf5/gpu-opt_512.hdf5" output_gpu_opt_512.hdf5 2>/dev/null || true
-python3 validate.py     2>&1 | tee "$OUT/validate_256.txt" || true
-python3 validate.py 512 2>&1 | tee "$OUT/validate_512.txt" || true
+python3 ../python/validate.py     2>&1 | tee "$OUT/validate_256.txt" || true
+python3 ../python/validate.py 512 2>&1 | tee "$OUT/validate_512.txt" || true
 checkpoint "validation-retry"
 
-python3 plot_results.py mlem --source pool15 2>&1 | tee "$OUT/plot_mlem.log" || true
-python3 plot_results.py slices --source pool15 2>&1 | tee "$OUT/plot_slices.log" || true
+python3 ../python/plot_results.py mlem --source pool15 2>&1 | tee "$OUT/plot_mlem.log" || true
+python3 ../python/plot_results.py slices --source pool15 2>&1 | tee "$OUT/plot_slices.log" || true
 mv -f mlem_convergence_*_pool15.png slices_*_pool15.png "$OUT/" 2>/dev/null || true
 checkpoint "plotting-retry"
 

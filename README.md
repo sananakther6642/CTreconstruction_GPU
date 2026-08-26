@@ -151,14 +151,17 @@ kernels/
   bp_image.cl         — bp (image): hardware bilinear + float2 LUT
   fp_image.cl         — fp (image): hardware trilinear + AABB
   bp_buffer_opt.cl    — bp_opt: image2d_array_t + float2 LUT + local mem
-validate.py                 — MSE vs CPU + vs Topic2 reference, outlier diagnostics (256/512)
-validate_ops.py             — per-operator fp/bp vs Topic_2_CTreconstruction.py
-diag_voxel.py                — one-off debugging script, kept for reference
-Topic_2_CTreconstruction.py — the reference script (fp_func/bp_func,
-                               unmodified algorithm); the "Reference code
-                               (python)" grading refers to. Two real bugs
-                               fixed (out_path placeholder, volume z-axis size)
-                               so it actually runs and saves; algorithm untouched.
+python/
+  validate.py                 — MSE vs CPU + vs Topic2 reference, outlier diagnostics (256/512)
+  validate_ops.py             — per-operator fp/bp vs Topic_2_CTreconstruction.py
+  diag_voxel.py                — one-off debugging script, kept for reference
+  diag_maxgap.py               — per-operator error attribution for the gpu-img/gpu-opt max-gap finding
+  plot_results.py              — report figures (OSEM/MLEM convergence, slice comparisons)
+  Topic_2_CTreconstruction.py — the reference script (fp_func/bp_func,
+                                 unmodified algorithm); the "Reference code
+                                 (python)" grading refers to. Two real bugs
+                                 fixed (out_path placeholder, volume z-axis size)
+                                 so it actually runs and saves; algorithm untouched.
 ```
 
 ## Build
@@ -178,22 +181,22 @@ make run-cpu     EPOCHS=100
 make run-gpu-buf EPOCHS=100
 make run-gpu-img EPOCHS=100
 make run-gpu-opt EPOCHS=100
-python3 validate.py
+python3 python/validate.py
 
 # 512³
 make run-cpu-512     EPOCHS=100
 make run-gpu-buf-512 EPOCHS=100
 make run-gpu-img-512 EPOCHS=100
 make run-gpu-opt-512 EPOCHS=100
-python3 validate.py 512
+python3 python/validate.py 512
 
 # component tests (CPU only, isolate fp/bp correctness)
 make run-op-fp       # dumps fp_cpu.hdf5 (256³)
 make run-op-bp       # dumps bp_cpu.hdf5 (256³)
 make run-op-fp-512   # dumps fp_cpu_512.hdf5 (512³, use SAMPLES512=64 for a quick check)
 make run-op-bp-512   # dumps bp_cpu_512.hdf5 (512³)
-python3 validate_ops.py fp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --dump fp_cpu.hdf5
-python3 validate_ops.py bp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --dump bp_cpu.hdf5
+python3 python/validate_ops.py fp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --dump fp_cpu.hdf5
+python3 python/validate_ops.py bp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --dump bp_cpu.hdf5
 
 # Reference (python) -- 256³ only, hardcoded epoch count in-script
 # (no --data/--epochs flags, EPOCHS not honored)
