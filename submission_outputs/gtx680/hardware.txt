@@ -1,7 +1,0 @@
-=== hardware ===
-kale.cis.iti.uni-stuttgart.de
-24
-model name	: Intel(R) Xeon(R) CPU E5-2620 0 @ 2.00GHz
-=== GPU ===
-  Device Name                                     NVIDIA GeForce GTX 680
-  Device Vendor                                   NVIDIA Corporation

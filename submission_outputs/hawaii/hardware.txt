@@ -1,5 +1,0 @@
-=== hardware ===
-pool15-01.cis.iti.uni-stuttgart.de
-12
-model name	: Intel(R) Core(TM) i7-5820K CPU @ 3.30GHz
-  Device Name                                     Hawaii
