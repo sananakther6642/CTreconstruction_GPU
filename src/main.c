@@ -131,18 +131,24 @@ int main(int argc, char **argv)
          * checks) genuinely has no effect on fp itself or whether the null
          * result at the epoch level was hiding something. Not a general
          * --op extension -- gpu-img/gpu-opt/bp are still CPU-only below. */
-        if (!strcmp(op_str, "fp") && !strcmp(mode_str, "gpu-buf")) {
+        if (!strcmp(mode_str, "gpu-buf") && (!strcmp(op_str, "fp") || !strcmp(op_str, "bp"))) {
             CLState cl;
             if (gpu_init(&cl, GPU_MODE_BUFFER, kernel_dir) != 0) return 1;
-            printf("\n=== --op fp --mode gpu-buf: single run_fp_buffer(ones) call ===\n");
-            double dt = gpu_op_fp_timed(&cl, &para, volume);
-            printf("gpu-buf fp time: %.3f s (n_samples=%d)\n", dt, para.n_samples);
+            if (!strcmp(op_str, "fp")) {
+                printf("\n=== --op fp --mode gpu-buf: single run_fp_buffer(ones) call ===\n");
+                double dt = gpu_op_fp_timed(&cl, &para, volume);
+                printf("gpu-buf fp time: %.3f s (n_samples=%d)\n", dt, para.n_samples);
+            } else {
+                printf("\n=== --op bp --mode gpu-buf: single run_bp_buffer(cone_weight(ones)) call ===\n");
+                double dt = gpu_op_bp_timed(&cl, &para);
+                printf("gpu-buf bp time: %.3f s\n", dt);
+            }
             gpu_cleanup(&cl);
             free(volume); free(proj_measured); free(para.angles);
             return 0;
         }
         if (strcmp(mode_str, "cpu")) {
-            fprintf(stderr, "--op is only supported with --mode cpu (or --mode gpu-buf --op fp)\n");
+            fprintf(stderr, "--op is only supported with --mode cpu (or --mode gpu-buf)\n");
             return 1;
         }
         if (!strcmp(op_str, "fp")) {

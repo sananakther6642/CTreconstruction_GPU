@@ -1054,6 +1054,62 @@ double gpu_op_fp_timed(CLState *cl, const CBpara *p, const float *volume)
 }
 
 /*
+ * ── gpu_op_bp_timed ──────────────────────────────────────────────────────
+ * Companion to gpu_op_fp_timed. fp alone measured ~0.25s of gpu-buf's
+ * ~0.847s epoch (256^3) -- bp is the dominant cost, not fp, which is why
+ * A1 (fp_buffer-only) showed no epoch-level effect regardless of whether
+ * it helped fp itself. This isolates run_bp_buffer(cone_weight(ones))
+ * alone to confirm the split directly, same bp(cone_weight(ones)) input
+ * reconstruct_gpu's own bp(ones) precompute uses.
+ */
+double gpu_op_bp_timed(CLState *cl, const CBpara *p)
+{
+    cl_int err;
+    int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
+    int W = p->detector_width,   H  = p->detector_height;
+    int np = p->num_projs;
+    size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
+    size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
+
+    float *ang_cs = (float *)malloc((size_t)np * 2 * sizeof(float));
+    for (int i = 0; i < np; i++) {
+        ang_cs[2*i]   = (float)cos(p->angles[i]);
+        ang_cs[2*i+1] = (float)sin(p->angles[i]);
+    }
+    cl_mem d_ang_cs = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR,
+                                      (size_t)np*2*sizeof(float), ang_cs, &err);
+    CL_CHECK(err, "gpu_op_bp_timed d_ang_cs");
+    free(ang_cs);
+
+    cl_mem d_ones_raw  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+    CL_CHECK(err, "gpu_op_bp_timed d_ones_raw");
+    cl_mem d_ones_prep = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+    CL_CHECK(err, "gpu_op_bp_timed d_ones_prep");
+    float one = 1.f;
+    err = clEnqueueFillBuffer(cl->queue, d_ones_raw, &one, sizeof(float), 0, proj_bytes, 0, NULL, NULL);
+    CL_CHECK(err, "gpu_op_bp_timed fill ones");
+    run_preprocess(cl, p, d_ones_raw, d_ones_prep);
+
+    cl_mem d_vol_out = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
+    CL_CHECK(err, "gpu_op_bp_timed d_vol_out");
+    float zero = 0.f;
+    clEnqueueFillBuffer(cl->queue, d_vol_out, &zero, sizeof(float), 0, vol_bytes, 0, NULL, NULL);
+
+    clFinish(cl->queue);  /* setup traffic must not leak into the timed region */
+    double t0 = get_time_sec();
+    run_bp_buffer(cl, p, d_ones_prep, d_ang_cs, d_vol_out, 0, np);
+    clFinish(cl->queue);
+    double dt = get_time_sec() - t0;
+
+    clReleaseMemObject(d_vol_out);
+    clReleaseMemObject(d_ones_prep);
+    clReleaseMemObject(d_ones_raw);
+    clReleaseMemObject(d_ang_cs);
+
+    return dt;
+}
+
+/*
  * ── gpu_diag_repeat_slab ────────────────────────────────────────────────
  * Public entry for the perf-v2 Phase A2/A3 diagnostic. Builds R/T buffers,
  * repeats one fixed angle-slab n_repeats times (optionally reallocating

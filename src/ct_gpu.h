@@ -103,6 +103,14 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
 double gpu_op_fp_timed(CLState *cl, const CBpara *p, const float *volume);
 
 /*
+ * Companion to gpu_op_fp_timed: times a single run_bp_buffer(cone_weight(
+ * ones)) call in isolation, same setup reconstruct_gpu's own bp(ones)
+ * precompute uses. No volume input needed (bp always starts from ones for
+ * this component test). cl must already be gpu_init'd in GPU_MODE_BUFFER.
+ */
+double gpu_op_bp_timed(CLState *cl, const CBpara *p);
+
+/*
  * perf-v2 Phase A2/A3 diagnostic: repeat one fixed fp_buffer angle-slab
  * n_repeats times, printing wall + GPU-event-profiled time per repeat.
  * Distinguishes thermal throttling (monotone degradation) from
