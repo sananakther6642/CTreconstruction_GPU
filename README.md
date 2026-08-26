@@ -33,10 +33,12 @@ Intel i7-5820K (12 threads) · AMD Hawaii PRO (2560 shaders, 2.56 TFLOPS).
 Intel Xeon E5-2620 0 (24 threads) · NVIDIA GTX 680 (Kepler, no
 `cl_khr_fp16` — `--half` unavailable).
 
-MSE vs CPU: 256³ `1.148e-10` (`gpu-buf`) / `1.128e-07` (`gpu-img`/`gpu-opt`).
+MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07` (`gpu-img`/`gpu-opt`).
 512³ `9.534e-11` (`gpu-buf`) / `1.232e-09` (`gpu-img`/`gpu-opt`). No NaN/inf.
-RMS as % of signal range: 256³ 0.0255%, 512³ 0.0026% (`gpu-img`/`gpu-opt`;
-`gpu-buf` is ~300x tighter still). Improves at higher resolution, not worse.
+RMS as % of signal range: 256³ 0.0194%, 512³ 0.0026% (`gpu-img`/`gpu-opt`;
+`gpu-buf` is ~1000x tighter still). Improves at higher resolution, not worse.
+(256³ re-confirmed 2026-08-26 on kale, fresh 100-epoch run, same worst
+voxels/order of magnitude as the original measurement — see session log.)
 
 `gpu-img`/`gpu-opt` are not bit-exact vs CPU/`gpu-buf` — checked why with
 `diag_maxgap.py` rather than assumed. **Not** the earlier-suspected `1/U²`
