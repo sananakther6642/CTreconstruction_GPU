@@ -1,0 +1,9 @@
+OpenCL error -1 at clGetDeviceIDs
+Loading /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 ...
+  vol_img precision: float32
+  Volume:    256 x 256 x 256
+  Detector:  512 x 512
+  Angles:    75
+  SOD/SDD:   5.0 / 7.0 mm
+
+=== GPU-OPT mode (LUT+local+float4), 100 epochs ===
