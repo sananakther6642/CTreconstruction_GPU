@@ -15,7 +15,19 @@ __constant sampler_t samp =
     CLK_ADDRESS_CLAMP           |
     CLK_FILTER_LINEAR;
 
-/* OSEM: ip_start/ip_count select a contiguous angle
+#ifdef HYBRID_PRECISION
+/* MEASURED NEGATIVE RESULT -- see bp_image.cl for the full writeup
+ * (identical mechanism/finding here: kept off by default, real
+ * slowdown, no accuracy win, gate logic confirmed correct). This
+ * kernel's fp is fp_image.cl, unaffected -- only bp needed the
+ * fallback per diag_op_attribution.py's measured fp/bp split. */
+__constant sampler_t samp_exact =
+    CLK_NORMALIZED_COORDS_FALSE |
+    CLK_ADDRESS_CLAMP           |
+    CLK_FILTER_NEAREST;
+#endif
+
+/* perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
  * subrange for the compute loop (see bp_buffer.cl for the full
  * rationale, identical here). lcs is still sized/loaded for the FULL
  * num_projs regardless of ip_count -- it's only 600 bytes even at
@@ -37,6 +49,10 @@ __kernel void bp_opt(
     float pixelSize,
     int   ip_start,
     int   ip_count
+#ifdef HYBRID_PRECISION
+    , float radius_frac  /* see bp_image.cl -- identical semantics */
+    , float grad_thresh
+#endif
 )
 {
     /* Cooperatively load angle_cs into local memory.
@@ -62,6 +78,13 @@ __kernel void bp_opt(
     float xpr = ((float)ix - radius)   * voxelSize;
     float ypr = ((float)iy - radius)   * voxelSize;
     float zpr = ((float)iz - radius_z) * voxelSize;
+
+#ifdef HYBRID_PRECISION
+    float cx = (float)ix - radius, cy = (float)iy - radius;
+    float r2 = cx*cx + cy*cy;
+    float rgate2 = (radius_frac * (Nxz * 0.5f)) * (radius_frac * (Nxz * 0.5f));
+    int in_radius_band = (r2 > rgate2);
+#endif
 
     float sum = 0.f;
     float sod2 = SOD * SOD;
@@ -97,8 +120,32 @@ __kernel void bp_opt(
         float vf = (zpr*SDD*inv_U)*inv_px + half_H;
         int u0 = (int)floor(uf), v0 = (int)floor(vf);
         if (u0 < 0 || u0+1 >= W || v0 < 0 || v0+1 >= H) continue;
+#ifdef HYBRID_PRECISION
+        float val_hw;
+        if (in_radius_band) {
+            /* Same corner mapping as bp_image.cl -- see that file for the
+             * full derivation. (v,u) order matches this kernel's own
+             * (vf+.5f, uf+.5f) read_imagef convention just below. */
+            float c00 = read_imagef(proj_images, samp_exact, (float4)(v0+0.5f, u0+0.5f, (float)ip, 0.f)).x;
+            float c10 = read_imagef(proj_images, samp_exact, (float4)(v0+0.5f, u0+1.5f, (float)ip, 0.f)).x;
+            float c01 = read_imagef(proj_images, samp_exact, (float4)(v0+1.5f, u0+0.5f, (float)ip, 0.f)).x;
+            float c11 = read_imagef(proj_images, samp_exact, (float4)(v0+1.5f, u0+1.5f, (float)ip, 0.f)).x;
+            float cmin = fmin(fmin(c00,c10), fmin(c01,c11));
+            float cmax = fmax(fmax(c00,c10), fmax(c01,c11));
+            if (cmax - cmin > grad_thresh) {
+                float du = uf - u0, dv = vf - v0;
+                val_hw = c00*(1-du)*(1-dv) + c10*du*(1-dv) + c01*(1-du)*dv + c11*du*dv;
+            } else {
+                val_hw = read_imagef(proj_images, samp, (float4)(vf+.5f, uf+.5f, (float)ip, 0.f)).x;
+            }
+        } else {
+            val_hw = read_imagef(proj_images, samp, (float4)(vf+.5f, uf+.5f, (float)ip, 0.f)).x;
+        }
+        sum += val_hw * sod2 * inv_U * inv_U;
+#else
         float4 val = read_imagef(proj_images, samp, (float4)(vf+.5f, uf+.5f, (float)ip, 0.f));
         sum += val.x * sod2 * inv_U * inv_U;
+#endif
     }
 
     sum *= M_PI_F / (float)num_projs;

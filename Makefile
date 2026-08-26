@@ -26,7 +26,7 @@ TARGET = $(BUILD_DIR)/ct_recon
 
 .PHONY: all clean run-cpu run-gpu-buf run-gpu-img run-gpu-opt \
                run-cpu-512 run-gpu-buf-512 run-gpu-img-512 run-gpu-opt-512 \
-               run-python run-python-512 run-op-fp run-op-bp run-op-fp-512 run-op-bp-512
+               run-python run-op-fp run-op-bp run-op-fp-512 run-op-bp-512
 
 all: $(BUILD_DIR) $(TARGET)
 
@@ -70,25 +70,15 @@ run-gpu-opt-512:
 
 
 # ── Validation helpers ──
-# Python reference: must use the same EPOCHS as the C/GPU run being compared
-# (validate.py's "MSE vs Python" column is only meaningful when they match).
+# Reference (python): the reference script, unmodified
+# algorithm (random jitter; sample_ratio=1, reduced from the script's
+# default 2 to cut runtime, call-site only). Hardcoded to the 256^3 dataset
+# and 20 epochs -- fewer than 100 is an accepted quality tradeoff for this
+# specific script, not a hard requirement. No --data/--epochs flags, so
+# no -512 target exists and EPOCHS below is not honored. Output lands at
+# output_python_reconstruction.hdf5, matching validate.py's 'topic2' entry.
 run-python:
-	python3 run_python_reference.py --data $(DATA256) --out output_python.hdf5 --epochs $(EPOCHS)
-
-# 512^3 python reference — never generated before; validate.py 512's
-# "MSE vs Python" column always showed "shape mismatch" because it was
-# comparing against the 256^3-shaped output_python.hdf5. Pure Python
-# fp_func at 512^3 is slow (minutes/epoch on top of already-slow 256^3) —
-# use a small EPOCHS unless you have real time to spare.
-#
-# NOTE: run_python_reference.py's fp_func always uses sample_ratio=2
-# (n_samples=ceil(Nxz*2)=1024 at 512^3), not the C side's --samples 512
-# default -- same sampling-density mismatch already documented for 256^3
-# in the README's Known Gaps. The MSE this produces is not apples-to-apples
-# with the C/GPU runs until that's reconciled; treat it as a sanity check
-# on shape/scale, not a tight correctness bound.
-run-python-512:
-	python3 run_python_reference.py --data $(DATA512) --out output_python_512.hdf5 --epochs $(EPOCHS)
+	python3 python/Topic_2_CTreconstruction.py
 
 # Component tests: isolate fp/bp correctness from accumulated MLEM iteration.
 # OMP_NUM_THREADS/PROC_BIND/PLACES matches run-cpu/run-cpu-512 — without

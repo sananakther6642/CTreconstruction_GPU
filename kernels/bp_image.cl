@@ -15,7 +15,7 @@ __constant sampler_t samp =
     CLK_ADDRESS_CLAMP           |
     CLK_FILTER_LINEAR;
 
-/* perf-v2 Phase C1 (OSEM): see bp_buffer.cl's kernel comment for the
+/* OSEM: see bp_buffer.cl's kernel comment for the
  * full ip_start/ip_count/M_PI_F-num_projs-cancellation rationale --
  * identical here. */
 __kernel void bp_image(

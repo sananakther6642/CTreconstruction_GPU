@@ -46,7 +46,7 @@ __constant sampler_t vol_samp =
     CLK_FILTER_LINEAR;
 
 /*
- * perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+ * OSEM: ip_start/ip_count select a contiguous angle
  * subrange. The host launches with a global work-offset of ip_start in
  * dim 2 and a work-size of ip_count rounded up to a multiple of lws[2]
  * (see run_fp_image in ct_gpu.c) -- that rounding is exactly why the
