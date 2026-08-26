@@ -6,6 +6,14 @@ angle at this voxel (a geometric near-singularity that would blow up 1/U^2
 and amplify tiny float32 rounding differences between implementations),
 and prints the actual bp_cpu-style math step by step so we can compare
 against what the CPU/GPU code computes.
+
+RESULT (measured, 256^3, see diag_maxgap.py): the singularity hypothesis this
+script was written to test is FALSE. min|U| over all 75 angles at the worst
+voxel is 4.10 -- 82% of SOD -- and max 1/U^2 is only 1.5x its isocentre
+value. No amplification worth speaking of. The real cpu-vs-gpu-img/gpu-opt
+disagreement is a one-voxel displacement of sharp features from hardware
+CLK_FILTER_LINEAR sampling, not geometry. Kept because the U-vs-angle dump
+is still the right tool if a genuine singularity is ever suspected.
 """
 import sys
 import numpy as np

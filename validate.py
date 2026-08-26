@@ -90,9 +90,20 @@ for name, v in volumes.items():
             t2_str = f"MSE={m:.3e}"
         print(f"{name:<10} {mn:>10.4f} {mx:>10.4f} {me:>10.4f} {nan_c:>6} {inf_c:>6}  {cpu_str:<20} {t2_str}")
 
-        # outlier diagnostics: is max diff a handful of voxels (e.g. near a
-        # geometric singularity where U->0 amplifies rounding via 1/U^2) or
-        # widespread (systematic boundary-rule mismatch)?
+        # outlier diagnostics: is max diff a handful of voxels or widespread
+        # (systematic boundary-rule mismatch)?
+        #
+        # NOTE: this used to claim the outliers sat near a geometric
+        # singularity (U->0 amplifying rounding via 1/U^2). That was checked
+        # directly with diag_maxgap.py at 256^3 and is FALSE: at the actual
+        # worst voxel, min|U| over all 75 angles is 4.10 = 82% of SOD, and
+        # 1/U^2 is only 1.5x its isocentre value. The real pattern is a
+        # one-voxel spatial displacement of sharp features in gpu-img/gpu-opt
+        # (hardware CLK_FILTER_LINEAR sampling) vs cpu/gpu-buf (manual
+        # float32 trilinear) -- mass is conserved across the neighbouring
+        # voxel pair, so it is a sampler-precision edge effect, not a
+        # magnitude error. All half-texel (+0.5f) offsets were audited and
+        # are correct in every kernel, so it is not a coordinate-origin bug.
         Nxz = v.shape[0]
         thresh = 10 * np.sqrt(mse) if mse > 0 else maxd * 0.5
         n_outliers = int(np.sum(diff > thresh))
