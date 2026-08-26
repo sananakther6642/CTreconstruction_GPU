@@ -229,11 +229,15 @@ if __name__ == '__main__':
         v0=np.ones((Volumen_num_xz,Volumen_num_xz,Volumen_num_y)).astype(np.float32)
 
 
-        proj_f= lambda vol: fp_func(cb_para, vol,sample_ratio=2)
+        # sample_ratio halved 2->1 (call-site only, fp_func/bp_func algorithm
+        # untouched): fp_func's per-pixel Python loop dominates runtime
+        # (~4660s/epoch measured at sample_ratio=2, 256^3, kale) -- fewer
+        # samples/ray cuts that loop's per-call cost roughly in half.
+        proj_f= lambda vol: fp_func(cb_para, vol,sample_ratio=1)
         bp_f = lambda projection:  bp_func(projection,cb_para)
 
         ## input parameters, (which can be load later)
-        Epochs=100   # can choose any number until get good reconstruction results
+        Epochs=10   # can choose any number until get good reconstruction results
 
         # bp(ones) is the MLEM normalizer -- it does not depend on v0 and is
         # identical every epoch. Was recomputed inside the loop 100 times;
