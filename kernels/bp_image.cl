@@ -47,16 +47,26 @@ __constant sampler_t samp =
  * i.e. this specific voxel's error is intrinsic to the manual blend
  * itself, not a gate-tuning artifact.
  *
- * Working theory, NOT verified: -cl-fast-relaxed-math (always-on for
- * this build, see build_program_opts) may reorder/approximate the
- * manual blend's float32 arithmetic differently than it treats the
- * fixed-function sampler's internal math, so "exact" nearest-fetch +
- * manual blend is not actually bit-exact to a true float32 reference
- * once that flag is in play. Untested: whether disabling
- * -cl-fast-relaxed-math for just this code path would change the
- * result. Left as an open question rather than chased further given
- * the cost (real slowdown) already outweighs the already-tiny gap this
- * was meant to close (0.0026-0.0255% of signal range, see README).
+ * -cl-fast-relaxed-math theory: TESTED AND RULED OUT. Rebuilt the image/
+ * opt programs with that flag entirely stripped (HYBRID_PRECISION_NO_
+ * FASTMATH=1) -- output was byte-identical to the flag-on run at every
+ * digit, including this exact voxel. Not the cause.
+ *
+ * Actual likely explanation: "MSE vs CPU" was never really "MSE vs
+ * ground truth" -- it's agreement with one specific numerical scheme
+ * (manual float32 bilinear interpolation). Both the CPU path and the
+ * hardware sampler are approximations of the true continuous
+ * backprojection integral; bilinear interpolation itself carries bias,
+ * and nothing guarantees the manual scheme sits closer to the true
+ * value than the hardware sampler's rounding does at every voxel. At
+ * (244,66,17) they appear to genuinely disagree by a real (not buggy)
+ * amount, with no ground truth available in this dataset (see README's
+ * Files section -- proj_*.hdf5 has no reference volume) to say which
+ * is actually more correct. Not chased further: the cost (real,
+ * measured 37-53% slowdown) already outweighs the tiny gap this was
+ * meant to close (0.0026-0.0255% of signal range, see README), and the
+ * "which is more correct" question would need an independent ground
+ * truth this project's data doesn't have.
  *
  * Kept in the codebase (not reverted) as a measured negative result, in
  * the same spirit as unroll-x2, AABB-at-256, and
