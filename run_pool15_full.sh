@@ -92,8 +92,21 @@ checkpoint() {
     else
       git checkout -B pool15-results
     fi
-    git add -f "$OUT"/logs "$OUT"/conv_csv "$OUT"/*.txt "$OUT"/*.png \
-               "$OUT"/hardware.txt "$OUT"/topic2_python.log 2>/dev/null
+    # One git add per path -- a single command with multiple globs means
+    # any glob that matches nothing (e.g. no *.txt yet on the first
+    # checkpoint) makes bash pass the literal unexpanded string, which git
+    # add rejects with "pathspec did not match any files" and a nonzero
+    # exit -- killing the ENTIRE add, including paths that did match.
+    # Verified: this silently dropped cpu_256's csv/log on pool15-01's
+    # first real checkpoint ("nothing new to commit" despite real output
+    # existing on disk).
+    git add -f "$OUT"/logs 2>/dev/null
+    git add -f "$OUT"/conv_csv 2>/dev/null
+    git add -f "$OUT"/hardware.txt 2>/dev/null
+    git add -f "$OUT"/topic2_python.log 2>/dev/null
+    for f in "$OUT"/*.txt "$OUT"/*.png; do
+      [ -e "$f" ] && git add -f "$f" 2>/dev/null
+    done
     if git diff --cached --quiet; then
       echo "checkpoint ($label): nothing new to commit"
     else
