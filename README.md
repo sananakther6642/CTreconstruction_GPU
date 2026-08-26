@@ -35,8 +35,12 @@ Intel Xeon E5-2620 0 (24 threads) · NVIDIA GeForce GTX 680 (Kepler, no
 
 MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07` (`gpu-img`/`gpu-opt`).
 512³ `9.534e-11` (`gpu-buf`) / `1.232e-09` (`gpu-img`/`gpu-opt`). No NaN/inf.
-RMS as % of signal range: 256³ 0.0194%, 512³ 0.0026% (`gpu-img`/`gpu-opt`;
-`gpu-buf` is ~1000x tighter still). Improves at higher resolution, not worse.
+RMS as % of signal range: 256³ 0.0194%, 512³ 0.0026% (`gpu-img`/`gpu-opt`).
+Improves at higher resolution, not worse. `gpu-buf`'s MSE-vs-CPU margin
+over `gpu-img`/`gpu-opt` is scale-dependent, not a fixed ratio: ~980x
+tighter at 256³ (`1.148e-10` vs `1.128e-07`) but only ~13x tighter at
+512³ (`9.534e-11` vs `1.232e-09`) — `gpu-img`/`gpu-opt`'s absolute error
+shrinks much faster with resolution than `gpu-buf`'s does.
 (256³ re-confirmed 2026-08-26 on the NVIDIA GeForce GTX 680, fresh 100-epoch run, same worst
 voxels/order of magnitude as the original measurement — see session log.)
 
