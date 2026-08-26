@@ -210,6 +210,7 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
                     snprintf(fp_unroll_opt, sizeof(fp_unroll_opt), "-DFP_UNROLL=%d", n);
             }
         }
+        if (fp_unroll_opt[0]) printf("  [debug] buffer program build opt: '%s'\n", fp_unroll_opt);
         cl->prog_buffer = build_program_opts(cl->ctx, cl->device, combined, fp_unroll_opt);
         free(src_bp); free(src_fp); free(combined);
 
