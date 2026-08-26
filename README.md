@@ -43,6 +43,12 @@ reproduce on kale (flat to the ms). Root cause: AMD-driver memory-
 placement demotion of the volume buffer, not thermal throttling. Full
 writeup in the session log.
 
+A mitigation (`FP_BUFFER_VOL_REALLOC_EVERY`, periodic buffer reallocation
+to force it back into fast memory) was tried and did **not** hold up:
+looked like a win at small scale but averaged *slower* (91.74s vs 86.96s)
+over four full 10-epoch runs — off by default (see `src/ct_gpu.c` for the
+real numbers).
+
 ## Validation (pool15-01, 100 epochs, both datasets, all four modes)
 
 Earlier full-scale validation run, on the original AMD hardware — MSE
