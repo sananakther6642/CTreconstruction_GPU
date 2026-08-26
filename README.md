@@ -21,7 +21,7 @@ Project methodology narrative: `sessions/2026-08-25-project-methodology-start-to
 
 Intel i7-5820K (12 threads) · AMD Hawaii PRO (2560 shaders, 2.56 TFLOPS).
 
-### NVIDIA GTX 680, EPOCHS=100
+### NVIDIA GeForce GTX 680, EPOCHS=100
 
 | Mode | 256³ time/epoch | 256³ total | 512³ time/epoch | 512³ total | Speedup vs CPU |
 |---|---|---|---|---|---|
@@ -30,14 +30,14 @@ Intel i7-5820K (12 threads) · AMD Hawaii PRO (2560 shaders, 2.56 TFLOPS).
 | `gpu-img` | 0.142-0.148s | 14.67s | 1.226-1.256s | 126.74s | 28.9× / 27.0× |
 | `gpu-opt` | 0.138-0.143s | 14.29s | 1.226-1.245s | 125.77s | 29.7× / 27.2× |
 
-Intel Xeon E5-2620 0 (24 threads) · NVIDIA GTX 680 (Kepler, no
+Intel Xeon E5-2620 0 (24 threads) · NVIDIA GeForce GTX 680 (Kepler, no
 `cl_khr_fp16` — `--half` unavailable).
 
 MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07` (`gpu-img`/`gpu-opt`).
 512³ `9.534e-11` (`gpu-buf`) / `1.232e-09` (`gpu-img`/`gpu-opt`). No NaN/inf.
 RMS as % of signal range: 256³ 0.0194%, 512³ 0.0026% (`gpu-img`/`gpu-opt`;
 `gpu-buf` is ~1000x tighter still). Improves at higher resolution, not worse.
-(256³ re-confirmed 2026-08-26 on the NVIDIA GTX 680, fresh 100-epoch run, same worst
+(256³ re-confirmed 2026-08-26 on the NVIDIA GeForce GTX 680, fresh 100-epoch run, same worst
 voxels/order of magnitude as the original measurement — see session log.)
 
 `gpu-img`/`gpu-opt` are not bit-exact vs CPU/`gpu-buf` — checked why with
@@ -55,7 +55,7 @@ fidelity to the CPU reference matters more than speed.
 OSEM `--subsets 5`, 256³, 100 epochs: 57.17s total.
 
 `gpu-buf` variance on AMD Hawaii PRO (75-102s for the same config) does not
-reproduce on the NVIDIA GTX 680 (flat to the ms). Root cause: AMD-driver memory-
+reproduce on the NVIDIA GeForce GTX 680 (flat to the ms). Root cause: AMD-driver memory-
 placement demotion of the volume buffer, not thermal throttling. Full
 writeup in the session log.
 
@@ -68,7 +68,7 @@ real numbers).
 ## Validation (AMD Hawaii PRO, 100 epochs, both datasets, all four modes)
 
 Earlier full-scale validation run, on the original AMD hardware — MSE
-values here differ slightly from the NVIDIA GTX 680 numbers in Performance above
+values here differ slightly from the NVIDIA GeForce GTX 680 numbers in Performance above
 (different GPU — likely different texture-sampler rounding, not verified), not a regression.
 
 ### 256³
@@ -120,7 +120,7 @@ Component tests: `--op fp|bp` dumps a single fp/bp call in isolation;
   clipping still hurts at 256³ when forced on; a latent (inert) AABB
   axis-transposition bug found and fixed; sphere-shaped AABB — no
   headroom over box clip; `bp_cpu` thread scaling already near-optimal
-  at the Makefile default; `clFinish` batching — no win on the NVIDIA GTX 680.
+  at the Makefile default; `clFinish` batching — no win on the NVIDIA GeForce GTX 680.
 
 ## Modes
 
@@ -204,7 +204,7 @@ make run-python
 ```
 
 Pure-Python fp/bp (scipy `RegularGridInterpolator` rebuilt per-angle, no
-vectorization/GPU) measured ~4690s/epoch at 256^3 on the NVIDIA GTX 680 at the script's
+vectorization/GPU) measured ~4690s/epoch at 256^3 on the NVIDIA GeForce GTX 680 at the script's
 default `sample_ratio=2`. `sample_ratio` reduced to 1 (call-site only, in
 `fp_func(cb_para, vol, sample_ratio=1)`; `fp_func`/`bp_func` internals
 untouched) — this also matches the C/GPU modes' default sample count at
@@ -216,11 +216,11 @@ across its 1.3M-pixel loop, not proportional to ray length; bp_func's cost
 is unaffected by sample_ratio at all). Full 100 epochs at this rate would be
 ~4.3 days; per the professor (fewer epochs than 100 is acceptable for this
 script — results converge less but that's an explicit, expected tradeoff,
-not a defect), `Epochs` set to 20 (~20hrs) instead. Run started on the NVIDIA GTX 680
+not a defect), `Epochs` set to 20 (~20hrs) instead. Run started on the NVIDIA GeForce GTX 680
 under `tmux -s topic2` to run unattended.
 
 The validation numbers below are from an earlier `Epochs=2`, `sample_ratio=2`
-run (NVIDIA GTX 680, 2026-08-26) — will be replaced with the 20-epoch result once
+run (NVIDIA GeForce GTX 680, 2026-08-26) — will be replaced with the 20-epoch result once
 that run completes:
 
 ```
@@ -280,7 +280,7 @@ for each epoch (= one pass over all N subsets):
   subsets visited in a golden-ratio-derived coprime stride order.
   Permutation applied once at load time (`utils.c`), so each subset
   becomes a contiguous `(ip_start, ip_count)` launch range.
-- 256³ only. Confirmed on the NVIDIA GTX 680 (4037MiB VRAM): plain `gpu-opt`
+- 256³ only. Confirmed on the NVIDIA GeForce GTX 680 (4037MiB VRAM): plain `gpu-opt`
   at 512³ (S=1) already uses ~3244-3274MiB, leaving ~760-790MiB
   headroom — not enough for the 1024MiB (2×512MiB) a second subset's
   normalizer buffers would need at S=2.
