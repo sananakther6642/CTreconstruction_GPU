@@ -72,8 +72,21 @@ real numbers).
 ## Validation (AMD Hawaii PRO, 100 epochs, both datasets, all four modes)
 
 Earlier full-scale validation run, on the original AMD hardware — MSE
-values here differ slightly from the NVIDIA GeForce GTX 680 numbers in Performance above
-(different GPU — likely different texture-sampler rounding, not verified), not a regression.
+values here differ from the NVIDIA GeForce GTX 680 numbers in Performance
+above, not a regression. The gap is real and larger than expected for
+`gpu-buf` specifically: at 256³, AMD's `gpu-buf` MSE (`6.436e-10`) is
+~5.6x worse than GTX 680's (`1.148e-10`), even though `gpu-buf` never
+touches a hardware texture sampler (manual float32 interpolation only)
+-- so "texture-sampler rounding" can't be the explanation for that part
+of the gap. `-cl-fast-relaxed-math` (always on, `src/ct_gpu.c`) is a
+plausible cause -- the OpenCL spec leaves its exact numerical behavior
+vendor-defined, and a prior investigation confirmed it does NOT explain
+`gpu-img`/`gpu-opt`'s *within-GPU* precision floor on a single machine
+(rebuilt with the flag stripped, byte-identical output -- see
+`experimentation/hybrid-precision/kernels/bp_image.cl`), but that test
+never compared the same build across AMD vs NVIDIA, which is the actual
+open question here. Not yet resolved -- would need a real AMD-hardware
+rebuild with the flag stripped to test directly.
 
 ### 256³
 ```
