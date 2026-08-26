@@ -74,24 +74,37 @@ is_complete() {
 # in one commit at the very end (a mid-run reboot/hang would otherwise
 # lose everything already finished). .hdf5 volumes are never committed
 # (2.4GB+, already globally gitignored) -- only logs/CSVs/PNGs/txt.
+#
+# Uses a separate `git worktree` for pool15-results rather than checking
+# out branches in-place. `git checkout` on the main working directory was
+# tried first and caused real corruption on pool15-01: it flips every
+# tracked file to match the target branch's snapshot in-place, and running
+# that against the exact directory ct_recon/python were actively reading
+# and writing (pool15/conv_csv/*.csv, pool15/hdf5/*.hdf5) produced
+# "cannot open pool15/conv_csv/gpu-buf_256.csv" mid-run. A worktree is a
+# second, independent directory checked out to a different branch of the
+# same repo -- committing there never touches this directory's branch or
+# files at all.
+WORKTREE_DIR="../pool15-results-worktree"
+
 checkpoint() {
   local label="$1"
+  local repo_root
+  repo_root=$(git rev-parse --show-toplevel)
   (
     set +e
-    STARTING_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-    # -B would reset pool15-results to the current branch's HEAD every call,
-    # discarding every earlier checkpoint's commit. Create it once (from
-    # whatever local/remote copy already exists, or fresh off HEAD if this
-    # is truly the first run), then just switch onto it on later calls so
-    # commits accumulate.
-    if git show-ref --verify --quiet refs/heads/pool15-results; then
-      git checkout pool15-results
-    elif git ls-remote --exit-code --heads origin pool15-results >/dev/null 2>&1; then
-      git fetch origin pool15-results
-      git checkout -B pool15-results origin/pool15-results
-    else
-      git checkout -B pool15-results
+    if [ ! -d "$WORKTREE_DIR" ]; then
+      if git show-ref --verify --quiet refs/heads/pool15-results; then
+        git worktree add "$WORKTREE_DIR" pool15-results
+      elif git ls-remote --exit-code --heads origin pool15-results >/dev/null 2>&1; then
+        git fetch origin pool15-results
+        git worktree add -B pool15-results "$WORKTREE_DIR" origin/pool15-results
+      else
+        git worktree add -B pool15-results "$WORKTREE_DIR"
+      fi
     fi
+    rsync -a --delete "$repo_root/$OUT/" "$WORKTREE_DIR/$OUT/"
+    cd "$WORKTREE_DIR" || exit 1
     # One git add per path -- a single command with multiple globs means
     # any glob that matches nothing (e.g. no *.txt yet on the first
     # checkpoint) makes bash pass the literal unexpanded string, which git
@@ -113,7 +126,6 @@ checkpoint() {
       git commit -m "pool15 checkpoint: $label ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
       git push -u origin pool15-results
     fi
-    git checkout "$STARTING_BRANCH"
   ) || echo "WARNING: checkpoint ($label) commit/push failed -- results still on disk under $OUT/, just not in git."
 }
 
