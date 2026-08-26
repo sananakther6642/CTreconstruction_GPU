@@ -141,3 +141,23 @@ fi
 echo ""
 echo "=== done. Everything under $OUT/ ==="
 find "$OUT" -type f | sort
+
+echo ""
+echo "=== committing results to pool15-results branch (best-effort) ==="
+# Runs regardless of what succeeded/failed above -- captures whatever made
+# it to disk. .hdf5 volumes skipped (2.4GB+, stays local only); logs/CSVs/
+# PNGs/txt are small and are what the report actually needs.
+(
+  set +e
+  STARTING_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+  git checkout -B pool15-results
+  git add -f "$OUT"/logs "$OUT"/conv_csv "$OUT"/*.txt "$OUT"/*.png \
+             "$OUT"/hardware.txt "$OUT"/topic2_python.log 2>/dev/null
+  if git diff --cached --quiet; then
+    echo "nothing new to commit"
+  else
+    git commit -m "pool15 run results ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+    git push -u origin pool15-results
+  fi
+  git checkout "$STARTING_BRANCH"
+) || echo "WARNING: commit/push step failed -- results are still on disk under $OUT/, just not in git. Check manually."
