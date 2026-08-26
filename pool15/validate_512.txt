@@ -1,0 +1,10 @@
+
+=== 512^3 validation ===
+
+Mode              min        max       mean    nan    inf  MSE vs CPU     MSE vs Topic2
+----------------------------------------------------------------------------------------------------
+cpu            0.0000     1.0055     0.0330      0      0  (reference)    
+gpu-buf     [file not found]
+gpu-img     [file not found]
+gpu-opt     [file not found]
+
