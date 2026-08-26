@@ -211,13 +211,32 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "cone_weight_hw");
     }
 
+    /* perf-v2 hybrid-precision: opt-in radius-gated/gradient-gated manual
+     * fallback for bp's hardware sampler (see kernels/bp_image.cl for the
+     * full rationale -- measured via diag_op_attribution.py to be the
+     * dominant source of gpu-img/gpu-opt's MSE-vs-CPU gap, fp_image.cl
+     * does NOT get this treatment, confirmed unnecessary by measurement).
+     * Compile-time define rather than a new mode -- HYBRID_PRECISION unset
+     * (the default) compiles both bp kernels byte-identical to before
+     * (verified: gcc -E preprocessed output diffs clean against the
+     * pre-hybrid source with the define unset). */
+    int hybrid_precision = 0;
+    {
+        const char *hyb_env = getenv("HYBRID_PRECISION");
+        if (hyb_env) hybrid_precision = atoi(hyb_env);
+    }
+    cl->hybrid_precision = hybrid_precision;
+
     /* ── Image-mode program (also used by OPT for fp_image) ── */
     if (mode == GPU_MODE_IMAGE || mode == GPU_MODE_OPT) {
         char *src_bp  = load_source(path_bp_img);
         char *src_fp  = load_source(path_fp_img);
         char *combined = concat_src(src_bp, src_fp);
-        cl->prog_image = build_program_opts(cl->ctx, cl->device, combined,
-                                            cl->has_fp16 ? "-DHAVE_FP16" : "");
+        char img_opts[128];
+        snprintf(img_opts, sizeof(img_opts), "%s%s",
+                 cl->has_fp16 ? "-DHAVE_FP16 " : "",
+                 hybrid_precision ? "-DHYBRID_PRECISION" : "");
+        cl->prog_image = build_program_opts(cl->ctx, cl->device, combined, img_opts);
         free(src_bp); free(src_fp); free(combined);
 
         cl->k_bp_img = clCreateKernel(cl->prog_image, "bp_image", &err);
@@ -238,7 +257,14 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         /* also need utility kernels (cone_weight, proj_divide, vol_update) */
         char *src_util = load_source(path_bp_buf);
         char *combined = concat_src(src_bp, src_util);
-        cl->prog_opt = build_program(cl->ctx, cl->device, combined);
+        /* build_program hardcodes extra_opts="-cl-fast-relaxed-math" with
+         * no room for more flags -- call build_program_opts directly.
+         * Note build_program_opts ALREADY always prepends
+         * -cl-fast-relaxed-math itself (see its own snprintf, ct_gpu.c
+         * ~52) -- extra_opts only needs -DHYBRID_PRECISION, not a repeat
+         * of the base flag. */
+        cl->prog_opt = build_program_opts(cl->ctx, cl->device, combined,
+                                          hybrid_precision ? "-DHYBRID_PRECISION" : "");
         free(src_bp); free(src_util); free(combined);
 
         cl->k_bp_opt   = clCreateKernel(cl->prog_opt, "bp_opt", &err);
@@ -830,6 +856,23 @@ static void run_bp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &px);
     clSetKernelArg(k,12, sizeof(int),    &ip_start);
     clSetKernelArg(k,13, sizeof(int),    &ip_count);
+    if (cl->hybrid_precision) {
+        /* kernel was compiled with HYBRID_PRECISION (see gpu_init) and
+         * expects exactly these two extra args, in this order -- see
+         * bp_image.cl's kernel signature. Defaults per the perf-v2 plan:
+         * radius_frac=0.75 (measured 62%/100% of >100xRMS outliers sit
+         * beyond 0.8xFOV radius); grad_thresh=1e-3 (projection-data units,
+         * conservative -- most real edges in this dataset are far above
+         * this, flat regions are far below). Both env-overridable and
+         * clamped (ct_cpu.c's FP_TILE_ENV pattern), not trusted raw. */
+        float radius_frac = 0.75f, grad_thresh = 1e-3f;
+        const char *rf_env = getenv("HYBRID_RADIUS_FRAC");
+        if (rf_env) { float v = atof(rf_env); if (v > 0.f && v <= 1.f) radius_frac = v; }
+        const char *gt_env = getenv("HYBRID_GRAD_THRESH");
+        if (gt_env) { float v = atof(gt_env); if (v >= 0.f) grad_thresh = v; }
+        clSetKernelArg(k,14, sizeof(float), &radius_frac);
+        clSetKernelArg(k,15, sizeof(float), &grad_thresh);
+    }
 
     size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
     size_t lws[3] = {4, 4, 16};  /* see BP_LWS note in run_bp_buffer above */
@@ -1443,6 +1486,18 @@ void gpu_op_bp(CLState *cl, const CBpara *p, float *volume_out)
         int ip_start = 0, ip_count = np;
         clSetKernelArg(k,13, sizeof(int),   &ip_start);
         clSetKernelArg(k,14, sizeof(int),   &ip_count);
+        if (cl->hybrid_precision) {
+            /* see run_bp_image's identical block for the defaults/env-var
+             * rationale -- kept in sync manually since bp_opt's inline
+             * call sites don't share a helper with run_bp_image. */
+            float radius_frac = 0.75f, grad_thresh = 1e-3f;
+            const char *rf_env = getenv("HYBRID_RADIUS_FRAC");
+            if (rf_env) { float v = atof(rf_env); if (v > 0.f && v <= 1.f) radius_frac = v; }
+            const char *gt_env = getenv("HYBRID_GRAD_THRESH");
+            if (gt_env) { float v = atof(gt_env); if (v >= 0.f) grad_thresh = v; }
+            clSetKernelArg(k,15, sizeof(float), &radius_frac);
+            clSetKernelArg(k,16, sizeof(float), &grad_thresh);
+        }
         size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
         size_t lws[3] = {4, 4, 16};
         for (int d=0; d<3; d++) if (gws[d]%lws[d]) gws[d] += lws[d]-gws[d]%lws[d];
@@ -1610,6 +1665,17 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,12,sizeof(float),&px);
             clSetKernelArg(k,13,sizeof(int),&subset_start[s]);
             clSetKernelArg(k,14,sizeof(int),&subset_count[s]);
+            if (cl->hybrid_precision) {
+                /* see run_bp_image's identical block for defaults/env-var
+                 * rationale. */
+                float radius_frac = 0.75f, grad_thresh = 1e-3f;
+                const char *rf_env = getenv("HYBRID_RADIUS_FRAC");
+                if (rf_env) { float v = atof(rf_env); if (v > 0.f && v <= 1.f) radius_frac = v; }
+                const char *gt_env = getenv("HYBRID_GRAD_THRESH");
+                if (gt_env) { float v = atof(gt_env); if (v >= 0.f) grad_thresh = v; }
+                clSetKernelArg(k,15, sizeof(float), &radius_frac);
+                clSetKernelArg(k,16, sizeof(float), &grad_thresh);
+            }
             size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
             size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
             {
@@ -1769,6 +1835,17 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                 clSetKernelArg(k,12,sizeof(float),&px);
                 clSetKernelArg(k,13,sizeof(int),&ip_start);
                 clSetKernelArg(k,14,sizeof(int),&ip_count);
+                if (cl->hybrid_precision) {
+                    /* see run_bp_image's identical block for defaults/env-
+                     * var rationale. This is the hot per-epoch call. */
+                    float radius_frac = 0.75f, grad_thresh = 1e-3f;
+                    const char *rf_env = getenv("HYBRID_RADIUS_FRAC");
+                    if (rf_env) { float v = atof(rf_env); if (v > 0.f && v <= 1.f) radius_frac = v; }
+                    const char *gt_env = getenv("HYBRID_GRAD_THRESH");
+                    if (gt_env) { float v = atof(gt_env); if (v >= 0.f) grad_thresh = v; }
+                    clSetKernelArg(k,15, sizeof(float), &radius_frac);
+                    clSetKernelArg(k,16, sizeof(float), &grad_thresh);
+                }
                 size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
                 size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
                 {

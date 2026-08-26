@@ -49,6 +49,12 @@ typedef struct {
 
     GPUMode mode;
     int has_fp16; /* cl_khr_fp16 support -- gates --half; false on e.g. NVIDIA GTX 680 (kale) */
+    int hybrid_precision; /* HYBRID_PRECISION env var, read once at gpu_init --
+                            * whether k_bp_img/k_bp_opt were compiled with the
+                            * two extra threshold args (see bp_image.cl /
+                            * bp_buffer_opt.cl). Remembered so call sites know
+                            * whether to bind them, without re-reading getenv
+                            * or guessing from kernel arg count. */
 } CLState;
 
 /* Initialize OpenCL, compile kernels. Returns 0 on success. */
