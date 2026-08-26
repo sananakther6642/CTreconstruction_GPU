@@ -1306,13 +1306,22 @@ void gpu_op_fp(CLState *cl, const CBpara *p, const float *volume, float *proj_ou
     cl_mem d_proj = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
     CL_CHECK(err, "gpu_op_fp d_proj");
 
+    /* run_fp_buffer needs d_R_mats/d_T_vecs too (kernel args 1-2, same
+     * host-side geometry precompute fp_image uses) -- BUG FOUND AND FIXED
+     * HERE: this call was originally only inside the image-mode branch
+     * below, leaving gpu-buf's launch reading uninitialized cl_mem
+     * handles for R/T. Confirmed via real run: fp_gpubuf.hdf5 came back
+     * with 1,310,720/19,660,800 NaN voxels (~6.7%) while fp_cpu.hdf5 and
+     * fp_gpuimg.hdf5 were clean -- isolated to gpu-buf specifically,
+     * which pointed straight at the one thing only its branch was
+     * skipping. Moved up so both branches get valid geometry buffers. */
+    build_RT_buffers(cl, p);
+
     if (cl->mode == GPU_MODE_BUFFER) {
         /* run_fp_buffer takes cl_mem* (may reallocate d_vol internally via
          * FP_BUFFER_VOL_REALLOC_EVERY) -- pass a local pointer to our copy. */
         run_fp_buffer(cl, p, &d_vol, d_proj, 0, np);
     } else {
-        build_RT_buffers(cl, p);
-
         /* Same vol_img construction as reconstruct_gpu's GPU_MODE_IMAGE
          * branch (ct_gpu.c ~1084-1088), float32 only -- --half is
          * irrelevant to this component test. */
@@ -1336,9 +1345,9 @@ void gpu_op_fp(CLState *cl, const CBpara *p, const float *volume, float *proj_ou
         run_fp_image(cl, p, vol_img, d_proj, 0, np);
 
         clReleaseMemObject(vol_img);
-        clReleaseMemObject(cl->d_R_mats);
-        clReleaseMemObject(cl->d_T_vecs);
     }
+    clReleaseMemObject(cl->d_R_mats);
+    clReleaseMemObject(cl->d_T_vecs);
     clFinish(cl->queue);
 
     err = clEnqueueReadBuffer(cl->queue, d_proj, CL_TRUE, 0, proj_bytes, proj_out, 0, NULL, NULL);
