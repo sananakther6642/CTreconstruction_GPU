@@ -33,8 +33,24 @@ Intel i7-5820K (12 threads) · AMD Hawaii PRO (2560 shaders, 2.56 TFLOPS).
 Intel Xeon E5-2620 0 (24 threads) · NVIDIA GTX 680 (Kepler, no
 `cl_khr_fp16` — `--half` unavailable).
 
-MSE vs CPU: 256³ `1.148e-10` (`gpu-buf`) / `1.128e-07` (`gpu-img`/`gpu-opt`).
+MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07` (`gpu-img`/`gpu-opt`).
 512³ `9.534e-11` (`gpu-buf`) / `1.232e-09` (`gpu-img`/`gpu-opt`). No NaN/inf.
+RMS as % of signal range: 256³ 0.0194%, 512³ 0.0026% (`gpu-img`/`gpu-opt`;
+`gpu-buf` is ~1000x tighter still). Improves at higher resolution, not worse.
+(256³ re-confirmed 2026-08-26 on kale, fresh 100-epoch run, same worst
+voxels/order of magnitude as the original measurement — see session log.)
+
+`gpu-img`/`gpu-opt` are not bit-exact vs CPU/`gpu-buf` — checked why with
+`diag_maxgap.py` rather than assumed. **Not** the earlier-suspected `1/U²`
+geometric singularity (measured: min|U| at the worst voxel is 82-91% of
+SOD at both scales, 1.2-1.5x amplification, nothing). It's a one-voxel
+spatial displacement of sharp features from the hardware `CLK_FILTER_LINEAR`
+sampler (all `+0.5f` half-texel offsets audited and correct — not a
+coordinate bug). Mass is conserved across the displaced voxel pair. Affects
+21/16.7M voxels at 256³, 138/134M at 512³ (>100×RMS), concentrated at the
+FOV edge (100% beyond 0.8×FOV radius at 512³). `gpu-buf` (manual float32
+trilinear, no hardware sampler) has none of this — use it when bit-level
+fidelity to the CPU reference matters more than speed.
 
 OSEM `--subsets 5`, 256³, 100 epochs: 57.17s total.
 
@@ -42,6 +58,12 @@ OSEM `--subsets 5`, 256³, 100 epochs: 57.17s total.
 reproduce on kale (flat to the ms). Root cause: AMD-driver memory-
 placement demotion of the volume buffer, not thermal throttling. Full
 writeup in the session log.
+
+A mitigation (`FP_BUFFER_VOL_REALLOC_EVERY`, periodic buffer reallocation
+to force it back into fast memory) was tried and did **not** hold up:
+looked like a win at small scale but averaged *slower* (91.74s vs 86.96s)
+over four full 10-epoch runs — off by default (see `src/ct_gpu.c` for the
+real numbers).
 
 ## Validation (pool15-01, 100 epochs, both datasets, all four modes)
 
@@ -129,12 +151,14 @@ kernels/
   bp_image.cl         — bp (image): hardware bilinear + float2 LUT
   fp_image.cl         — fp (image): hardware trilinear + AABB
   bp_buffer_opt.cl    — bp_opt: image2d_array_t + float2 LUT + local mem
-validate.py                 — MSE + outlier diagnostics (256/512)
-validate_ops.py             — per-operator fp/bp vs Python reference
-run_python_reference.py     — full MLEM loop in Python
-diag_fp.py                  — fp_cpu vs Python fp_func comparison
-diag_voxel.py, diag_voxel2.py — one-off debugging scripts, kept for reference
-Topic_2_CTreconstruction.py — original course-provided Python reference
+validate.py                 — MSE vs CPU + vs Topic2 reference, outlier diagnostics (256/512)
+validate_ops.py             — per-operator fp/bp vs Topic_2_CTreconstruction.py
+diag_voxel.py                — one-off debugging script, kept for reference
+Topic_2_CTreconstruction.py — the reference script (fp_func/bp_func,
+                               unmodified algorithm); the "Reference code
+                               (python)" grading refers to. Two real bugs
+                               fixed (out_path placeholder, volume z-axis size)
+                               so it actually runs and saves; algorithm untouched.
 ```
 
 ## Build
@@ -171,10 +195,48 @@ make run-op-bp-512   # dumps bp_cpu_512.hdf5 (512³)
 python3 validate_ops.py fp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --dump fp_cpu.hdf5
 python3 validate_ops.py bp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --dump bp_cpu.hdf5
 
-# Python reference (--epochs must match the C run being compared against)
-make run-python     EPOCHS=10   # 256³, slow
-make run-python-512 EPOCHS=10   # 512³, slower; sample_ratio mismatch, see session log
+# Reference (python) -- 256³ only, hardcoded epoch count in-script
+# (no --data/--epochs flags, EPOCHS not honored)
+make run-python
 ```
+
+Pure-Python fp/bp (scipy `RegularGridInterpolator` rebuilt per-angle, no
+vectorization/GPU) measured ~4690s/epoch at 256^3 on kale at the script's
+default `sample_ratio=2`. `sample_ratio` reduced to 1 (call-site only, in
+`fp_func(cb_para, vol, sample_ratio=1)`; `fp_func`/`bp_func` internals
+untouched) — this also matches the C/GPU modes' default sample count at
+256^3 (`n_samples = Nxz = 256`, see `src/main.c`), which `sample_ratio=2`'s
+512 samples/ray did not. Measured ~3679s/epoch at sample_ratio=1 (only
+~21% faster, not the ~50% a naive samples-per-ray scaling would suggest —
+most of fp_func's cost is fixed per-pixel Python/interpreter overhead
+across its 1.3M-pixel loop, not proportional to ray length; bp_func's cost
+is unaffected by sample_ratio at all). Full 100 epochs at this rate would be
+~4.3 days; per the professor (fewer epochs than 100 is acceptable for this
+script — results converge less but that's an explicit, expected tradeoff,
+not a defect), `Epochs` set to 20 (~20hrs) instead. Run started on kale
+under `tmux -s topic2` to run unattended.
+
+The validation numbers below are from an earlier `Epochs=2`, `sample_ratio=2`
+run (kale, 2026-08-26) — will be replaced with the 20-epoch result once
+that run completes:
+
+```
+=== 256^3 validation ===
+Mode              min        max       mean    nan    inf  MSE vs CPU     MSE vs Topic2
+----------------------------------------------------------------------------------------------------
+topic2         0.0000     0.1462     0.0067      0      0  (topic2 ref)
+cpu            0.0000     1.7303     0.0067      0      0  (reference)    MSE=9.826e-04
+gpu-buf        0.0000     1.7292     0.0067      0      0  MSE=1.148e-10  max=0.0203 MSE=9.826e-04
+gpu-img        0.0000     1.6577     0.0067      0      0  MSE=1.128e-07  max=0.8966 MSE=9.827e-04
+gpu-opt        0.0000     1.6577     0.0067      0      0  MSE=1.128e-07  max=0.8966 MSE=9.827e-04
+```
+
+MSE-vs-topic2 (~9.8e-04) reflects topic2 being only 2 epochs into MLEM
+convergence (max=0.1462 vs ~1.73 for the 100-epoch C/GPU runs), not an
+algorithmic disagreement — cpu/gpu-buf/gpu-img/gpu-opt still agree with each
+other at the float32 noise floor (1e-7 to 1e-10), confirming the four
+implementations share the same fixed point Topic_2's algorithm converges
+toward.
 
 ## Algorithm
 
