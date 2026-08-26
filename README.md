@@ -117,20 +117,22 @@ completes.
 
 ### 256³
 ```
-Mode       min      max     mean   nan  inf  MSE vs CPU
-cpu      0.0000   1.7303   0.0067    0    0  (reference)
-gpu-buf  0.0000   1.7292   0.0067    0    0  MSE=1.148e-10  max=0.0203
-gpu-img  0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  max=0.8966
-gpu-opt  0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  max=0.8966
+Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Topic2
+topic2   (pending -- Epochs=20 run in progress, see Run section below)
+cpu      0.0000   1.7303   0.0067    0    0  (reference)    pending
+gpu-buf  0.0000   1.7292   0.0067    0    0  MSE=1.148e-10  pending  max=0.0203
+gpu-img  0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  pending  max=0.8966
+gpu-opt  0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  pending  max=0.8966
 ```
 
 ### 512³
 ```
-Mode       min      max     mean   nan  inf  MSE vs CPU
-cpu      0.0000   1.0055   0.0330    0    0  (reference)
-gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.534e-11  max=0.0114
-gpu-img  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
-gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
+Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Topic2
+topic2   (no 512^3 Topic2 run possible -- the reference script hardcodes the 256^3 dataset path, see Run section below)
+cpu      0.0000   1.0055   0.0330    0    0  (reference)    n/a
+gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.534e-11  n/a  max=0.0114
+gpu-img  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  n/a  max=0.0186
+gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  n/a  max=0.0186
 ```
 
 Correctness fixes that got here (full detail in session log):
