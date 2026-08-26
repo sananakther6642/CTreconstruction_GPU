@@ -1,0 +1,12 @@
+=== hardware ===
+kale.cis.iti.uni-stuttgart.de
+24
+model name      : Intel(R) Xeon(R) CPU E5-2620 0 @ 2.00GHz
+  Device Name                                     GeForce GTX 680
+
+Notes:
+- NVIDIA GTX 680 (Kepler) -- no cl_khr_fp16, --half mode unavailable.
+- Intel Xeon E5-2620 0, 24 threads.
+- conv_csv/: OSEM S-sweep (S=1,3,5,15,25) + plain MLEM convergence logs,
+  256^3 and 512^3, all four modes (cpu/gpu-buf/gpu-img/gpu-opt), 100 epochs.
+- figures/: convergence plots + slice comparisons generated from the above.
