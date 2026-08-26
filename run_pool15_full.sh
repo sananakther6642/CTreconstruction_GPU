@@ -68,6 +68,42 @@ is_complete() {
   [ -f "$csv" ] && [ "$(tail -1 "$csv" | cut -d, -f1)" = "$EPOCHS" ]
 }
 
+# Commit+push whatever's landed under $OUT so far to a dedicated results
+# branch. Called after every stage below -- pool15-01 isn't remotely
+# reachable, so partial progress must reach git incrementally rather than
+# in one commit at the very end (a mid-run reboot/hang would otherwise
+# lose everything already finished). .hdf5 volumes are never committed
+# (2.4GB+, already globally gitignored) -- only logs/CSVs/PNGs/txt.
+checkpoint() {
+  local label="$1"
+  (
+    set +e
+    STARTING_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+    # -B would reset pool15-results to the current branch's HEAD every call,
+    # discarding every earlier checkpoint's commit. Create it once (from
+    # whatever local/remote copy already exists, or fresh off HEAD if this
+    # is truly the first run), then just switch onto it on later calls so
+    # commits accumulate.
+    if git show-ref --verify --quiet refs/heads/pool15-results; then
+      git checkout pool15-results
+    elif git ls-remote --exit-code --heads origin pool15-results >/dev/null 2>&1; then
+      git fetch origin pool15-results
+      git checkout -B pool15-results origin/pool15-results
+    else
+      git checkout -B pool15-results
+    fi
+    git add -f "$OUT"/logs "$OUT"/conv_csv "$OUT"/*.txt "$OUT"/*.png \
+               "$OUT"/hardware.txt "$OUT"/topic2_python.log 2>/dev/null
+    if git diff --cached --quiet; then
+      echo "checkpoint ($label): nothing new to commit"
+    else
+      git commit -m "pool15 checkpoint: $label ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+      git push -u origin pool15-results
+    fi
+    git checkout "$STARTING_BRANCH"
+  ) || echo "WARNING: checkpoint ($label) commit/push failed -- results still on disk under $OUT/, just not in git."
+}
+
 echo "=== hardware ===" | tee "$OUT/hardware.txt"
 hostname | tee -a "$OUT/hardware.txt"
 nproc | tee -a "$OUT/hardware.txt"
@@ -95,17 +131,20 @@ echo ""
 echo "=== 256^3, all four modes ==="
 for MODE in cpu gpu-buf gpu-img gpu-opt; do
   run_one "$MODE" 256 "$DATA256" ""
+  checkpoint "${MODE}_256"
 done
 
 echo ""
 echo "=== 512^3, GPU modes (fast, run before cpu) ==="
 for MODE in gpu-buf gpu-img gpu-opt; do
   run_one "$MODE" 512 "$DATA512" "--samples 512"
+  checkpoint "${MODE}_512"
 done
 
 echo ""
 echo "=== 512^3, cpu (slow, ~1hr) ==="
 run_one cpu 512 "$DATA512" "--samples 512"
+checkpoint "cpu_512"
 
 echo ""
 echo "=== validation (copies into validate.py's expected names first) ==="
@@ -119,12 +158,14 @@ cp "$OUT/hdf5/gpu-img_512.hdf5" output_gpu_img_512.hdf5 2>/dev/null || true
 cp "$OUT/hdf5/gpu-opt_512.hdf5" output_gpu_opt_512.hdf5 2>/dev/null || true
 python3 validate.py     2>&1 | tee "$OUT/validate_256.txt" || true
 python3 validate.py 512 2>&1 | tee "$OUT/validate_512.txt" || true
+checkpoint "validation"
 
 echo ""
 echo "=== plotting figures (--source pool15) ==="
 python3 plot_results.py mlem --source pool15 2>&1 | tee "$OUT/plot_mlem.log" || true
 python3 plot_results.py slices --source pool15 2>&1 | tee "$OUT/plot_slices.log" || true
 mv -f mlem_convergence_*_pool15.png slices_*_pool15.png "$OUT/" 2>/dev/null || true
+checkpoint "plotting"
 
 echo ""
 echo "=== Python reference (Topic_2_CTreconstruction.py), 256^3, 100 epochs ==="
@@ -137,27 +178,8 @@ if [ -f output_python_reconstruction.hdf5 ]; then
   mv -f output_python_reconstruction.hdf5 "$OUT/hdf5/python_256.hdf5"
   echo "Saved: $OUT/hdf5/python_256.hdf5"
 fi
+checkpoint "topic2"
 
 echo ""
 echo "=== done. Everything under $OUT/ ==="
 find "$OUT" -type f | sort
-
-echo ""
-echo "=== committing results to pool15-results branch (best-effort) ==="
-# Runs regardless of what succeeded/failed above -- captures whatever made
-# it to disk. .hdf5 volumes skipped (2.4GB+, stays local only); logs/CSVs/
-# PNGs/txt are small and are what the report actually needs.
-(
-  set +e
-  STARTING_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-  git checkout -B pool15-results
-  git add -f "$OUT"/logs "$OUT"/conv_csv "$OUT"/*.txt "$OUT"/*.png \
-             "$OUT"/hardware.txt "$OUT"/topic2_python.log 2>/dev/null
-  if git diff --cached --quiet; then
-    echo "nothing new to commit"
-  else
-    git commit -m "pool15 run results ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
-    git push -u origin pool15-results
-  fi
-  git checkout "$STARTING_BRANCH"
-) || echo "WARNING: commit/push step failed -- results are still on disk under $OUT/, just not in git. Check manually."
