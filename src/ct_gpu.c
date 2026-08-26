@@ -621,19 +621,57 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
      * mitigation strategy does not fix it in practice at real MLEM scale.
      * Left in as an opt-in env var for further tuning (e.g. a different
      * trigger heuristic, or per-buffer-size scaling) rather than removed,
-     * since the underlying mechanism and hook point are still correct. */
+     * since the underlying mechanism and hook point are still correct.
+     *
+     * perf-v2 gpu-buf-speed B1: two alternative trigger heuristics, both
+     * off by default, both UNTESTED (pool15-01/AMD Hawaii-only problem,
+     * does not reproduce on kale -- see run_pool15_variance_experiment.sh
+     * for the batched unattended test this is meant to run under):
+     *
+     * FP_BUFFER_VOL_REALLOC_ON_SLOW=1 (B1a, the stronger idea): the
+     * fixed-count trigger above misses because the degradation recurs
+     * after a VARIABLE 6-13 launches, not a fixed schedule -- confirmed
+     * by the N=5 sweep leaving "scattered GPU-BOUND warnings" even while
+     * reallocating every 5 launches. Reacting to the GPU-BOUND signal
+     * itself (already computed below, previously print-only) instead of
+     * guessing a schedule cannot miss the window by construction: it
+     * reallocates on the very next slab after a slow one is detected.
+     *
+     * FP_BUFFER_VOL_REALLOC_SECONDS=N (B1b, weaker, cheap second arm):
+     * realloc when at least N seconds have elapsed since the last
+     * realloc, matching the root-cause comment's own hypothesis of a
+     * "time/pressure-based cycle" rather than a launch-count-based one. */
     int realloc_every = 0;
+    int realloc_on_slow = 0;
+    double realloc_seconds = 0.0;
     {
         const char *re_env = getenv("FP_BUFFER_VOL_REALLOC_EVERY");
         if (re_env) realloc_every = atoi(re_env);
+        const char *ros_env = getenv("FP_BUFFER_VOL_REALLOC_ON_SLOW");
+        if (ros_env) realloc_on_slow = atoi(ros_env);
+        const char *res_env = getenv("FP_BUFFER_VOL_REALLOC_SECONDS");
+        if (res_env) { double v = atof(res_env); if (v > 0.0) realloc_seconds = v; }
     }
+    int realloc_active = (realloc_every > 0) || realloc_on_slow || (realloc_seconds > 0.0);
     static long total_slab_launches = 0;
     size_t vol_bytes = (size_t)Nxz * Nxz * Ny * sizeof(float);
-    float *vol_scratch = (realloc_every > 0) ? (float *)malloc(vol_bytes) : NULL;
+    float *vol_scratch = realloc_active ? (float *)malloc(vol_bytes) : NULL;
+    int pending_realloc = 0;          /* B1a: set when the previous slab was GPU-BOUND slow */
+    static double last_realloc_time = 0.0;  /* B1b: wall-clock of the last realloc, 0 = never */
 
     for (size_t p0 = 0; p0 < gws_full[2]; p0 += ANG_SLAB) {
+        int do_realloc = 0;
         if (realloc_every > 0 && total_slab_launches > 0 &&
-            total_slab_launches % realloc_every == 0) {
+            total_slab_launches % realloc_every == 0)
+            do_realloc = 1;
+        if (realloc_on_slow && pending_realloc)
+            do_realloc = 1;
+        if (realloc_seconds > 0.0 &&
+            (last_realloc_time == 0.0 || get_time_sec() - last_realloc_time >= realloc_seconds))
+            do_realloc = 1;
+        pending_realloc = 0;
+
+        if (do_realloc) {
             double t_realloc0 = get_time_sec();
             err = clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, vol_scratch, 0, NULL, NULL);
             CL_CHECK(err, "fp_buffer vol readback (realloc mitigation)");
@@ -643,8 +681,9 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
             CL_CHECK(err, "fp_buffer d_vol realloc (mitigation)");
             clSetKernelArg(k, 0, sizeof(cl_mem), &d_vol);
             *d_vol_ptr = d_vol;
+            last_realloc_time = get_time_sec();
             printf("    [fp_buffer] reallocated d_vol at total_slab_launches=%ld (%.3fs)\n",
-                   total_slab_launches, get_time_sec() - t_realloc0);
+                   total_slab_launches, last_realloc_time - t_realloc0);
         }
 
         size_t slab = (gws_full[2] - p0 < ANG_SLAB) ? (gws_full[2] - p0) : ANG_SLAB;
@@ -652,7 +691,9 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
         size_t gws[3]    = {gws_full[0], gws_full[1], slab};
 
         if (skip_slab_finish) {
-            /* batched path: enqueue only, no per-slab sync/timing/watchdog */
+            /* batched path: enqueue only, no per-slab sync/timing/watchdog.
+             * B1a cannot work here -- it needs the per-slab GPU-BOUND
+             * signal this path deliberately skips. */
             cl_event evt;
             err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, &evt);
             CL_CHECK(err, "fp_buffer enqueue (slab, batched)");
@@ -673,9 +714,16 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
                                                         sizeof(t_end), &t_end, NULL);
                 if (perr1 == CL_SUCCESS && perr2 == CL_SUCCESS) {
                     double gpu_dt = (double)(t_end - t_start) * 1e-9;
+                    int is_gpu_bound = (dt - gpu_dt <= 0.5);
                     printf("    [fp_buffer slab %d, p0=%zu] wall=%.3fs gpu=%.3fs %s (SLOW)\n",
                            slab_idx, p0, dt, gpu_dt,
-                           (dt - gpu_dt > 0.5) ? "HOST-SIDE-GAP" : "GPU-BOUND");
+                           is_gpu_bound ? "GPU-BOUND" : "HOST-SIDE-GAP");
+                    /* B1a: only a genuine GPU-bound slowdown matches the
+                     * confirmed root cause (driver-side d_vol demotion) --
+                     * a host-side gap is a different problem a realloc
+                     * cannot fix, so don't trigger on it. */
+                    if (realloc_on_slow && is_gpu_bound)
+                        pending_realloc = 1;
                 } else {
                     printf("    [fp_buffer slab %d, p0=%zu] %.3f s (SLOW, profiling query failed)\n",
                            slab_idx, p0, dt);
