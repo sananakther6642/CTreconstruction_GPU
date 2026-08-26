@@ -8,5 +8,6 @@ gpu-buf        0.0000     1.7307     0.0067      0      0  MSE=6.436e-10  max=0.
            outliers(diff>10*rms)=624  worst_voxel_idx=(10, 102, 249)  radial_dist_from_center_xy=120.2 (Nxz/2=128)
 gpu-img        0.0000     1.8741     0.0067      0      0  MSE=1.949e-07  max=1.1490 
            outliers(diff>10*rms)=470  worst_voxel_idx=(49, 211, 33)  radial_dist_from_center_xy=114.6 (Nxz/2=128)
-gpu-opt     [file not found]
+gpu-opt        0.0000     1.8741     0.0067      0      0  MSE=1.949e-07  max=1.1490 
+           outliers(diff>10*rms)=470  worst_voxel_idx=(49, 211, 33)  radial_dist_from_center_xy=114.6 (Nxz/2=128)
 
