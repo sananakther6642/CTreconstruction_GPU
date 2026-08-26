@@ -16,18 +16,55 @@ __constant sampler_t samp =
     CLK_FILTER_LINEAR;
 
 #ifdef HYBRID_PRECISION
-/* perf-v2 hybrid-precision: CLK_FILTER_LINEAR's hardware bilinear blend
+/* perf-v2 hybrid-precision -- MEASURED NEGATIVE RESULT, kept off by
+ * default (HYBRID_PRECISION unset). Do not enable without re-reading
+ * this comment.
+ *
+ * Hypothesis going in: CLK_FILTER_LINEAR's hardware bilinear blend
  * quantizes its interpolation weight to a small number of fractional
  * bits (fixed-function texture-filter silicon, not a bug) -- measured
  * via diag_op_attribution.py to be the dominant source of gpu-img/
  * gpu-opt's MSE-vs-CPU gap (bp RMS 3.99e-5 vs fp's 3.67e-10, ~100,000x
  * larger). CLK_FILTER_NEAREST returns the exact stored texel with no
  * hardware blending, so four nearest fetches + a manual float32 blend
- * reproduces bp_buffer.cl's bilinear_buf exactly (see there for the
- * reference math this must match bit-for-bit when triggered). Gated
- * behind a compile-time define (see gpu_init's HYBRID_PRECISION build
- * flag, ct_gpu.c) rather than a new mode -- with the define unset this
- * whole block compiles out, byte-identical to the pre-hybrid kernel. */
+ * SHOULD reproduce bp_buffer.cl's bilinear_buf exactly and be strictly
+ * more accurate wherever it fires.
+ *
+ * The manual-blend math was independently verified correct three ways
+ * (hand-derivation of the coordinate/corner mapping, a numpy simulation
+ * matching bilinear_buf to 1e-6 across random inputs, and a kale test
+ * confirming HYBRID_GRAD_THRESH set high enough to disable the gate --
+ * 1e6 -- reproduces the pre-hybrid baseline output BYTE-FOR-BYTE). The
+ * gate logic is also confirmed correct: it is not a stuck-always-on bug.
+ *
+ * Measured on kale (256^3, 10 epochs), varying coverage from a tiny
+ * radius_frac=0.99 band up to radius_frac=0.001 (effectively the whole
+ * volume): MSE-vs-CPU got WORSE with MORE manual-blend coverage, not
+ * better (baseline 8.42e-10 -> full-coverage 1.16e-9, ~37% worse), while
+ * epoch time got 37-53% SLOWER. The single worst voxel across every
+ * coverage level was identically (244,66,17) with an identical diff
+ * (0.0734) regardless of how much of the volume used the manual path --
+ * i.e. this specific voxel's error is intrinsic to the manual blend
+ * itself, not a gate-tuning artifact.
+ *
+ * Working theory, NOT verified: -cl-fast-relaxed-math (always-on for
+ * this build, see build_program_opts) may reorder/approximate the
+ * manual blend's float32 arithmetic differently than it treats the
+ * fixed-function sampler's internal math, so "exact" nearest-fetch +
+ * manual blend is not actually bit-exact to a true float32 reference
+ * once that flag is in play. Untested: whether disabling
+ * -cl-fast-relaxed-math for just this code path would change the
+ * result. Left as an open question rather than chased further given
+ * the cost (real slowdown) already outweighs the already-tiny gap this
+ * was meant to close (0.0026-0.0255% of signal range, see README).
+ *
+ * Kept in the codebase (not reverted) as a measured negative result, in
+ * the same spirit as unroll-x2, AABB-at-256, and
+ * FP_BUFFER_VOL_REALLOC_EVERY elsewhere in this project -- zero cost
+ * when off (this whole block preprocesses away, confirmed byte-identical
+ * via `gcc -E` diff against the pre-hybrid source), real information if
+ * anyone revisits it. Gated behind a compile-time define (see gpu_init's
+ * HYBRID_PRECISION build flag, ct_gpu.c) rather than a new mode. */
 __constant sampler_t samp_exact =
     CLK_NORMALIZED_COORDS_FALSE |
     CLK_ADDRESS_CLAMP           |

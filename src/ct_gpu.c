@@ -49,7 +49,20 @@ static cl_program build_program_opts(cl_context ctx, cl_device_id dev,
     CL_CHECK(err, "clCreateProgramWithSource");
 
     char opts[256];
-    snprintf(opts, sizeof(opts), "-cl-fast-relaxed-math %s", extra_opts ? extra_opts : "");
+    /* perf-v2 hybrid-precision diagnostic: HYBRID_PRECISION_NO_FASTMATH
+     * strips -cl-fast-relaxed-math entirely, one-off test of whether that
+     * always-on flag is why the manual "exact" nearest-fetch+blend fallback
+     * (see bp_image.cl's HYBRID_PRECISION block) doesn't actually improve
+     * on the hardware sampler at bp_image.cl's worst measured voxel
+     * (244,66,17 @ 256^3) -- affects ALL image/opt-program kernels when
+     * set, not just the hybrid path, so only use for this specific
+     * comparison, never for a real run. */
+    const char *no_fastmath = getenv("HYBRID_PRECISION_NO_FASTMATH");
+    if (no_fastmath && atoi(no_fastmath)) {
+        snprintf(opts, sizeof(opts), "%s", extra_opts ? extra_opts : "");
+    } else {
+        snprintf(opts, sizeof(opts), "-cl-fast-relaxed-math %s", extra_opts ? extra_opts : "");
+    }
     err = clBuildProgram(prog, 1, &dev, opts, NULL, NULL);
     if (err != CL_SUCCESS) {
         size_t log_sz;

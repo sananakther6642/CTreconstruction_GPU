@@ -16,9 +16,11 @@ __constant sampler_t samp =
     CLK_FILTER_LINEAR;
 
 #ifdef HYBRID_PRECISION
-/* See bp_image.cl for the full rationale -- identical mechanism here
- * (this kernel's fp is fp_image.cl, unaffected; only bp needs the
- * fallback, per diag_op_attribution.py's measured fp/bp split). */
+/* MEASURED NEGATIVE RESULT -- see bp_image.cl for the full writeup
+ * (identical mechanism/finding here: kept off by default, real
+ * slowdown, no accuracy win, gate logic confirmed correct). This
+ * kernel's fp is fp_image.cl, unaffected -- only bp needed the
+ * fallback per diag_op_attribution.py's measured fp/bp split. */
 __constant sampler_t samp_exact =
     CLK_NORMALIZED_COORDS_FALSE |
     CLK_ADDRESS_CLAMP           |
