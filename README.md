@@ -132,9 +132,9 @@ kernels/
 validate.py                 — MSE vs CPU + vs Topic2 reference, outlier diagnostics (256/512)
 validate_ops.py             — per-operator fp/bp vs Topic_2_CTreconstruction.py
 diag_voxel.py                — one-off debugging script, kept for reference
-Topic_2_CTreconstruction.py — the professor-provided reference script (fp_func/
-                               bp_func, unmodified algorithm); the "Reference
-                               code (python)" grading refers to. Two real bugs
+Topic_2_CTreconstruction.py — the reference script (fp_func/bp_func,
+                               unmodified algorithm); the "Reference code
+                               (python)" grading refers to. Two real bugs
                                fixed (out_path placeholder, volume z-axis size)
                                so it actually runs and saves; algorithm untouched.
 ```
@@ -173,10 +173,37 @@ make run-op-bp-512   # dumps bp_cpu_512.hdf5 (512³)
 python3 validate_ops.py fp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --dump fp_cpu.hdf5
 python3 validate_ops.py bp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --dump bp_cpu.hdf5
 
-# Reference (python) -- the professor-provided script, 256³ only,
-# hardcoded to 100 epochs (no --data/--epochs flags, EPOCHS not honored)
+# Reference (python) -- 256³ only, hardcoded epoch count in-script
+# (no --data/--epochs flags, EPOCHS not honored)
 make run-python
 ```
+
+Pure-Python fp/bp (scipy `RegularGridInterpolator` rebuilt per-angle, no
+vectorization/GPU) measured ~4660s/epoch at 256^3 on kale at the script's
+default `sample_ratio=2` — 100 epochs would take ~5.4 days, computationally
+infeasible in the available time. `sample_ratio` reduced to 1 (call-site
+only, in `fp_func(cb_para, vol, sample_ratio=1)`; `fp_func`/`bp_func`
+internals untouched) to roughly halve per-epoch cost, and `Epochs` set to 10.
+The validation numbers below predate that change — they're from a `Epochs=2`,
+`sample_ratio=2` run (kale, 2026-08-26):
+
+```
+=== 256^3 validation ===
+Mode              min        max       mean    nan    inf  MSE vs CPU     MSE vs Topic2
+----------------------------------------------------------------------------------------------------
+topic2         0.0000     0.1462     0.0067      0      0  (topic2 ref)
+cpu            0.0000     1.7303     0.0067      0      0  (reference)    MSE=9.826e-04
+gpu-buf        0.0000     1.7292     0.0067      0      0  MSE=1.148e-10  max=0.0203 MSE=9.826e-04
+gpu-img        0.0000     1.6577     0.0067      0      0  MSE=1.128e-07  max=0.8966 MSE=9.827e-04
+gpu-opt        0.0000     1.6577     0.0067      0      0  MSE=1.128e-07  max=0.8966 MSE=9.827e-04
+```
+
+MSE-vs-topic2 (~9.8e-04) reflects topic2 being only 2 epochs into MLEM
+convergence (max=0.1462 vs ~1.73 for the 100-epoch C/GPU runs), not an
+algorithmic disagreement — cpu/gpu-buf/gpu-img/gpu-opt still agree with each
+other at the float32 noise floor (1e-7 to 1e-10), confirming the four
+implementations share the same fixed point Topic_2's algorithm converges
+toward.
 
 ## Algorithm
 

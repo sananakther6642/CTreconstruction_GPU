@@ -70,10 +70,12 @@ run-gpu-opt-512:
 
 
 # ── Validation helpers ──
-# Reference (python): the actual professor-provided script, unmodified
-# algorithm (random jitter, sample_ratio=2). Hardcoded to the 256^3 dataset
-# and 100 epochs -- no --data/--epochs flags, so no -512 target exists and
-# EPOCHS below is not honored. Output lands at
+# Reference (python): the reference script, unmodified
+# algorithm (random jitter; sample_ratio=1, reduced from the script's
+# default 2 to cut runtime, call-site only). Hardcoded to the 256^3 dataset
+# and 10 epochs (100 infeasible in pure Python, see README) -- no
+# --data/--epochs flags, so no -512 target exists and EPOCHS below is not
+# honored. Output lands at
 # output_python_reconstruction.hdf5, matching validate.py's 'topic2' entry.
 run-python:
 	python3 Topic_2_CTreconstruction.py
