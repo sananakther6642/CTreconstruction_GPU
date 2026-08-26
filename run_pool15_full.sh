@@ -193,11 +193,12 @@ mv -f mlem_convergence_*_pool15.png slices_*_pool15.png "$OUT/" 2>/dev/null || t
 checkpoint "plotting"
 
 echo ""
-echo "=== Python reference (Topic_2_CTreconstruction.py), 256^3, 100 epochs ==="
+echo "=== Python reference (Topic_2_CTreconstruction.py), 256^3, 20 epochs ==="
 echo "  hardcoded to 256^3, pure Python fp/bp -- slow (~3679s/epoch measured"
-echo "  on kale at sample_ratio=1, vs ~4690s/epoch at sample_ratio=2), runs"
-echo "  last so it never blocks the faster C/GPU configs above."
-echo "  100 epochs ~= 4.3 days -- runs unattended, check back later."
+echo "  on kale at sample_ratio=1, vs ~4690s/epoch at sample_ratio=2). Per"
+echo "  the professor, fewer than 100 epochs is acceptable here (quality"
+echo "  tradeoff, not a hard requirement) -- 20 epochs ~= 20hrs, runs"
+echo "  unattended, last so it never blocks the faster C/GPU configs above."
 python3 Topic_2_CTreconstruction.py 2>&1 | tee "$OUT/topic2_python.log" || true
 if [ -f output_python_reconstruction.hdf5 ]; then
   mv -f output_python_reconstruction.hdf5 "$OUT/hdf5/python_256.hdf5"
