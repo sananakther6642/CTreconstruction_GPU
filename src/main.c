@@ -125,8 +125,24 @@ int main(int argc, char **argv)
      * Isolates operator correctness instead of comparing accumulated MLEM
      * iteration output. Compare against validate_ops.py. */
     if (op_str) {
+        /* gpu-buf-speed investigation only: --op fp --mode gpu-buf isolates
+         * run_fp_buffer's own cost from the combined fp+bp epoch number, to
+         * check whether A1 (removing trilinear_buf's redundant bounds
+         * checks) genuinely has no effect on fp itself or whether the null
+         * result at the epoch level was hiding something. Not a general
+         * --op extension -- gpu-img/gpu-opt/bp are still CPU-only below. */
+        if (!strcmp(op_str, "fp") && !strcmp(mode_str, "gpu-buf")) {
+            CLState cl;
+            if (gpu_init(&cl, GPU_MODE_BUFFER, kernel_dir) != 0) return 1;
+            printf("\n=== --op fp --mode gpu-buf: single run_fp_buffer(ones) call ===\n");
+            double dt = gpu_op_fp_timed(&cl, &para, volume);
+            printf("gpu-buf fp time: %.3f s (n_samples=%d)\n", dt, para.n_samples);
+            gpu_cleanup(&cl);
+            free(volume); free(proj_measured); free(para.angles);
+            return 0;
+        }
         if (strcmp(mode_str, "cpu")) {
-            fprintf(stderr, "--op is only supported with --mode cpu\n");
+            fprintf(stderr, "--op is only supported with --mode cpu (or --mode gpu-buf --op fp)\n");
             return 1;
         }
         if (!strcmp(op_str, "fp")) {

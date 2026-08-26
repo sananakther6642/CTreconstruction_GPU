@@ -210,7 +210,6 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
                     snprintf(fp_unroll_opt, sizeof(fp_unroll_opt), "-DFP_UNROLL=%d", n);
             }
         }
-        if (fp_unroll_opt[0]) printf("  [debug] buffer program build opt: '%s'\n", fp_unroll_opt);
         cl->prog_buffer = build_program_opts(cl->ctx, cl->device, combined, fp_unroll_opt);
         free(src_bp); free(src_fp); free(combined);
 
@@ -1012,6 +1011,46 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     size_t offset[3] = {0, 0, (size_t)ip_start};
     err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0,NULL,NULL);
     CL_CHECK(err, "fp_image enqueue");
+}
+
+/*
+ * ── gpu_op_fp_timed ──────────────────────────────────────────────────────
+ * gpu-buf-speed investigation only. Isolates run_fp_buffer's own cost from
+ * the combined fp+bp epoch number so A1's "no measurable epoch-time
+ * change" result can be checked directly: if fp itself is unchanged too,
+ * that confirms fp_buffer is memory-bandwidth-bound (the redundant ALU
+ * work removed by A1 was fully hidden behind memory latency, not on the
+ * critical path) rather than pointing at a bug in A1's removal.
+ */
+double gpu_op_fp_timed(CLState *cl, const CBpara *p, const float *volume)
+{
+    cl_int err;
+    int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
+    int H = p->detector_height, W = p->detector_width;
+    int np = p->num_projs;
+    size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
+    size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
+
+    build_RT_buffers(cl, p);
+
+    cl_mem d_vol = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
+                                   vol_bytes, (void*)volume, &err);
+    CL_CHECK(err, "gpu_op_fp_timed d_vol");
+    cl_mem d_proj = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+    CL_CHECK(err, "gpu_op_fp_timed d_proj");
+
+    clFinish(cl->queue);  /* make sure setup traffic doesn't leak into the timing */
+    double t0 = get_time_sec();
+    run_fp_buffer(cl, p, &d_vol, d_proj, 0, np);
+    clFinish(cl->queue);
+    double dt = get_time_sec() - t0;
+
+    clReleaseMemObject(d_proj);
+    clReleaseMemObject(d_vol);
+    clReleaseMemObject(cl->d_R_mats);
+    clReleaseMemObject(cl->d_T_vecs);
+
+    return dt;
 }
 
 /*

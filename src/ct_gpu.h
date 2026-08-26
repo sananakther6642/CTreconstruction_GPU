@@ -91,6 +91,18 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          int epochs, const char *conv_log, int subsets);
 
 /*
+ * gpu-buf-speed investigation only: times a single run_fp_buffer(ones)
+ * call in isolation (device-side clFinish before/after, no epoch loop,
+ * no bp), to check whether fp_buffer is genuinely memory-bandwidth-bound
+ * at 256^3 -- A1 (removing trilinear_buf's redundant per-tap bounds
+ * checks) showed no measurable epoch-time change, and this isolates fp
+ * from the combined fp+bp epoch number to confirm why. Prints elapsed
+ * seconds to stdout; does not write proj_out's contents anywhere.
+ * cl must already be gpu_init'd in GPU_MODE_BUFFER.
+ */
+double gpu_op_fp_timed(CLState *cl, const CBpara *p, const float *volume);
+
+/*
  * perf-v2 Phase A2/A3 diagnostic: repeat one fixed fp_buffer angle-slab
  * n_repeats times, printing wall + GPU-event-profiled time per repeat.
  * Distinguishes thermal throttling (monotone degradation) from
