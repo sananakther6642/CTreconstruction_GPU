@@ -1,0 +1,84 @@
+#!/bin/bash
+# Retry the 4 configs that failed on pool15-01's main run with
+# "OpenCL error -1 at clGetDeviceIDs" (transient GPU unavailability,
+# confirmed recovered via clinfo). Runs standalone, safe alongside the
+# main run_pool15_full.sh session since that's on Topic_2 (CPU-only) by
+# the time this is needed. Same run_one/checkpoint logic as the main
+# script, scoped to just these 4 -- commits+pushes after each one
+# finishes, no manual intervention between configs.
+#
+# Run inside tmux so it survives a disconnect:
+#   tmux new -s pool15-retry
+#   ./retry_pool15_gpu_configs.sh
+#   (detach: Ctrl+B then D)
+set -e
+
+DATA256=/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5
+DATA512=/lgrp/edu-2026-1-gpulab/proj_512_75.hdf5
+EPOCHS=100
+OUT=pool15
+mkdir -p "$OUT/hdf5" "$OUT/conv_csv" "$OUT/logs"
+
+WORKTREE_DIR="../pool15-results-worktree"
+
+checkpoint() {
+  local label="$1"
+  local repo_root
+  repo_root=$(git rev-parse --show-toplevel)
+  (
+    set +e
+    if [ ! -d "$WORKTREE_DIR" ]; then
+      if git show-ref --verify --quiet refs/heads/pool15-results; then
+        git worktree add "$WORKTREE_DIR" pool15-results
+      elif git ls-remote --exit-code --heads origin pool15-results >/dev/null 2>&1; then
+        git fetch origin pool15-results
+        git worktree add -B pool15-results "$WORKTREE_DIR" origin/pool15-results
+      else
+        git worktree add -B pool15-results "$WORKTREE_DIR"
+      fi
+    fi
+    rsync -a --delete "$repo_root/$OUT/" "$WORKTREE_DIR/$OUT/"
+    cd "$WORKTREE_DIR" || exit 1
+    git add -f "$OUT"/logs 2>/dev/null
+    git add -f "$OUT"/conv_csv 2>/dev/null
+    if git diff --cached --quiet; then
+      echo "checkpoint ($label): nothing new to commit"
+    else
+      git commit -m "pool15 checkpoint: retry $label ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+      git push -u origin pool15-results
+    fi
+  ) || echo "WARNING: checkpoint ($label) commit/push failed -- results still on disk under $OUT/, just not in git."
+}
+
+run_one() {
+  local mode="$1" scale="$2" data="$3" extra="$4"
+  local tag="${mode}_${scale}"
+  local csv="$OUT/conv_csv/${tag}.csv"
+  local hdf5="$OUT/hdf5/${tag}.hdf5"
+  local log="$OUT/logs/${tag}.log"
+
+  echo "--- retry: $tag ---"
+  build/ct_recon --data "$data" --out "$hdf5" \
+    --mode "$mode" --epochs $EPOCHS $extra --kernels kernels \
+    --log-convergence "$csv" 2>&1 | tee "$log"
+
+  if grep -q "OpenCL error" "$log"; then
+    echo "!!! $tag still hit an OpenCL error -- GPU issue not resolved. Stopping here."
+    exit 1
+  fi
+}
+
+run_one gpu-opt 256 "$DATA256" ""
+checkpoint "gpu-opt_256"
+
+run_one gpu-buf 512 "$DATA512" "--samples 512"
+checkpoint "gpu-buf_512"
+
+run_one gpu-img 512 "$DATA512" "--samples 512"
+checkpoint "gpu-img_512"
+
+run_one gpu-opt 512 "$DATA512" "--samples 512"
+checkpoint "gpu-opt_512"
+
+echo ""
+echo "=== retry done. all 4 configs completed and checkpointed. ==="
