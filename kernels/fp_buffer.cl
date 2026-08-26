@@ -32,7 +32,7 @@ static float trilinear_buf(__global const float *vol,
          + c011*(1-dx)*dy*dz         + c111*dx*dy*dz;
 }
 
-/* perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+/* OSEM: ip_start/ip_count select a contiguous angle
  * subrange. See fp_image.cl's kernel comment for why the guard checks
  * "ip >= ip_start + ip_count" rather than "ip >= num_projs" -- the host's
  * per-slab gws rounding (run_fp_buffer, ct_gpu.c) can otherwise let

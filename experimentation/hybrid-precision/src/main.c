@@ -15,12 +15,14 @@ static void print_usage(const char *prog)
         "           [--samples N]   (ray samples per projection, default: volume Nxz)\n"
         "           [--kernels <kernel_dir>]  (default: ../kernels)\n"
         "           [--half]        (use half-precision vol_img texture; default: float32)\n"
-        "           [--op fp|bp]    (component test: run a single fp or bp call, CPU only,\n"
-        "                            on all-ones input; dumps to <out> instead of full MLEM)\n"
+        "           [--op fp|bp]    (component test: run a single fp or bp call on all-ones\n"
+        "                            input; dumps to <out> instead of full MLEM. Works with\n"
+        "                            any --mode -- GPU modes isolate hardware-sampler\n"
+        "                            precision loss to fp vs bp separately)\n"
         "           [--log-convergence <file.csv>]  (per-epoch loglik/residual/rel_change;\n"
         "                            off by default, zero extra cost when unset)\n"
         "           [--diag repeat-slab:<angle_offset>:<slab_size>:<n_repeats>[:<realloc_at>]]\n"
-        "                           (gpu-buf only; variance diagnostic,\n"
+        "                           (gpu-buf only; perf-v2 Phase A2/A3 variance diagnostic,\n"
         "                            repeats one fixed fp_buffer angle-slab N times and exits;\n"
         "                            optional realloc_at: reallocate d_vol before that repeat)\n"
         "           [--subsets N]   (gpu-opt only; Ordered Subsets EM, default 1 = plain MLEM,\n"
@@ -92,7 +94,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* OSEM: permute the angle/projection stack BEFORE
+    /* perf-v2 Phase C1 (OSEM): permute the angle/projection stack BEFORE
      * build_RT_buffers is ever called (that happens inside gpu_init's
      * callers, later) so R_mats/T_vecs/ang_cs all inherit the permuted
      * order automatically. subsets==1 computes and applies the identity
@@ -121,13 +123,52 @@ int main(int argc, char **argv)
 
     double t_start, t_end;
 
-    /* ── Component test: single fp or bp call on all-ones input, CPU only ──
-     * Isolates operator correctness instead of comparing accumulated MLEM
-     * iteration output. Compare against validate_ops.py. */
+    /* ── Component test: single fp or bp call on all-ones input ──
+     * Isolates operator correctness/precision instead of comparing
+     * accumulated MLEM iteration output. Compare against validate_ops.py
+     * (CPU) or gpu_op_fp/gpu_op_bp (GPU -- see ct_gpu.h for why: isolates
+     * gpu-img/gpu-opt's hardware-sampler precision loss to fp vs bp
+     * separately, since both share fp_image.cl but differ in their bp
+     * kernel). */
     if (op_str) {
-        if (strcmp(mode_str, "cpu")) {
-            fprintf(stderr, "--op is only supported with --mode cpu\n");
-            return 1;
+        int is_gpu_op = strcmp(mode_str, "cpu") != 0;
+        if (is_gpu_op) {
+            if (strcmp(op_str, "fp") && strcmp(op_str, "bp")) {
+                fprintf(stderr, "Unknown --op: %s (expected fp or bp)\n", op_str);
+                return 1;
+            }
+            GPUMode gmode;
+            if (!strcmp(mode_str, "gpu-buf"))      gmode = GPU_MODE_BUFFER;
+            else if (!strcmp(mode_str, "gpu-img")) gmode = GPU_MODE_IMAGE;
+            else if (!strcmp(mode_str, "gpu-opt")) gmode = GPU_MODE_OPT;
+            else { fprintf(stderr, "Unknown --mode for --op: %s\n", mode_str); return 1; }
+
+            CLState cl;
+            if (gpu_init(&cl, gmode, kernel_dir) != 0) return 1;
+
+            if (!strcmp(op_str, "fp")) {
+                size_t proj_n = (size_t)para.num_projs * para.detector_height * para.detector_width;
+                float *proj_out = (float *)calloc(proj_n, sizeof(float));
+                printf("\n=== --op fp: single gpu(ones) fp call (mode=%s) ===\n", mode_str);
+                t_start = get_time_sec();
+                gpu_op_fp(&cl, &para, volume, proj_out);
+                t_end = get_time_sec();
+                printf("gpu fp time: %.3f s (n_samples=%d)\n", t_end - t_start, para.n_samples);
+                if (save_hdf5_proj(out_path, &para, proj_out) != 0) return 1;
+                printf("Saved fp(ones) to %s\n", out_path);
+                free(proj_out);
+            } else {
+                printf("\n=== --op bp: single gpu bp(cone_weight(ones)) call (mode=%s) ===\n", mode_str);
+                t_start = get_time_sec();
+                gpu_op_bp(&cl, &para, volume);
+                t_end = get_time_sec();
+                printf("gpu bp time: %.3f s\n", t_end - t_start);
+                if (save_hdf5(out_path, &para, volume) != 0) return 1;
+                printf("Saved bp(ones) to %s\n", out_path);
+            }
+            gpu_cleanup(&cl);
+            free(volume); free(proj_measured); free(para.angles);
+            return 0;
         }
         if (!strcmp(op_str, "fp")) {
             size_t proj_n = (size_t)para.num_projs * para.detector_height * para.detector_width;
@@ -171,7 +212,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* ── Repeat-slab variance diagnostic: repeat one fixed fp_buffer
+    /* ── perf-v2 Phase A2/A3 diagnostic: repeat one fixed fp_buffer
      * angle-slab N times and exit. gpu-buf only (fp_buffer is the kernel
      * showing the variance). Format: repeat-slab:<angle_offset>:<slab_size>:<n_repeats> */
     if (diag_str) {

@@ -251,7 +251,7 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
     int   n_samples = p->n_samples;
     float dt        = (far_t - near_t) / (float)(n_samples - 1);
 
-    /* perf-v2 Phase A6: histogram actual AABB-clipped sample range instead
+    /* AABB-range diagnostic: histogram actual AABB-clipped sample range instead
      * of assuming it -- see the dump site below for details. Read once. */
     int diag_aabb_range = 0;
     {
@@ -434,7 +434,7 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
                 for (int t = 0; t < tile_n; t++)
                     proj[ip*H*W + (iv0+t)*W + iu] = val[t] * step_val[t];
 
-                /* perf-v2 Phase A6 diagnostic: dump (s_end-s_start) per ray
+                /* AABB-range diagnostic: dump (s_end-s_start) per ray
                  * instead of the accumulated value, so the actual AABB
                  * clip tightness can be histogrammed in Python rather than
                  * assumed. Only active with FP_CPU_DIAG_AABB_RANGE=1 and

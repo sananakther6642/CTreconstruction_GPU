@@ -37,7 +37,7 @@ static float bilinear_buf(__global const float *img,
 }
 
 /*
- * perf-v2 Phase C1 (OSEM): ip_start/ip_count select a contiguous angle
+ * OSEM: ip_start/ip_count select a contiguous angle
  * subrange instead of always summing all num_projs angles. Callers use
  * ip_start=0, ip_count=num_projs for plain MLEM (--subsets 1, the
  * default) -- identical to the pre-OSEM behavior. M_PI_F/num_projs is
@@ -147,7 +147,7 @@ __kernel void preprocess_proj(
  * into a single pass that reads p0/b and writes straight into an
  * image2d_array_t (width=H, height=W, depth=np).
  *
- * perf-v2 Phase B1+B2: the intermediate d_ratio and d_ratio_prep buffers
+ * Kernel fusion: the intermediate d_ratio and d_ratio_prep buffers
  * were each write-once/read-once and never used anywhere else -- classic
  * fusable intermediates, plus the buffer->image copy was pure data
  * movement (~0.80GB/epoch at 512^3) the GPU already had the values for.
@@ -279,11 +279,11 @@ __kernel void vol_update(
  * right before fp_image's next call (~1.07GB/epoch at 512^3: 537MB read +
  * 537MB write). Requires cl_khr_3d_image_writes (OpenCL 1.2 has no 3D
  * read-write images without it) -- confirmed supported on this Hawaii
- * device via perf-v2 Phase A7. float32 mode only; --half still uses the
+ * device via a runtime capability check in ct_gpu.c. float32 mode only; --half still uses the
  * separate float_to_half + copy path since half-precision needs an
  * actual format conversion this kernel doesn't do.
  *
- * perf-v2 Phase B4. Flat buffer index j decomposes as
+ * the vol_img fusion path. Flat buffer index j decomposes as
  * j = x*(Nxz*Ny) + y*Ny + z (matching the existing buffer layout), and
  * the image is (width=Ny/z-axis, height=Nxz/y-axis, depth=Nxz/x-axis) --
  * verified against fp_image.cl's own read_imagef(volume_img, samp,
