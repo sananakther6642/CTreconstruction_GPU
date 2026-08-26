@@ -1,4 +1,3 @@
-OpenCL error -1 at clGetDeviceIDs
 Loading /lgrp/edu-2026-1-gpulab/proj_512_75.hdf5 ...
   vol_img precision: float32
   Volume:    512 x 512 x 512
@@ -7,3 +6,493 @@ Loading /lgrp/edu-2026-1-gpulab/proj_512_75.hdf5 ...
   SOD/SDD:   10.5 / 27.7 mm
 
 === GPU mode (gpu-buf), 100 epochs ===
+OpenCL device: Hawaii
+  cl_khr_3d_image_writes: yes
+  cl_khr_fp16: no
+  bp(ones) computed.
+  epoch   1/100  17.272 s
+  epoch   2/100  17.253 s
+  epoch   3/100  17.143 s
+  epoch   4/100  17.214 s
+    [fp_buffer slab 0, p0=0] wall=7.059s gpu=7.059s GPU-BOUND (SLOW)
+    [fp_buffer slab 1, p0=8] wall=11.246s gpu=11.245s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.679s gpu=10.678s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=2.948s gpu=2.947s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=3.740s gpu=3.739s GPU-BOUND (SLOW)
+  epoch   5/100  44.318 s
+    [fp_buffer slab 0, p0=0] wall=4.571s gpu=4.571s GPU-BOUND (SLOW)
+    [fp_buffer slab 1, p0=8] wall=5.925s gpu=5.925s GPU-BOUND (SLOW)
+  epoch   6/100  24.149 s
+    [fp_buffer slab 8, p0=64] wall=4.720s gpu=4.719s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.071s gpu=4.070s GPU-BOUND (SLOW)
+  epoch   7/100  23.595 s
+  epoch   8/100  17.209 s
+    [fp_buffer slab 8, p0=64] wall=9.540s gpu=9.539s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=3.249s gpu=3.249s GPU-BOUND (SLOW)
+  epoch   9/100  27.561 s
+    [fp_buffer slab 4, p0=32] wall=2.797s gpu=2.797s GPU-BOUND (SLOW)
+  epoch  10/100  18.186 s
+  epoch  11/100  17.183 s
+    [fp_buffer slab 5, p0=40] wall=3.101s gpu=3.100s GPU-BOUND (SLOW)
+  epoch  12/100  18.532 s
+  epoch  13/100  17.215 s
+    [fp_buffer slab 1, p0=8] wall=11.316s gpu=11.315s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.681s gpu=10.681s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.359s gpu=11.358s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=6.598s gpu=6.597s GPU-BOUND (SLOW)
+  epoch  14/100  50.159 s
+    [fp_buffer slab 5, p0=40] wall=2.810s gpu=2.810s GPU-BOUND (SLOW)
+  epoch  15/100  18.195 s
+  epoch  16/100  17.218 s
+    [fp_buffer slab 3, p0=24] wall=6.588s gpu=6.587s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.641s gpu=11.640s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.599s gpu=11.599s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.066s gpu=11.065s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.839s gpu=10.839s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.620s gpu=11.619s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.079s gpu=4.079s GPU-BOUND (SLOW)
+  epoch  17/100  73.378 s
+  epoch  18/100  17.174 s
+    [fp_buffer slab 8, p0=64] wall=9.169s gpu=9.168s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.076s gpu=4.075s GPU-BOUND (SLOW)
+  epoch  19/100  27.999 s
+  epoch  20/100  17.269 s
+    [fp_buffer slab 5, p0=40] wall=4.559s gpu=4.558s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.060s gpu=11.059s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.831s gpu=10.830s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.608s gpu=11.607s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.075s gpu=4.074s GPU-BOUND (SLOW)
+  epoch  21/100  51.635 s
+    [fp_buffer slab 5, p0=40] wall=2.485s gpu=2.485s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.066s gpu=11.065s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.824s gpu=10.824s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.619s gpu=11.618s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.073s gpu=4.072s GPU-BOUND (SLOW)
+  epoch  22/100  49.591 s
+    [fp_buffer slab 8, p0=64] wall=9.882s gpu=9.881s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.071s gpu=4.071s GPU-BOUND (SLOW)
+  epoch  23/100  28.721 s
+    [fp_buffer slab 6, p0=48] wall=2.045s gpu=2.045s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.829s gpu=10.828s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.607s gpu=11.606s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.074s gpu=4.073s GPU-BOUND (SLOW)
+  epoch  24/100  39.889 s
+    [fp_buffer slab 1, p0=8] wall=2.717s gpu=2.717s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.685s gpu=10.684s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.366s gpu=11.366s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.642s gpu=11.641s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.599s gpu=11.598s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.056s gpu=11.055s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.850s gpu=10.849s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.609s gpu=11.608s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.069s gpu=4.068s GPU-BOUND (SLOW)
+  epoch  25/100  88.086 s
+    [fp_buffer slab 7, p0=56] wall=4.051s gpu=4.051s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=3.072s gpu=3.072s GPU-BOUND (SLOW)
+  epoch  26/100  20.852 s
+    [fp_buffer slab 8, p0=64] wall=9.546s gpu=9.545s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.066s gpu=4.065s GPU-BOUND (SLOW)
+  epoch  27/100  28.357 s
+  epoch  28/100  17.257 s
+    [fp_buffer slab 4, p0=32] wall=2.132s gpu=2.132s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.611s gpu=11.610s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.066s gpu=11.065s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.837s gpu=10.836s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.599s gpu=11.598s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.067s gpu=4.066s GPU-BOUND (SLOW)
+  epoch  29/100  59.016 s
+  epoch  30/100  17.501 s
+    [fp_buffer slab 0, p0=0] wall=9.429s gpu=9.428s GPU-BOUND (SLOW)
+    [fp_buffer slab 1, p0=8] wall=8.579s gpu=8.579s GPU-BOUND (SLOW)
+  epoch  31/100  31.736 s
+    [fp_buffer slab 3, p0=24] wall=6.979s gpu=6.979s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.656s gpu=11.655s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.595s gpu=11.594s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.064s gpu=11.064s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.833s gpu=10.832s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.612s gpu=11.611s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.077s gpu=4.077s GPU-BOUND (SLOW)
+  epoch  32/100  73.749 s
+  epoch  33/100  17.327 s
+    [fp_buffer slab 3, p0=24] wall=11.367s gpu=11.366s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.657s gpu=11.656s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.591s gpu=11.590s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.060s gpu=11.059s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.826s gpu=10.825s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.608s gpu=11.607s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.074s gpu=4.073s GPU-BOUND (SLOW)
+  epoch  34/100  78.413 s
+    [fp_buffer slab 4, p0=32] wall=8.873s gpu=8.872s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.596s gpu=11.595s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.064s gpu=11.063s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.814s gpu=10.813s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.601s gpu=11.600s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.079s gpu=4.079s GPU-BOUND (SLOW)
+  epoch  35/100  65.739 s
+    [fp_buffer slab 8, p0=64] wall=4.095s gpu=4.095s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.072s gpu=4.072s GPU-BOUND (SLOW)
+  epoch  36/100  22.913 s
+    [fp_buffer slab 3, p0=24] wall=3.950s gpu=3.950s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.650s gpu=11.649s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=4.322s gpu=4.322s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=6.486s gpu=6.486s GPU-BOUND (SLOW)
+  epoch  37/100  36.440 s
+    [fp_buffer slab 8, p0=64] wall=9.895s gpu=9.895s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.065s gpu=4.065s GPU-BOUND (SLOW)
+  epoch  38/100  28.712 s
+  epoch  39/100  17.329 s
+    [fp_buffer slab 0, p0=0] wall=3.974s gpu=3.974s GPU-BOUND (SLOW)
+  epoch  40/100  19.438 s
+    [fp_buffer slab 1, p0=8] wall=4.771s gpu=4.770s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.683s gpu=10.682s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.370s gpu=11.369s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.658s gpu=11.657s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.604s gpu=11.603s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.070s gpu=11.069s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.837s gpu=10.836s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.605s gpu=11.604s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.076s gpu=4.076s GPU-BOUND (SLOW)
+  epoch  41/100  90.200 s
+    [fp_buffer slab 1, p0=8] wall=9.505s gpu=9.504s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.673s gpu=10.672s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.360s gpu=11.360s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.647s gpu=11.646s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.603s gpu=11.602s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.061s gpu=11.060s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.844s gpu=10.843s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.607s gpu=11.606s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.075s gpu=4.074s GPU-BOUND (SLOW)
+  epoch  42/100  94.853 s
+    [fp_buffer slab 6, p0=48] wall=10.786s gpu=10.785s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.821s gpu=10.820s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.607s gpu=11.606s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.072s gpu=4.071s GPU-BOUND (SLOW)
+  epoch  43/100  48.624 s
+    [fp_buffer slab 1, p0=8] wall=9.182s gpu=9.181s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.666s gpu=10.666s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.362s gpu=11.361s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.653s gpu=11.652s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.592s gpu=11.591s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.068s gpu=11.067s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.817s gpu=10.817s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.606s gpu=11.605s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.063s gpu=4.062s GPU-BOUND (SLOW)
+  epoch  44/100  94.505 s
+    [fp_buffer slab 5, p0=40] wall=6.587s gpu=6.586s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.063s gpu=11.062s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.797s gpu=10.797s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.610s gpu=11.609s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.067s gpu=4.066s GPU-BOUND (SLOW)
+  epoch  45/100  53.634 s
+    [fp_buffer slab 6, p0=48] wall=9.343s gpu=9.342s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.825s gpu=10.824s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.616s gpu=11.615s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.070s gpu=4.070s GPU-BOUND (SLOW)
+  epoch  46/100  47.139 s
+  epoch  47/100  17.211 s
+    [fp_buffer slab 4, p0=32] wall=11.361s gpu=11.360s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.590s gpu=11.589s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.058s gpu=11.058s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.836s gpu=10.835s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.606s gpu=11.606s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.069s gpu=4.069s GPU-BOUND (SLOW)
+  epoch  48/100  68.221 s
+    [fp_buffer slab 4, p0=32] wall=11.386s gpu=11.385s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.605s gpu=11.604s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.054s gpu=11.053s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.859s gpu=10.858s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.602s gpu=11.601s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.070s gpu=4.070s GPU-BOUND (SLOW)
+  epoch  49/100  68.275 s
+  epoch  50/100  17.221 s
+  epoch  51/100  17.212 s
+    [fp_buffer slab 1, p0=8] wall=9.522s gpu=9.522s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.681s gpu=10.680s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.369s gpu=11.368s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.645s gpu=11.644s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.603s gpu=11.602s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.062s gpu=11.061s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.849s gpu=10.848s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.620s gpu=11.619s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.075s gpu=4.075s GPU-BOUND (SLOW)
+  epoch  52/100  94.905 s
+  epoch  53/100  17.272 s
+    [fp_buffer slab 0, p0=0] wall=9.447s gpu=9.446s GPU-BOUND (SLOW)
+    [fp_buffer slab 1, p0=8] wall=11.234s gpu=11.233s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.673s gpu=10.672s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.367s gpu=11.366s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.642s gpu=11.641s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.589s gpu=11.588s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.072s gpu=11.071s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.834s gpu=10.833s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.612s gpu=11.611s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.077s gpu=4.077s GPU-BOUND (SLOW)
+  epoch  54/100  104.247 s
+    [fp_buffer slab 5, p0=40] wall=4.540s gpu=4.540s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.062s gpu=11.061s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.809s gpu=10.808s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.607s gpu=11.606s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.065s gpu=4.064s GPU-BOUND (SLOW)
+  epoch  55/100  51.605 s
+    [fp_buffer slab 0, p0=0] wall=4.551s gpu=4.551s GPU-BOUND (SLOW)
+    [fp_buffer slab 1, p0=8] wall=11.249s gpu=11.248s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.653s gpu=10.653s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.353s gpu=11.353s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.648s gpu=11.647s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.578s gpu=11.577s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.053s gpu=11.052s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.827s gpu=10.826s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.616s gpu=11.615s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.074s gpu=4.074s GPU-BOUND (SLOW)
+  epoch  56/100  99.302 s
+    [fp_buffer slab 0, p0=0] wall=9.117s gpu=9.116s GPU-BOUND (SLOW)
+    [fp_buffer slab 1, p0=8] wall=11.248s gpu=11.247s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.670s gpu=10.669s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.361s gpu=11.360s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.656s gpu=11.655s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.591s gpu=11.591s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.053s gpu=11.052s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.857s gpu=10.856s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.610s gpu=11.609s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.074s gpu=4.074s GPU-BOUND (SLOW)
+  epoch  57/100  103.937 s
+  epoch  58/100  17.271 s
+  epoch  59/100  17.279 s
+    [fp_buffer slab 1, p0=8] wall=8.601s gpu=8.600s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.651s gpu=10.650s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.370s gpu=11.369s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.647s gpu=11.646s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.599s gpu=11.598s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.069s gpu=11.068s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.826s gpu=10.825s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.610s gpu=11.609s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.078s gpu=4.077s GPU-BOUND (SLOW)
+  epoch  60/100  93.925 s
+    [fp_buffer slab 5, p0=40] wall=4.551s gpu=4.551s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.058s gpu=11.057s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.837s gpu=10.837s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.611s gpu=11.610s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.071s gpu=4.071s GPU-BOUND (SLOW)
+  epoch  61/100  51.606 s
+  epoch  62/100  17.321 s
+  epoch  63/100  17.255 s
+    [fp_buffer slab 4, p0=32] wall=2.121s gpu=2.120s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.595s gpu=11.595s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.066s gpu=11.065s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.850s gpu=10.850s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.610s gpu=11.609s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.071s gpu=4.070s GPU-BOUND (SLOW)
+  epoch  64/100  59.027 s
+    [fp_buffer slab 3, p0=24] wall=7.274s gpu=7.274s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.680s gpu=11.679s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.599s gpu=11.599s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.076s gpu=11.075s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.842s gpu=10.841s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.614s gpu=11.613s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.073s gpu=4.073s GPU-BOUND (SLOW)
+  epoch  65/100  74.041 s
+    [fp_buffer slab 3, p0=24] wall=8.965s gpu=8.964s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.636s gpu=11.635s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.602s gpu=11.601s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.058s gpu=11.057s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.832s gpu=10.831s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.605s gpu=11.604s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.076s gpu=4.075s GPU-BOUND (SLOW)
+  epoch  66/100  75.699 s
+  epoch  67/100  17.233 s
+    [fp_buffer slab 6, p0=48] wall=6.301s gpu=6.300s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.843s gpu=10.842s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.608s gpu=11.607s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.068s gpu=4.067s GPU-BOUND (SLOW)
+  epoch  68/100  44.131 s
+    [fp_buffer slab 5, p0=40] wall=6.975s gpu=6.974s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.073s gpu=11.072s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.832s gpu=10.832s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.598s gpu=11.598s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.071s gpu=4.070s GPU-BOUND (SLOW)
+  epoch  69/100  54.053 s
+    [fp_buffer slab 8, p0=64] wall=9.867s gpu=9.866s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.076s gpu=4.076s GPU-BOUND (SLOW)
+  epoch  70/100  28.737 s
+    [fp_buffer slab 6, p0=48] wall=4.255s gpu=4.255s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.825s gpu=10.824s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.608s gpu=11.607s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.071s gpu=4.071s GPU-BOUND (SLOW)
+  epoch  71/100  42.069 s
+    [fp_buffer slab 0, p0=0] wall=2.430s gpu=2.429s GPU-BOUND (SLOW)
+    [fp_buffer slab 1, p0=8] wall=11.252s gpu=11.251s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.658s gpu=10.657s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.361s gpu=11.360s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.669s gpu=11.668s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.599s gpu=11.598s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.074s gpu=11.073s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.841s gpu=10.840s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.612s gpu=11.611s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.077s gpu=4.077s GPU-BOUND (SLOW)
+  epoch  72/100  97.271 s
+    [fp_buffer slab 1, p0=8] wall=7.457s gpu=7.456s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.672s gpu=10.671s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.369s gpu=11.368s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.655s gpu=11.654s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.591s gpu=11.590s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.071s gpu=11.071s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.820s gpu=10.819s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.607s gpu=11.606s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.065s gpu=4.065s GPU-BOUND (SLOW)
+  epoch  73/100  92.798 s
+    [fp_buffer slab 3, p0=24] wall=7.282s gpu=7.281s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.671s gpu=11.670s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.597s gpu=11.596s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.059s gpu=11.059s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.860s gpu=10.860s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.611s gpu=11.610s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.080s gpu=4.080s GPU-BOUND (SLOW)
+  epoch  74/100  74.092 s
+  epoch  75/100  17.252 s
+  epoch  76/100  17.220 s
+    [fp_buffer slab 0, p0=0] wall=2.112s gpu=2.112s GPU-BOUND (SLOW)
+    [fp_buffer slab 1, p0=8] wall=11.240s gpu=11.239s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.647s gpu=10.646s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.360s gpu=11.359s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.640s gpu=11.639s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.599s gpu=11.598s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.055s gpu=11.054s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.819s gpu=10.818s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.603s gpu=11.602s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.068s gpu=4.067s GPU-BOUND (SLOW)
+  epoch  77/100  96.843 s
+    [fp_buffer slab 1, p0=8] wall=2.073s gpu=2.073s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.660s gpu=10.660s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.360s gpu=11.360s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.659s gpu=11.658s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.594s gpu=11.593s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.046s gpu=11.045s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.815s gpu=10.814s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.617s gpu=11.616s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.079s gpu=4.079s GPU-BOUND (SLOW)
+  epoch  78/100  87.413 s
+  epoch  79/100  17.277 s
+    [fp_buffer slab 1, p0=8] wall=9.498s gpu=9.498s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.654s gpu=10.653s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.356s gpu=11.356s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.640s gpu=11.639s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.590s gpu=11.589s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.068s gpu=11.067s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.825s gpu=10.824s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.619s gpu=11.618s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.069s gpu=4.069s GPU-BOUND (SLOW)
+  epoch  80/100  94.814 s
+    [fp_buffer slab 3, p0=24] wall=4.247s gpu=4.247s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.653s gpu=11.653s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.601s gpu=11.600s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.086s gpu=11.085s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.813s gpu=10.813s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.618s gpu=11.617s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.071s gpu=4.070s GPU-BOUND (SLOW)
+  epoch  81/100  70.974 s
+  epoch  82/100  17.252 s
+  epoch  83/100  17.266 s
+    [fp_buffer slab 6, p0=48] wall=11.037s gpu=11.036s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.840s gpu=10.840s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.624s gpu=11.623s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.076s gpu=4.075s GPU-BOUND (SLOW)
+  epoch  84/100  48.918 s
+    [fp_buffer slab 0, p0=0] wall=7.017s gpu=7.016s GPU-BOUND (SLOW)
+    [fp_buffer slab 1, p0=8] wall=11.247s gpu=11.246s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.663s gpu=10.662s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.357s gpu=11.357s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.670s gpu=11.669s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.603s gpu=11.602s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.069s gpu=11.068s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.845s gpu=10.844s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.613s gpu=11.612s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.076s gpu=4.075s GPU-BOUND (SLOW)
+  epoch  85/100  101.859 s
+  epoch  86/100  17.220 s
+    [fp_buffer slab 0, p0=0] wall=4.567s gpu=4.566s GPU-BOUND (SLOW)
+    [fp_buffer slab 1, p0=8] wall=11.241s gpu=11.240s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.680s gpu=10.679s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.365s gpu=11.365s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.642s gpu=11.641s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.587s gpu=11.586s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.063s gpu=11.062s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.826s gpu=10.825s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.613s gpu=11.612s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.075s gpu=4.074s GPU-BOUND (SLOW)
+  epoch  87/100  99.356 s
+    [fp_buffer slab 5, p0=40] wall=6.641s gpu=6.641s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.052s gpu=11.051s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.842s gpu=10.841s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.627s gpu=11.626s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.083s gpu=4.082s GPU-BOUND (SLOW)
+  epoch  88/100  53.758 s
+    [fp_buffer slab 0, p0=0] wall=4.580s gpu=4.579s GPU-BOUND (SLOW)
+    [fp_buffer slab 1, p0=8] wall=11.242s gpu=11.241s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.658s gpu=10.657s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.374s gpu=11.374s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.655s gpu=11.654s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.593s gpu=11.593s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.059s gpu=11.058s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.824s gpu=10.823s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.610s gpu=11.610s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.071s gpu=4.070s GPU-BOUND (SLOW)
+  epoch  89/100  99.365 s
+  epoch  90/100  17.281 s
+    [fp_buffer slab 5, p0=40] wall=4.209s gpu=4.208s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.078s gpu=11.078s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.830s gpu=10.830s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.618s gpu=11.617s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.067s gpu=4.066s GPU-BOUND (SLOW)
+  epoch  91/100  51.298 s
+    [fp_buffer slab 0, p0=0] wall=4.232s gpu=4.232s GPU-BOUND (SLOW)
+    [fp_buffer slab 1, p0=8] wall=11.234s gpu=11.233s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.679s gpu=10.678s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.356s gpu=11.355s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.647s gpu=11.646s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.594s gpu=11.593s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.074s gpu=11.073s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.853s gpu=10.852s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.602s gpu=11.601s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.078s gpu=4.077s GPU-BOUND (SLOW)
+  epoch  92/100  99.050 s
+    [fp_buffer slab 3, p0=24] wall=6.560s gpu=6.560s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.648s gpu=11.647s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.604s gpu=11.603s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.067s gpu=11.067s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.839s gpu=10.838s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.611s gpu=11.610s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.070s gpu=4.069s GPU-BOUND (SLOW)
+  epoch  93/100  73.345 s
+    [fp_buffer slab 0, p0=0] wall=9.111s gpu=9.110s GPU-BOUND (SLOW)
+    [fp_buffer slab 1, p0=8] wall=11.241s gpu=11.240s GPU-BOUND (SLOW)
+    [fp_buffer slab 2, p0=16] wall=10.680s gpu=10.679s GPU-BOUND (SLOW)
+    [fp_buffer slab 3, p0=24] wall=11.354s gpu=11.353s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.649s gpu=11.648s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.600s gpu=11.599s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.076s gpu=11.076s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.828s gpu=10.827s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.619s gpu=11.618s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.077s gpu=4.076s GPU-BOUND (SLOW)
+  epoch  94/100  103.936 s
+  epoch  95/100  17.322 s
+  epoch  96/100  17.227 s
+  epoch  97/100  17.290 s
+    [fp_buffer slab 4, p0=32] wall=8.886s gpu=8.885s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.617s gpu=11.616s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.074s gpu=11.073s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.847s gpu=10.846s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.628s gpu=11.628s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.076s gpu=4.075s GPU-BOUND (SLOW)
+  epoch  98/100  65.798 s
+  epoch  99/100  17.242 s
+    [fp_buffer slab 3, p0=24] wall=4.576s gpu=4.575s GPU-BOUND (SLOW)
+    [fp_buffer slab 4, p0=32] wall=11.699s gpu=11.698s GPU-BOUND (SLOW)
+    [fp_buffer slab 5, p0=40] wall=11.614s gpu=11.613s GPU-BOUND (SLOW)
+    [fp_buffer slab 6, p0=48] wall=11.081s gpu=11.080s GPU-BOUND (SLOW)
+    [fp_buffer slab 7, p0=56] wall=10.843s gpu=10.842s GPU-BOUND (SLOW)
+    [fp_buffer slab 8, p0=64] wall=11.624s gpu=11.624s GPU-BOUND (SLOW)
+    [fp_buffer slab 9, p0=72] wall=4.081s gpu=4.080s GPU-BOUND (SLOW)
+  epoch 100/100  71.453 s
+GPU time: 4749.01 s
+Saving to pool15/hdf5/gpu-buf_512.hdf5 ...
+Done.
