@@ -1281,6 +1281,180 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ * gpu_op_fp / gpu_op_bp — GPU component tests, mirrors main.c's --op fp|bp
+ * CPU path. Single fp or bp call, no MLEM iteration, isolates operator
+ * precision instead of comparing accumulated 100-epoch output. Lets
+ * gpu-img/gpu-opt's hardware-sampler error be attributed to fp vs bp
+ * separately (see kernels/fp_image.cl doing ~256-512 8-tap sampled reads
+ * per ray vs bp_image.cl/bp_buffer_opt.cl doing 75 4-tap reads per voxel --
+ * fp is the likely dominant source, but this measures it rather than
+ * assumes it).
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+void gpu_op_fp(CLState *cl, const CBpara *p, const float *volume, float *proj_out)
+{
+    cl_int err;
+    int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
+    int W = p->detector_width,   H  = p->detector_height;
+    int np = p->num_projs;
+    size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
+    size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
+
+    cl_mem d_vol = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
+                                   vol_bytes, (void*)volume, &err);
+    CL_CHECK(err, "gpu_op_fp d_vol");
+    cl_mem d_proj = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+    CL_CHECK(err, "gpu_op_fp d_proj");
+
+    if (cl->mode == GPU_MODE_BUFFER) {
+        /* run_fp_buffer takes cl_mem* (may reallocate d_vol internally via
+         * FP_BUFFER_VOL_REALLOC_EVERY) -- pass a local pointer to our copy. */
+        run_fp_buffer(cl, p, &d_vol, d_proj, 0, np);
+    } else {
+        build_RT_buffers(cl, p);
+
+        /* Same vol_img construction as reconstruct_gpu's GPU_MODE_IMAGE
+         * branch (ct_gpu.c ~1084-1088), float32 only -- --half is
+         * irrelevant to this component test. */
+        cl_image_format vol_fmt = {CL_R, CL_FLOAT};
+        cl_image_desc vdesc = {0};
+        vdesc.image_type   = CL_MEM_OBJECT_IMAGE3D;
+        vdesc.image_width  = (size_t)Ny;
+        vdesc.image_height = (size_t)Nxz;
+        vdesc.image_depth  = (size_t)Nxz;
+        cl_mem vol_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &vol_fmt, &vdesc, NULL, &err);
+        CL_CHECK(err, "gpu_op_fp vol_img");
+
+        size_t vorigin[3] = {0,0,0};
+        size_t vregion[3] = {(size_t)Ny, (size_t)Nxz, (size_t)Nxz};
+        err = clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img, 0, vorigin, vregion, 0, NULL, NULL);
+        CL_CHECK(err, "gpu_op_fp seed vol_img");
+
+        /* fp_image is shared by GPU_MODE_IMAGE and GPU_MODE_OPT (see
+         * reconstruct_gpu_opt's call site, ct_gpu.c ~1557) -- same kernel,
+         * same k_fp_img handle, no mode branch needed here. */
+        run_fp_image(cl, p, vol_img, d_proj, 0, np);
+
+        clReleaseMemObject(vol_img);
+        clReleaseMemObject(cl->d_R_mats);
+        clReleaseMemObject(cl->d_T_vecs);
+    }
+    clFinish(cl->queue);
+
+    err = clEnqueueReadBuffer(cl->queue, d_proj, CL_TRUE, 0, proj_bytes, proj_out, 0, NULL, NULL);
+    CL_CHECK(err, "gpu_op_fp readback");
+
+    clReleaseMemObject(d_proj);
+    clReleaseMemObject(d_vol);
+}
+
+void gpu_op_bp(CLState *cl, const CBpara *p, float *volume_out)
+{
+    cl_int err;
+    int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
+    int W = p->detector_width,   H  = p->detector_height;
+    int np = p->num_projs;
+    size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
+    size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
+
+    /* float2 cos/sin LUT -- both bp_image and bp_opt take this form
+     * (see run_bp_image / the bp_opt inline call site, ct_gpu.c ~1412). */
+    float *ang_cs = (float *)malloc((size_t)np * 2 * sizeof(float));
+    for (int i = 0; i < np; i++) {
+        ang_cs[2*i]   = (float)cos(p->angles[i]);
+        ang_cs[2*i+1] = (float)sin(p->angles[i]);
+    }
+    cl_mem d_ang_cs = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR,
+                                      (size_t)np*2*sizeof(float), ang_cs, &err);
+    CL_CHECK(err, "gpu_op_bp d_ang_cs");
+    free(ang_cs);
+
+    /* raw-ones -> cone_weight+flip+transpose, matching --op bp's CPU path
+     * (cone_weight_cpu + manual layout transform) and reconstruct_gpu's
+     * bp(ones) precompute (run_preprocess), so this is bp(cone_weight(ones))
+     * on both CPU and GPU, not raw bp(ones). */
+    cl_mem d_ones_raw  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+    CL_CHECK(err, "gpu_op_bp d_ones_raw");
+    cl_mem d_ones_prep = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+    CL_CHECK(err, "gpu_op_bp d_ones_prep");
+    float one = 1.f;
+    err = clEnqueueFillBuffer(cl->queue, d_ones_raw, &one, sizeof(float), 0, proj_bytes, 0, NULL, NULL);
+    CL_CHECK(err, "gpu_op_bp fill ones");
+    run_preprocess(cl, p, d_ones_raw, d_ones_prep);
+
+    /* Transposed extents (width=H, height=W) -- preprocessed layout is
+     * [np][W][H], matching every other ones_img construction in this file
+     * (see reconstruct_gpu's bp(ones) block, ct_gpu.c ~1040-1051). */
+    cl_image_format img_fmt = {CL_R, CL_FLOAT};
+    cl_image_desc desc = {0};
+    desc.image_type       = CL_MEM_OBJECT_IMAGE2D_ARRAY;
+    desc.image_width      = (size_t)H;
+    desc.image_height     = (size_t)W;
+    desc.image_array_size = (size_t)np;
+    cl_mem ones_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &img_fmt, &desc, NULL, &err);
+    CL_CHECK(err, "gpu_op_bp ones_img");
+    size_t oorigin[3] = {0,0,0};
+    size_t oregion[3] = {(size_t)H, (size_t)W, (size_t)np};
+    err = clEnqueueCopyBufferToImage(cl->queue, d_ones_prep, ones_img, 0, oorigin, oregion, 0, NULL, NULL);
+    CL_CHECK(err, "gpu_op_bp CopyBufferToImage");
+
+    cl_mem d_vol_out = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
+    CL_CHECK(err, "gpu_op_bp d_vol_out");
+    float zero = 0.f;
+    clEnqueueFillBuffer(cl->queue, d_vol_out, &zero, sizeof(float), 0, vol_bytes, 0, NULL, NULL);
+
+    if (cl->mode == GPU_MODE_BUFFER) {
+        /* run_bp_buffer reads straight from the preprocessed buffer, no
+         * image object needed -- this is the exact (no hardware sampler)
+         * reference path, mirrors run_bp_buffer's other call site in
+         * reconstruct_gpu's bp(ones) block (ct_gpu.c ~1038). */
+        run_bp_buffer(cl, p, d_ones_prep, d_ang_cs, d_vol_out, 0, np);
+    } else if (cl->mode == GPU_MODE_OPT) {
+        /* bp_opt: extra __local float2 scratch arg + one more kernel arg
+         * (15 total, 0-14) vs bp_image's 14 (0-13) -- mirrors the inline
+         * call site at ct_gpu.c ~1412-1428, ip_start=0/ip_count=np (no
+         * subsetting for this component test). */
+        size_t lmem_bytes = (size_t)np * sizeof(cl_float2);
+        cl_kernel k = cl->k_bp_opt;
+        float SOD=(float)p->SOD, SDD=(float)p->SDD;
+        float vs=(float)p->voxelSize, px=(float)p->pixelSize;
+        clSetKernelArg(k, 0, sizeof(cl_mem), &ones_img);
+        clSetKernelArg(k, 1, sizeof(cl_mem), &d_ang_cs);
+        clSetKernelArg(k, 2, sizeof(cl_mem), &d_vol_out);
+        clSetKernelArg(k, 3, lmem_bytes, NULL);
+        clSetKernelArg(k, 4, sizeof(int),   &Nxz);
+        clSetKernelArg(k, 5, sizeof(int),   &Ny);
+        clSetKernelArg(k, 6, sizeof(int),   &W);
+        clSetKernelArg(k, 7, sizeof(int),   &H);
+        clSetKernelArg(k, 8, sizeof(int),   &np);
+        clSetKernelArg(k, 9, sizeof(float), &SOD);
+        clSetKernelArg(k,10, sizeof(float), &SDD);
+        clSetKernelArg(k,11, sizeof(float), &vs);
+        clSetKernelArg(k,12, sizeof(float), &px);
+        int ip_start = 0, ip_count = np;
+        clSetKernelArg(k,13, sizeof(int),   &ip_start);
+        clSetKernelArg(k,14, sizeof(int),   &ip_count);
+        size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
+        size_t lws[3] = {4, 4, 16};
+        for (int d=0; d<3; d++) if (gws[d]%lws[d]) gws[d] += lws[d]-gws[d]%lws[d];
+        err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
+        CL_CHECK(err, "gpu_op_bp bp_opt enqueue");
+    } else {
+        run_bp_image(cl, p, ones_img, d_ang_cs, d_vol_out, 0, np);
+    }
+    clFinish(cl->queue);
+
+    err = clEnqueueReadBuffer(cl->queue, d_vol_out, CL_TRUE, 0, vol_bytes, volume_out, 0, NULL, NULL);
+    CL_CHECK(err, "gpu_op_bp readback");
+
+    clReleaseMemObject(d_vol_out);
+    clReleaseMemObject(ones_img);
+    clReleaseMemObject(d_ones_prep);
+    clReleaseMemObject(d_ones_raw);
+    clReleaseMemObject(d_ang_cs);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
  * reconstruct_gpu_opt — uses optimized bp kernel (bp_opt)
  *
  * Key differences from reconstruct_gpu:

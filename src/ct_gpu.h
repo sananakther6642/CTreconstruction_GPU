@@ -91,6 +91,26 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          int epochs, const char *conv_log, int subsets);
 
 /*
+ * Component test, GPU version of the --op fp|bp CPU path (see main.c).
+ * Runs a single fp or bp call on all-ones input, no MLEM iteration --
+ * isolates operator precision so it can be compared against gpu-buf's
+ * manual (exact) interpolation. cl must already be gpu_init'd in
+ * GPU_MODE_IMAGE or GPU_MODE_OPT (fp) / any GPU mode (bp).
+ *
+ * gpu_op_fp:  proj_out must be pre-allocated, size num_projs*H*W floats.
+ *             volume is used as-is (caller fills with 1.0f for the
+ *             all-ones case, matching --op fp's CPU behavior).
+ * gpu_op_bp:  volume_out must be pre-allocated, size Nxz*Nxz*Ny floats.
+ *             Internally fills a raw-ones projection buffer, applies the
+ *             same cone_weight+flip+transpose preprocessing run_preprocess
+ *             does inside reconstruct_gpu (matching --op bp's CPU
+ *             cone_weight_cpu + manual layout transform), then bp's it --
+ *             so both are bp(cone_weight(ones)), not raw bp(ones).
+ */
+void gpu_op_fp(CLState *cl, const CBpara *p, const float *volume, float *proj_out);
+void gpu_op_bp(CLState *cl, const CBpara *p, float *volume_out);
+
+/*
  * perf-v2 Phase A2/A3 diagnostic: repeat one fixed fp_buffer angle-slab
  * n_repeats times, printing wall + GPU-event-profiled time per repeat.
  * Distinguishes thermal throttling (monotone degradation) from

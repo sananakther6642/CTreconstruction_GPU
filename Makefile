@@ -26,7 +26,8 @@ TARGET = $(BUILD_DIR)/ct_recon
 
 .PHONY: all clean run-cpu run-gpu-buf run-gpu-img run-gpu-opt \
                run-cpu-512 run-gpu-buf-512 run-gpu-img-512 run-gpu-opt-512 \
-               run-python run-op-fp run-op-bp run-op-fp-512 run-op-bp-512
+               run-python run-op-fp run-op-bp run-op-fp-512 run-op-bp-512 \
+               run-op-fp-gpubuf run-op-fp-gpuimg run-op-bp-gpubuf run-op-bp-gpuimg
 
 all: $(BUILD_DIR) $(TARGET)
 
@@ -92,6 +93,20 @@ run-op-fp-512:
 	OMP_NUM_THREADS=$(OMP_THREADS) OMP_PROC_BIND=close OMP_PLACES=cores $(TARGET) --data $(DATA512) --out fp_cpu_512.hdf5 --mode cpu --op fp --samples $(SAMPLES512) --kernels $(KERNEL_DIR)
 run-op-bp-512:
 	OMP_NUM_THREADS=$(OMP_THREADS) OMP_PROC_BIND=close OMP_PLACES=cores $(TARGET) --data $(DATA512) --out bp_cpu_512.hdf5 --mode cpu --op bp --kernels $(KERNEL_DIR)
+
+# GPU component tests (hybrid-precision branch): same isolation as
+# run-op-fp/bp above but on the GPU kernels, so gpu-img/gpu-opt's
+# hardware-sampler precision loss can be attributed to fp vs bp
+# separately instead of only measured after 100 epochs of MLEM mixing
+# them together. gpu-buf's fp/bp are the exact (no sampler) reference.
+run-op-fp-gpubuf:
+	$(TARGET) --data $(DATA256) --out fp_gpubuf.hdf5 --mode gpu-buf --op fp --kernels $(KERNEL_DIR)
+run-op-fp-gpuimg:
+	$(TARGET) --data $(DATA256) --out fp_gpuimg.hdf5 --mode gpu-img --op fp --kernels $(KERNEL_DIR)
+run-op-bp-gpubuf:
+	$(TARGET) --data $(DATA256) --out bp_gpubuf.hdf5 --mode gpu-buf --op bp --kernels $(KERNEL_DIR)
+run-op-bp-gpuimg:
+	$(TARGET) --data $(DATA256) --out bp_gpuimg.hdf5 --mode gpu-img --op bp --kernels $(KERNEL_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR)
