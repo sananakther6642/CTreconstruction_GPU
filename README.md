@@ -7,15 +7,18 @@ Cone-beam CT reconstruction using iterative MLEM. CPU (OpenMP) and GPU
 `gpu-opt`) agree with the CPU reference at the float32 noise floor
 (MSE 1e-7 to 1e-10 vs CPU, both datasets, both hardware machines --
 see Performance and Validation below). MSE against the course-provided
-Python reference (`Topic_2_CTreconstruction.py`) is higher
-(`2.061e-02`/`6.371e-03` depending on hardware) but this is **not** a
-correctness issue in any C/GPU/CPU code in this project: it is a
-confirmed, investigated bug in the unmodified reference script itself
--- a handful of voxels (26 on one machine, 24 on the other, both under
-0.0002% of the volume) diverge over its 20 unclamped MLEM iterations,
-and every one of this project's four implementations agrees with the
-Python reference identically at those same voxels. Full investigation
-in the Validation section.
+Python reference (`Topic_2_CTreconstruction.py`) was initially higher
+(`2.061e-02`/`6.371e-03` depending on hardware) due to a confirmed,
+investigated numerical-stability bug in that script's unclamped MLEM
+update -- a handful of voxels (26 on one machine, 24 on the other, both
+under 0.0002% of the volume) diverged over its 20 iterations, not a
+correctness issue in any C/GPU/CPU code in this project. Reported to
+the course staff, who approved fixing it; a `[0.5, 2.0]` per-epoch
+ratio clamp has been added to both `Topic_2_CTreconstruction.py` and
+its 512^3 variant (documented in each file directly). The fix has not
+yet been re-verified with a full 20-epoch run at the time of writing --
+see the Validation section for the original (unclamped) numbers and
+investigation.
 
 ## Performance
 
@@ -260,17 +263,24 @@ python/
   diag_voxel.py                — one-off debugging script, kept for reference
   diag_maxgap.py               — per-operator error attribution for the gpu-img/gpu-opt max-gap finding
   plot_results.py              — report figures (OSEM/MLEM convergence, slice comparisons)
-  Topic_2_CTreconstruction.py — the reference script (fp_func/bp_func,
-                                 unmodified algorithm); the "Reference code
-                                 (python)" grading refers to. Two real bugs
-                                 fixed (out_path placeholder, volume z-axis size)
-                                 so it actually runs and saves; algorithm untouched.
-                                 Has a real, unfixed numerical-stability gap at
-                                 a handful of voxels -- see the 26-outlier-voxel
-                                 finding in the Validation section.
+  Topic_2_CTreconstruction.py — the reference script (fp_func/bp_func);
+                                 the "Reference code (python)" grading
+                                 refers to. Two real bugs fixed early on
+                                 (out_path placeholder, volume z-axis size)
+                                 so it actually runs and saves. A third fix
+                                 -- a [0.5, 2.0] per-epoch ratio clamp on
+                                 the MLEM update -- was added after finding
+                                 and reporting a real numerical-stability
+                                 gap at a handful of voxels (course staff
+                                 approved fixing it; see the
+                                 26-outlier-voxel finding in the Validation
+                                 section for the original, unclamped
+                                 numbers). fp_func/bp_func themselves
+                                 remain untouched.
   Topic_2_CTreconstruction_512.py — 512^3 variant, path_data/out_path
-                                 changed only; attempted on both machines,
-                                 ran out of memory before completing on
+                                 changed, same ratio clamp applied;
+                                 attempted on both machines, ran out of
+                                 memory before completing on
                                  either -- see Validation section.
   diag_bp_ones.py               — investigates the 26-outlier-voxel finding
                                  above (checks whether bp_ones is near-zero

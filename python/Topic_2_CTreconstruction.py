@@ -251,6 +251,19 @@ if __name__ == '__main__':
             b=proj_f(v0)
             result = np.divide( projection_0,b, out=np.zeros_like( projection_0), where=(b != 0))
             ratio=bp_f( result  )/bp_ones
+            # Clamp the multiplicative update ratio to [0.5, 2.0] per epoch.
+            # Fixes a numerical-stability bug found in the unmodified script:
+            # a handful of ill-conditioned voxels (24-26 out of ~16.7M, see
+            # report) had a per-epoch ratio consistently ~1.3, which over 20
+            # unclamped iterations compounded into values as large as ~520
+            # (vs an expected range of roughly 0-2 everywhere else). bp_ones
+            # was checked directly and is normal at every affected voxel, so
+            # this is not a division-by-near-zero issue -- it is unbounded
+            # multiplicative growth. Normal voxels have a ratio already
+            # close to 1 as they converge, so a [0.5, 2.0] clamp should not
+            # affect them in practice -- not yet re-verified with a real
+            # 20-epoch run, see report for the actual before/after numbers.
+            ratio = np.clip(ratio, 0.5, 2.0)
             v0*=ratio
             print(f"epoch {i+1}/{Epochs}  {time.time()-t0:.1f}s", flush=True)
 

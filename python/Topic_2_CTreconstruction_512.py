@@ -258,6 +258,11 @@ if __name__ == '__main__':
             b=proj_f(v0)
             result = np.divide( projection_0,b, out=np.zeros_like( projection_0), where=(b != 0))
             ratio=bp_f( result  )/bp_ones
+            # Same clamp as the 256^3 script -- see that file for the full
+            # explanation. Not yet verified whether 512^3 has the same
+            # ill-conditioned-voxel instability; applying preemptively since
+            # the underlying MLEM math is identical.
+            ratio = np.clip(ratio, 0.5, 2.0)
             v0*=ratio
             print(f"epoch {i+1}/{Epochs}  {time.time()-t0:.1f}s", flush=True)
 
