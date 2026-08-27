@@ -131,30 +131,12 @@ Python reference's own output, not a disagreement in any C/GPU mode.
 512^3 has no Python-reference comparison; that script hardcodes the
 256^3 dataset path (a 512^3 variant, `Topic_2_CTreconstruction_512.py`,
 exists -- see the Run section). Attempted on both machines
-(2026-08-27), memory wall confirmed on each, not run to completion on
-either:
-
-- **AMD Hawaii PRO** (15GB RAM, no swap): failed immediately at the
-  first large-array allocation (`bp_ones`, `ArrayMemoryError` on a 1GB
-  `(512,512,512)` float64 array), even under an 8GB `ulimit -v` cap --
-  only 9GB was actually available at attempt time. Re-confirms the
-  earlier (2026-08-21) finding that 512^3 does not fit on this
-  machine's physical RAM regardless of cap -- the `ulimit` was never
-  the limiting factor, the hardware is.
-- **NVIDIA GTX 680's machine** (188GB RAM): got further, but still hit
-  real memory walls twice as the cap was raised. First attempt at
-  `MEM_CAP_GB=8` (the script's default) failed at the same `bp_ones`
-  1GB-array point as AMD Hawaii PRO -- expected, 8GB is a conservative
-  default sized for the 15GB machine, not this one. Raised to
-  `MEM_CAP_GB=32`: got past `bp_ones` entirely and into `fp_func`, but
-  failed there on a single 15.2GB `(1184,1120,512,3)` float64
-  ray-direction array (`ArrayMemoryError`). A retry at a higher cap
-  (64GB+) was planned but not carried out -- **the 512^3 Python
-  reference run is paused for now on both machines**, not abandoned.
-  Real peak memory need at 512^3 is still unmeasured; the 15.2GB
-  single-array floor already observed means the full run likely needs
-  several times that once `bp_ones`, the ray arrays, and the per-epoch
-  MLEM buffers are all live at once.
+(2026-08-27); both ran out of memory before completing (AMD Hawaii
+PRO's 15GB RAM is a confirmed hard ceiling for this workload, per the
+earlier 2026-08-21 finding; the NVIDIA GTX 680 machine has far more
+RAM but still hit real allocation limits partway through). Paused for
+now, not abandoned -- real memory requirements at 512^3 are still
+unmeasured.
 
 ### 256³
 ```
