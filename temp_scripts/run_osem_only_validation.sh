@@ -1,4 +1,7 @@
 #!/bin/bash
+# ARCHIVED: paths assume this script runs from repo root (its original
+# location before the temp_scripts/ cleanup move) -- "../python/X.py" and
+# any "../*-worktree" paths need re-checking before rerunning from here.
 # Validate perf-v2-osem-only: baseline + OSEM only, C2/C3/C5 removed.
 # Checks: (1) all four modes still build and agree at default settings
 # (byte-for-byte same as perf-v2/features since C2/C3/C5 were opt-in
@@ -18,7 +21,7 @@ make run-cpu EPOCHS=10
 make run-gpu-buf EPOCHS=10
 make run-gpu-img EPOCHS=10
 make run-gpu-opt EPOCHS=10
-python3 validate.py
+python3 ../python/validate.py
 
 echo ""
 echo "=== 2. OSEM still works: --subsets 1 (should match default exactly) ==="

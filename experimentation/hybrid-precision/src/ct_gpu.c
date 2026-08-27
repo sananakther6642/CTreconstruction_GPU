@@ -49,7 +49,20 @@ static cl_program build_program_opts(cl_context ctx, cl_device_id dev,
     CL_CHECK(err, "clCreateProgramWithSource");
 
     char opts[256];
-    snprintf(opts, sizeof(opts), "-cl-fast-relaxed-math %s", extra_opts ? extra_opts : "");
+    /* perf-v2 hybrid-precision diagnostic: HYBRID_PRECISION_NO_FASTMATH
+     * strips -cl-fast-relaxed-math entirely, one-off test of whether that
+     * always-on flag is why the manual "exact" nearest-fetch+blend fallback
+     * (see bp_image.cl's HYBRID_PRECISION block) doesn't actually improve
+     * on the hardware sampler at bp_image.cl's worst measured voxel
+     * (244,66,17 @ 256^3) -- affects ALL image/opt-program kernels when
+     * set, not just the hybrid path, so only use for this specific
+     * comparison, never for a real run. */
+    const char *no_fastmath = getenv("HYBRID_PRECISION_NO_FASTMATH");
+    if (no_fastmath && atoi(no_fastmath)) {
+        snprintf(opts, sizeof(opts), "%s", extra_opts ? extra_opts : "");
+    } else {
+        snprintf(opts, sizeof(opts), "-cl-fast-relaxed-math %s", extra_opts ? extra_opts : "");
+    }
     err = clBuildProgram(prog, 1, &dev, opts, NULL, NULL);
     if (err != CL_SUCCESS) {
         size_t log_sz;
@@ -145,7 +158,7 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
      * clEnqueueCopyBufferToImage each epoch). OpenCL 1.2 has no 3D
      * read-write images without this extension. Printed once at init,
      * not gated behind an env var since it costs nothing. */
-    /* Also check cl_khr_fp16 -- required for --half mode's
+    /* perf-v2: also check cl_khr_fp16 -- required for --half mode's
      * float_to_half kernel (kernels/fp_image.cl). Confirmed present on
      * the original AMD Hawaii target but ABSENT on this project's other
      * target, an NVIDIA GTX 680 -- without this check, --half
@@ -211,13 +224,32 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "cone_weight_hw");
     }
 
+    /* perf-v2 hybrid-precision: opt-in radius-gated/gradient-gated manual
+     * fallback for bp's hardware sampler (see kernels/bp_image.cl for the
+     * full rationale -- measured via diag_op_attribution.py to be the
+     * dominant source of gpu-img/gpu-opt's MSE-vs-CPU gap, fp_image.cl
+     * does NOT get this treatment, confirmed unnecessary by measurement).
+     * Compile-time define rather than a new mode -- HYBRID_PRECISION unset
+     * (the default) compiles both bp kernels byte-identical to before
+     * (verified: gcc -E preprocessed output diffs clean against the
+     * pre-hybrid source with the define unset). */
+    int hybrid_precision = 0;
+    {
+        const char *hyb_env = getenv("HYBRID_PRECISION");
+        if (hyb_env) hybrid_precision = atoi(hyb_env);
+    }
+    cl->hybrid_precision = hybrid_precision;
+
     /* ── Image-mode program (also used by OPT for fp_image) ── */
     if (mode == GPU_MODE_IMAGE || mode == GPU_MODE_OPT) {
         char *src_bp  = load_source(path_bp_img);
         char *src_fp  = load_source(path_fp_img);
         char *combined = concat_src(src_bp, src_fp);
-        cl->prog_image = build_program_opts(cl->ctx, cl->device, combined,
-                                            cl->has_fp16 ? "-DHAVE_FP16" : "");
+        char img_opts[128];
+        snprintf(img_opts, sizeof(img_opts), "%s%s",
+                 cl->has_fp16 ? "-DHAVE_FP16 " : "",
+                 hybrid_precision ? "-DHYBRID_PRECISION" : "");
+        cl->prog_image = build_program_opts(cl->ctx, cl->device, combined, img_opts);
         free(src_bp); free(src_fp); free(combined);
 
         cl->k_bp_img = clCreateKernel(cl->prog_image, "bp_image", &err);
@@ -238,7 +270,14 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         /* also need utility kernels (cone_weight, proj_divide, vol_update) */
         char *src_util = load_source(path_bp_buf);
         char *combined = concat_src(src_bp, src_util);
-        cl->prog_opt = build_program(cl->ctx, cl->device, combined);
+        /* build_program hardcodes extra_opts="-cl-fast-relaxed-math" with
+         * no room for more flags -- call build_program_opts directly.
+         * Note build_program_opts ALREADY always prepends
+         * -cl-fast-relaxed-math itself (see its own snprintf, ct_gpu.c
+         * ~52) -- extra_opts only needs -DHYBRID_PRECISION, not a repeat
+         * of the base flag. */
+        cl->prog_opt = build_program_opts(cl->ctx, cl->device, combined,
+                                          hybrid_precision ? "-DHYBRID_PRECISION" : "");
         free(src_bp); free(src_util); free(combined);
 
         cl->k_bp_opt   = clCreateKernel(cl->prog_opt, "bp_opt", &err);
@@ -483,7 +522,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,14, sizeof(int),    &ip_start);
     clSetKernelArg(k,15, sizeof(int),    &ip_count);
 
-    /* Hardware target switched from AMD Hawaii PRO,
+    /* perf-v2: hardware target switched from AMD Hawaii PRO,
      * GCN 1.1, 64-wide wavefront) to NVIDIA GTX 680 (Kepler,
      * 32-wide warp) -- work-group tuning does not transfer between them,
      * confirmed by direct sweep rather than assumed.
@@ -678,7 +717,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
 /*
  * ── Diagnostic: repeat one fp_buffer angle-slab N times ─────────────────
  *
- * The README's "thermal throttling" explanation
+ * perf-v2 plan Phase A2/A3: the README's "thermal throttling" explanation
  * for gpu-buf's run-to-run variance is disputed (6.6x discrete jump is
  * beyond Hawaii's ~3.2x DVFS range, and gpu-img/gpu-opt stay stable in the
  * same sessions gpu-buf goes slow -- device-wide throttling can't be
@@ -830,6 +869,23 @@ static void run_bp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &px);
     clSetKernelArg(k,12, sizeof(int),    &ip_start);
     clSetKernelArg(k,13, sizeof(int),    &ip_count);
+    if (cl->hybrid_precision) {
+        /* kernel was compiled with HYBRID_PRECISION (see gpu_init) and
+         * expects exactly these two extra args, in this order -- see
+         * bp_image.cl's kernel signature. Defaults per the perf-v2 plan:
+         * radius_frac=0.75 (measured 62%/100% of >100xRMS outliers sit
+         * beyond 0.8xFOV radius); grad_thresh=1e-3 (projection-data units,
+         * conservative -- most real edges in this dataset are far above
+         * this, flat regions are far below). Both env-overridable and
+         * clamped (ct_cpu.c's FP_TILE_ENV pattern), not trusted raw. */
+        float radius_frac = 0.75f, grad_thresh = 1e-3f;
+        const char *rf_env = getenv("HYBRID_RADIUS_FRAC");
+        if (rf_env) { float v = atof(rf_env); if (v > 0.f && v <= 1.f) radius_frac = v; }
+        const char *gt_env = getenv("HYBRID_GRAD_THRESH");
+        if (gt_env) { float v = atof(gt_env); if (v >= 0.f) grad_thresh = v; }
+        clSetKernelArg(k,14, sizeof(float), &radius_frac);
+        clSetKernelArg(k,15, sizeof(float), &grad_thresh);
+    }
 
     size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
     size_t lws[3] = {4, 4, 16};  /* see BP_LWS note in run_bp_buffer above */
@@ -857,7 +913,7 @@ static void run_bp_image(CLState *cl, const CBpara *p,
  * full num_projs -- get_global_id(2) then naturally ranges over
  * [ip_start, ip_start+ip_count) inside the kernel.
  *
- * The rounding-up-to-lws step is exactly the bug risk the original investigation plan
+ * The rounding-up-to-lws step is exactly the bug risk the perf-v2 plan
  * flagged before any code was written: rounding ip_count up can push
  * gws[2] past ip_count while still being < num_projs, so a guard of
  * "ip >= num_projs" alone would NOT catch the extra rounded-up
@@ -1281,6 +1337,201 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ * gpu_op_fp / gpu_op_bp — GPU component tests, mirrors main.c's --op fp|bp
+ * CPU path. Single fp or bp call, no MLEM iteration, isolates operator
+ * precision instead of comparing accumulated 100-epoch output. Lets
+ * gpu-img/gpu-opt's hardware-sampler error be attributed to fp vs bp
+ * separately (see kernels/fp_image.cl doing ~256-512 8-tap sampled reads
+ * per ray vs bp_image.cl/bp_buffer_opt.cl doing 75 4-tap reads per voxel --
+ * fp is the likely dominant source, but this measures it rather than
+ * assumes it).
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+void gpu_op_fp(CLState *cl, const CBpara *p, const float *volume, float *proj_out)
+{
+    cl_int err;
+    int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
+    int W = p->detector_width,   H  = p->detector_height;
+    int np = p->num_projs;
+    size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
+    size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
+
+    cl_mem d_vol = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
+                                   vol_bytes, (void*)volume, &err);
+    CL_CHECK(err, "gpu_op_fp d_vol");
+    cl_mem d_proj = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+    CL_CHECK(err, "gpu_op_fp d_proj");
+
+    /* run_fp_buffer needs d_R_mats/d_T_vecs too (kernel args 1-2, same
+     * host-side geometry precompute fp_image uses) -- BUG FOUND AND FIXED
+     * HERE: this call was originally only inside the image-mode branch
+     * below, leaving gpu-buf's launch reading uninitialized cl_mem
+     * handles for R/T. Confirmed via real run: fp_gpubuf.hdf5 came back
+     * with 1,310,720/19,660,800 NaN voxels (~6.7%) while fp_cpu.hdf5 and
+     * fp_gpuimg.hdf5 were clean -- isolated to gpu-buf specifically,
+     * which pointed straight at the one thing only its branch was
+     * skipping. Moved up so both branches get valid geometry buffers. */
+    build_RT_buffers(cl, p);
+
+    if (cl->mode == GPU_MODE_BUFFER) {
+        /* run_fp_buffer takes cl_mem* (may reallocate d_vol internally via
+         * FP_BUFFER_VOL_REALLOC_EVERY) -- pass a local pointer to our copy. */
+        run_fp_buffer(cl, p, &d_vol, d_proj, 0, np);
+    } else {
+        /* Same vol_img construction as reconstruct_gpu's GPU_MODE_IMAGE
+         * branch (ct_gpu.c ~1084-1088), float32 only -- --half is
+         * irrelevant to this component test. */
+        cl_image_format vol_fmt = {CL_R, CL_FLOAT};
+        cl_image_desc vdesc = {0};
+        vdesc.image_type   = CL_MEM_OBJECT_IMAGE3D;
+        vdesc.image_width  = (size_t)Ny;
+        vdesc.image_height = (size_t)Nxz;
+        vdesc.image_depth  = (size_t)Nxz;
+        cl_mem vol_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &vol_fmt, &vdesc, NULL, &err);
+        CL_CHECK(err, "gpu_op_fp vol_img");
+
+        size_t vorigin[3] = {0,0,0};
+        size_t vregion[3] = {(size_t)Ny, (size_t)Nxz, (size_t)Nxz};
+        err = clEnqueueCopyBufferToImage(cl->queue, d_vol, vol_img, 0, vorigin, vregion, 0, NULL, NULL);
+        CL_CHECK(err, "gpu_op_fp seed vol_img");
+
+        /* fp_image is shared by GPU_MODE_IMAGE and GPU_MODE_OPT (see
+         * reconstruct_gpu_opt's call site, ct_gpu.c ~1557) -- same kernel,
+         * same k_fp_img handle, no mode branch needed here. */
+        run_fp_image(cl, p, vol_img, d_proj, 0, np);
+
+        clReleaseMemObject(vol_img);
+    }
+    clReleaseMemObject(cl->d_R_mats);
+    clReleaseMemObject(cl->d_T_vecs);
+    clFinish(cl->queue);
+
+    err = clEnqueueReadBuffer(cl->queue, d_proj, CL_TRUE, 0, proj_bytes, proj_out, 0, NULL, NULL);
+    CL_CHECK(err, "gpu_op_fp readback");
+
+    clReleaseMemObject(d_proj);
+    clReleaseMemObject(d_vol);
+}
+
+void gpu_op_bp(CLState *cl, const CBpara *p, float *volume_out)
+{
+    cl_int err;
+    int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
+    int W = p->detector_width,   H  = p->detector_height;
+    int np = p->num_projs;
+    size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
+    size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
+
+    /* float2 cos/sin LUT -- both bp_image and bp_opt take this form
+     * (see run_bp_image / the bp_opt inline call site, ct_gpu.c ~1412). */
+    float *ang_cs = (float *)malloc((size_t)np * 2 * sizeof(float));
+    for (int i = 0; i < np; i++) {
+        ang_cs[2*i]   = (float)cos(p->angles[i]);
+        ang_cs[2*i+1] = (float)sin(p->angles[i]);
+    }
+    cl_mem d_ang_cs = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR,
+                                      (size_t)np*2*sizeof(float), ang_cs, &err);
+    CL_CHECK(err, "gpu_op_bp d_ang_cs");
+    free(ang_cs);
+
+    /* raw-ones -> cone_weight+flip+transpose, matching --op bp's CPU path
+     * (cone_weight_cpu + manual layout transform) and reconstruct_gpu's
+     * bp(ones) precompute (run_preprocess), so this is bp(cone_weight(ones))
+     * on both CPU and GPU, not raw bp(ones). */
+    cl_mem d_ones_raw  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+    CL_CHECK(err, "gpu_op_bp d_ones_raw");
+    cl_mem d_ones_prep = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+    CL_CHECK(err, "gpu_op_bp d_ones_prep");
+    float one = 1.f;
+    err = clEnqueueFillBuffer(cl->queue, d_ones_raw, &one, sizeof(float), 0, proj_bytes, 0, NULL, NULL);
+    CL_CHECK(err, "gpu_op_bp fill ones");
+    run_preprocess(cl, p, d_ones_raw, d_ones_prep);
+
+    /* Transposed extents (width=H, height=W) -- preprocessed layout is
+     * [np][W][H], matching every other ones_img construction in this file
+     * (see reconstruct_gpu's bp(ones) block, ct_gpu.c ~1040-1051). */
+    cl_image_format img_fmt = {CL_R, CL_FLOAT};
+    cl_image_desc desc = {0};
+    desc.image_type       = CL_MEM_OBJECT_IMAGE2D_ARRAY;
+    desc.image_width      = (size_t)H;
+    desc.image_height     = (size_t)W;
+    desc.image_array_size = (size_t)np;
+    cl_mem ones_img = clCreateImage(cl->ctx, CL_MEM_READ_WRITE, &img_fmt, &desc, NULL, &err);
+    CL_CHECK(err, "gpu_op_bp ones_img");
+    size_t oorigin[3] = {0,0,0};
+    size_t oregion[3] = {(size_t)H, (size_t)W, (size_t)np};
+    err = clEnqueueCopyBufferToImage(cl->queue, d_ones_prep, ones_img, 0, oorigin, oregion, 0, NULL, NULL);
+    CL_CHECK(err, "gpu_op_bp CopyBufferToImage");
+
+    cl_mem d_vol_out = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
+    CL_CHECK(err, "gpu_op_bp d_vol_out");
+    float zero = 0.f;
+    clEnqueueFillBuffer(cl->queue, d_vol_out, &zero, sizeof(float), 0, vol_bytes, 0, NULL, NULL);
+
+    if (cl->mode == GPU_MODE_BUFFER) {
+        /* run_bp_buffer reads straight from the preprocessed buffer, no
+         * image object needed -- this is the exact (no hardware sampler)
+         * reference path, mirrors run_bp_buffer's other call site in
+         * reconstruct_gpu's bp(ones) block (ct_gpu.c ~1038). */
+        run_bp_buffer(cl, p, d_ones_prep, d_ang_cs, d_vol_out, 0, np);
+    } else if (cl->mode == GPU_MODE_OPT) {
+        /* bp_opt: extra __local float2 scratch arg + one more kernel arg
+         * (15 total, 0-14) vs bp_image's 14 (0-13) -- mirrors the inline
+         * call site at ct_gpu.c ~1412-1428, ip_start=0/ip_count=np (no
+         * subsetting for this component test). */
+        size_t lmem_bytes = (size_t)np * sizeof(cl_float2);
+        cl_kernel k = cl->k_bp_opt;
+        float SOD=(float)p->SOD, SDD=(float)p->SDD;
+        float vs=(float)p->voxelSize, px=(float)p->pixelSize;
+        clSetKernelArg(k, 0, sizeof(cl_mem), &ones_img);
+        clSetKernelArg(k, 1, sizeof(cl_mem), &d_ang_cs);
+        clSetKernelArg(k, 2, sizeof(cl_mem), &d_vol_out);
+        clSetKernelArg(k, 3, lmem_bytes, NULL);
+        clSetKernelArg(k, 4, sizeof(int),   &Nxz);
+        clSetKernelArg(k, 5, sizeof(int),   &Ny);
+        clSetKernelArg(k, 6, sizeof(int),   &W);
+        clSetKernelArg(k, 7, sizeof(int),   &H);
+        clSetKernelArg(k, 8, sizeof(int),   &np);
+        clSetKernelArg(k, 9, sizeof(float), &SOD);
+        clSetKernelArg(k,10, sizeof(float), &SDD);
+        clSetKernelArg(k,11, sizeof(float), &vs);
+        clSetKernelArg(k,12, sizeof(float), &px);
+        int ip_start = 0, ip_count = np;
+        clSetKernelArg(k,13, sizeof(int),   &ip_start);
+        clSetKernelArg(k,14, sizeof(int),   &ip_count);
+        if (cl->hybrid_precision) {
+            /* see run_bp_image's identical block for the defaults/env-var
+             * rationale -- kept in sync manually since bp_opt's inline
+             * call sites don't share a helper with run_bp_image. */
+            float radius_frac = 0.75f, grad_thresh = 1e-3f;
+            const char *rf_env = getenv("HYBRID_RADIUS_FRAC");
+            if (rf_env) { float v = atof(rf_env); if (v > 0.f && v <= 1.f) radius_frac = v; }
+            const char *gt_env = getenv("HYBRID_GRAD_THRESH");
+            if (gt_env) { float v = atof(gt_env); if (v >= 0.f) grad_thresh = v; }
+            clSetKernelArg(k,15, sizeof(float), &radius_frac);
+            clSetKernelArg(k,16, sizeof(float), &grad_thresh);
+        }
+        size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
+        size_t lws[3] = {4, 4, 16};
+        for (int d=0; d<3; d++) if (gws[d]%lws[d]) gws[d] += lws[d]-gws[d]%lws[d];
+        err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
+        CL_CHECK(err, "gpu_op_bp bp_opt enqueue");
+    } else {
+        run_bp_image(cl, p, ones_img, d_ang_cs, d_vol_out, 0, np);
+    }
+    clFinish(cl->queue);
+
+    err = clEnqueueReadBuffer(cl->queue, d_vol_out, CL_TRUE, 0, vol_bytes, volume_out, 0, NULL, NULL);
+    CL_CHECK(err, "gpu_op_bp readback");
+
+    clReleaseMemObject(d_vol_out);
+    clReleaseMemObject(ones_img);
+    clReleaseMemObject(d_ones_prep);
+    clReleaseMemObject(d_ones_raw);
+    clReleaseMemObject(d_ang_cs);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
  * reconstruct_gpu_opt — uses optimized bp kernel (bp_opt)
  *
  * Key differences from reconstruct_gpu:
@@ -1427,6 +1678,17 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,12,sizeof(float),&px);
             clSetKernelArg(k,13,sizeof(int),&subset_start[s]);
             clSetKernelArg(k,14,sizeof(int),&subset_count[s]);
+            if (cl->hybrid_precision) {
+                /* see run_bp_image's identical block for defaults/env-var
+                 * rationale. */
+                float radius_frac = 0.75f, grad_thresh = 1e-3f;
+                const char *rf_env = getenv("HYBRID_RADIUS_FRAC");
+                if (rf_env) { float v = atof(rf_env); if (v > 0.f && v <= 1.f) radius_frac = v; }
+                const char *gt_env = getenv("HYBRID_GRAD_THRESH");
+                if (gt_env) { float v = atof(gt_env); if (v >= 0.f) grad_thresh = v; }
+                clSetKernelArg(k,15, sizeof(float), &radius_frac);
+                clSetKernelArg(k,16, sizeof(float), &grad_thresh);
+            }
             size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
             size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
             {
@@ -1586,6 +1848,17 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                 clSetKernelArg(k,12,sizeof(float),&px);
                 clSetKernelArg(k,13,sizeof(int),&ip_start);
                 clSetKernelArg(k,14,sizeof(int),&ip_count);
+                if (cl->hybrid_precision) {
+                    /* see run_bp_image's identical block for defaults/env-
+                     * var rationale. This is the hot per-epoch call. */
+                    float radius_frac = 0.75f, grad_thresh = 1e-3f;
+                    const char *rf_env = getenv("HYBRID_RADIUS_FRAC");
+                    if (rf_env) { float v = atof(rf_env); if (v > 0.f && v <= 1.f) radius_frac = v; }
+                    const char *gt_env = getenv("HYBRID_GRAD_THRESH");
+                    if (gt_env) { float v = atof(gt_env); if (v >= 0.f) grad_thresh = v; }
+                    clSetKernelArg(k,15, sizeof(float), &radius_frac);
+                    clSetKernelArg(k,16, sizeof(float), &grad_thresh);
+                }
                 size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
                 size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
                 {

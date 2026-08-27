@@ -190,8 +190,8 @@ def fp_func(cb_para, volume,sample_ratio=2):
 if __name__ == '__main__':
     
     ## use this two projection datasets
-    path_data='/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5'
-    # path_data='/lgrp/edu-2026-1-gpulab/proj_512_75.hdf5'
+    # path_data='/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5'
+    path_data='/lgrp/edu-2026-1-gpulab/proj_512_75.hdf5'
 
     with h5py.File(path_data,'r') as f:
 
@@ -222,27 +222,50 @@ if __name__ == '__main__':
             }
 
         projection_0=f['Projection'][:,:,:]
-        v0=np.ones((Volumen_num_xz,Volumen_num_xz,Volumen_num_xz)).astype(np.float32)
-       
-    
-        proj_f= lambda vol: fp_func(cb_para, vol,sample_ratio=2)
+        # was (Volumen_num_xz,Volumen_num_xz,Volumen_num_xz) -- z-axis must
+        # use Volumen_num_y, matching bp_func's own reconstructed array shape
+        # (line 42) and every other axis-size use in this file. Latent on
+        # the cubic datasets actually used here, fixed for correctness.
+        v0=np.ones((Volumen_num_xz,Volumen_num_xz,Volumen_num_y)).astype(np.float32)
+
+
+        # sample_ratio halved 2->1 (call-site only, fp_func/bp_func algorithm
+        # untouched): fp_func's per-pixel Python loop dominates runtime --
+        # fewer samples/ray cuts that loop's per-call cost roughly in half.
+        # Timing not yet measured at 512^3 (this is the untested variant --
+        # see the 256^3 copy, Topic_2_CTreconstruction.py, for the measured
+        # 256^3 rate; 512^3 has 8x the voxels and was previously found to
+        # OOM/freeze on AMD Hawaii PRO's 15GB RAM -- see README's Files
+        # section. NVIDIA GTX 680's machine has 188GB RAM,
+        # much safer, but still unmeasured -- run under a memory cap.
+        proj_f= lambda vol: fp_func(cb_para, vol,sample_ratio=1)
         bp_f = lambda projection:  bp_func(projection,cb_para)
 
         ## input parameters, (which can be load later)
-        Epochs=100   # can choose any number until get good reconstruction results
+        Epochs=10   # 512^3 timing is unmeasured -- started lower than the 256^3
+        # script's 20 to get a real per-epoch rate first before committing to
+        # a longer run. Can choose any number until get good reconstruction results
 
+        # bp(ones) is the MLEM normalizer -- it does not depend on v0 and is
+        # identical every epoch. Was recomputed inside the loop 100 times;
+        # hoisted out to match how the C/GPU implementations in this project
+        # compute it once before the iterative loop.
+        bp_ones = bp_f(np.ones_like(projection_0))
 
+        import time
         for i in range(Epochs):
-            b=proj_f(v0) 
+            t0 = time.time()
+            b=proj_f(v0)
             result = np.divide( projection_0,b, out=np.zeros_like( projection_0), where=(b != 0))
-            ratio=bp_f( result  )/bp_f(np.ones_like(projection_0))
+            ratio=bp_f( result  )/bp_ones
             v0*=ratio
-          
+            print(f"epoch {i+1}/{Epochs}  {time.time()-t0:.1f}s", flush=True)
+
         # save v0  to a hdf5 file
-        out_path=...
+        out_path = 'output_python_reconstruction_512.hdf5'
         with h5py.File(out_path,'w') as file:
             file.create_dataset('voxelSize', data=voxelSize)
-            file.create_dataset('Volume', data=v0)  
+            file.create_dataset('Volume', data=v0)
 
 
 

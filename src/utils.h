@@ -46,7 +46,7 @@ void log_convergence(const char *path, int epoch, double epoch_time_s,
                       const float *v_cur, const float *v_prev, size_t vol_n);
 
 /*
- * perf-v2 Phase C1 (OSEM): compute the angle permutation that makes each
+ * OSEM: compute the angle permutation that makes each
  * of S subsets both angularly interleaved (subset s gets angles
  * {s, s+S, s+2S, ...}) and visited in maximally-separated order (subsets
  * themselves reordered by a stride coprime to S, close to the golden

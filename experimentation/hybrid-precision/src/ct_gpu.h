@@ -49,6 +49,12 @@ typedef struct {
 
     GPUMode mode;
     int has_fp16; /* cl_khr_fp16 support -- gates --half; false on e.g. NVIDIA GTX 680 */
+    int hybrid_precision; /* HYBRID_PRECISION env var, read once at gpu_init --
+                            * whether k_bp_img/k_bp_opt were compiled with the
+                            * two extra threshold args (see bp_image.cl /
+                            * bp_buffer_opt.cl). Remembered so call sites know
+                            * whether to bind them, without re-reading getenv
+                            * or guessing from kernel arg count. */
 } CLState;
 
 /* Initialize OpenCL, compile kernels. Returns 0 on success. */
@@ -89,6 +95,26 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          const float *proj_measured, float *volume,
                          int epochs, const char *conv_log, int subsets);
+
+/*
+ * Component test, GPU version of the --op fp|bp CPU path (see main.c).
+ * Runs a single fp or bp call on all-ones input, no MLEM iteration --
+ * isolates operator precision so it can be compared against gpu-buf's
+ * manual (exact) interpolation. cl must already be gpu_init'd in
+ * GPU_MODE_IMAGE or GPU_MODE_OPT (fp) / any GPU mode (bp).
+ *
+ * gpu_op_fp:  proj_out must be pre-allocated, size num_projs*H*W floats.
+ *             volume is used as-is (caller fills with 1.0f for the
+ *             all-ones case, matching --op fp's CPU behavior).
+ * gpu_op_bp:  volume_out must be pre-allocated, size Nxz*Nxz*Ny floats.
+ *             Internally fills a raw-ones projection buffer, applies the
+ *             same cone_weight+flip+transpose preprocessing run_preprocess
+ *             does inside reconstruct_gpu (matching --op bp's CPU
+ *             cone_weight_cpu + manual layout transform), then bp's it --
+ *             so both are bp(cone_weight(ones)), not raw bp(ones).
+ */
+void gpu_op_fp(CLState *cl, const CBpara *p, const float *volume, float *proj_out);
+void gpu_op_bp(CLState *cl, const CBpara *p, float *volume_out);
 
 /*
  * Repeat-slab variance diagnostic: repeat one fixed fp_buffer angle-slab
