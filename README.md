@@ -1,8 +1,21 @@
 # CT Volume Reconstruction — GPU Lab Project
 
 Cone-beam CT reconstruction using iterative MLEM. CPU (OpenMP) and GPU
-(OpenCL) implementations, 256³ and 512³ datasets. All GPU modes
-validated against CPU at the float32 noise floor.
+(OpenCL) implementations, 256³ and 512³ datasets.
+
+**Correctness summary:** all three GPU modes (`gpu-buf`, `gpu-img`,
+`gpu-opt`) agree with the CPU reference at the float32 noise floor
+(MSE 1e-7 to 1e-10 vs CPU, both datasets, both hardware machines --
+see Performance and Validation below). MSE against the course-provided
+Python reference (`Topic_2_CTreconstruction.py`) is higher
+(`2.061e-02`/`6.371e-03` depending on hardware) but this is **not** a
+correctness issue in any C/GPU/CPU code in this project: it is a
+confirmed, investigated bug in the unmodified reference script itself
+-- a handful of voxels (26 on one machine, 24 on the other, both under
+0.0002% of the volume) diverge over its 20 unclamped MLEM iterations,
+and every one of this project's four implementations agrees with the
+Python reference identically at those same voxels. Full investigation
+in the Validation section.
 
 ## Performance
 
