@@ -289,9 +289,9 @@ python/
                                  fp_func/bp_func themselves remain
                                  untouched.
   Topic_2_CTreconstruction_512.py — 512^3 variant, path_data/out_path
-                                 changed, same ratio clamp applied;
-                                 attempted on both machines, ran out of
-                                 memory before completing on
+                                 changed, same v0 clamp applied as the
+                                 256^3 script; attempted on both machines,
+                                 ran out of memory before completing on
                                  either -- see Validation section.
   diag_bp_ones.py               — investigates the 26-outlier-voxel finding
                                  above (checks whether bp_ones is near-zero
