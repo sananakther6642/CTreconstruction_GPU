@@ -99,10 +99,11 @@ gpu-opt  0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=6.371e-03  max=1
 ```
 
 Same outlier-voxel phenomenon as GTX 680's run (see the GTX 680
-Validation section below): 24 outlier voxels dominate this MSE-vs-Topic2
-figure (0.00030 excluding them vs 0.00637 including them), not a
-disagreement in any C/GPU mode -- confirmed the same finding independently
-on this machine's own Topic2 output.
+Validation section below): 24 outlier voxels dominate this MSE vs the
+Python reference (`Topic_2_CTreconstruction.py`) figure (0.00030
+excluding them vs 0.00637 including them), not a disagreement in any
+C/GPU mode -- confirmed the same finding independently
+on this machine's own Python-reference output.
 
 ### 512³
 ```
@@ -119,9 +120,10 @@ MSE vs CPU matches the Performance section's numbers exactly (same
 `validate.py` output). MSE vs Topic2 (`validate.py`'s label for the
 course-provided Python reference, `Topic_2_CTreconstruction.py`) is now
 available at 256^3 (`Epochs=20` run completed) -- see the note below the
-256^3 table for why that number is dominated by 26 outlier voxels in
-Topic2's own output, not a disagreement in any C/GPU mode. 512^3 has no
-Topic2 comparison; that script hardcodes the 256^3 dataset path (a
+256^3 table for why that number is dominated by 26 outlier voxels in the
+Python reference's own output, not a disagreement in any C/GPU mode.
+512^3 has no Python-reference comparison; that script hardcodes the
+256^3 dataset path (a
 512^3 variant, `Topic_2_CTreconstruction_512.py`, exists but has not
 been run yet -- see the Run section).
 
@@ -135,31 +137,32 @@ gpu-img  0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=2.061e-02  max=0
 gpu-opt  0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=2.061e-02  max=0.8966
 ```
 
-**MSE vs Topic2 is dominated by 26 outlier voxels in Topic2's own
-output (0.00016% of the volume), not a disagreement in any C/GPU
-mode** -- all four modes show the identical 2.061e-02, meaning it's
-Topic2's output that's the outlier here, not any implementation.
-Excluding just those 26 voxels drops MSE to ~3.2e-04. Investigated
-directly (`python/diag_bp_ones.py`), not assumed: the MLEM normalizer
-`bp_ones` is completely normal at every one of these voxels
-(364-443, same range as everywhere else in the volume) -- ruling out
-a division-by-near-zero. The real mechanism is geometric compounding:
-each outlier voxel's per-epoch multiplicative ratio is consistently
-~1.29-1.37 (backed out from `521.6699^(1/20)` and `174.32614^(1/20)`
-matching the observed final values starting from v0=1), so 20 unclamped
-MLEM iterations compound a small persistent per-epoch drift into a
-large final value. This is a real numerical-stability gap in the
-unmodified reference script at a handful of ill-conditioned voxels
-(likely sparse/near-tangent ray coverage there), not a bug in any of
-this project's C/GPU/CPU implementations -- reproduced independently on
-AMD Hawaii PRO's own Topic2 run too (24 outlier voxels, heavily
+**MSE vs the Python reference (`Topic_2_CTreconstruction.py`) is
+dominated by 26 outlier voxels in that script's own output (0.00016% of
+the volume), not a disagreement in any C/GPU mode** -- all four modes
+show the identical 2.061e-02, meaning it's the Python reference's output
+that's the outlier here, not any implementation. Excluding just those 26
+voxels drops MSE to ~3.2e-04. Investigated directly
+(`python/diag_bp_ones.py`), not assumed: the MLEM normalizer `bp_ones`
+is completely normal at every one of these voxels (364-443, same range
+as everywhere else in the volume) -- ruling out a division-by-near-zero.
+The real mechanism is geometric compounding: each outlier voxel's
+per-epoch multiplicative ratio is consistently ~1.29-1.37 (backed out
+from `521.6699^(1/20)` and `174.32614^(1/20)` matching the observed
+final values starting from v0=1), so 20 unclamped MLEM iterations
+compound a small persistent per-epoch drift into a large final value.
+This is a real numerical-stability gap in the unmodified reference
+script at a handful of ill-conditioned voxels (likely sparse/near-tangent
+ray coverage there), not a bug in any of this project's C/GPU/CPU
+implementations -- reproduced independently on AMD Hawaii PRO's own
+Python-reference run too (24 outlier voxels, heavily
 overlapping indices, same z=1/z=254-concentrated pattern, same order of
 magnitude).
 
 ### 512³
 ```
 Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Topic2
-topic2   (no 512^3 Topic2 run possible -- the reference script hardcodes the 256^3 dataset path, see Run section below)
+topic2   (no 512^3 Python-reference run possible -- the reference script hardcodes the 256^3 dataset path, see Run section below)
 cpu      0.0000   1.0055   0.0330    0    0  (reference)    n/a
 gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.534e-11  n/a  max=0.0114
 gpu-img  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  n/a  max=0.0186
@@ -303,10 +306,10 @@ script — results converge less but that's expected, not a defect —
 so `Epochs` set to 20 (~20hrs) instead. Run started on the NVIDIA GeForce GTX 680
 under `tmux -s topic2` to run unattended.
 
-Full MSE-vs-CPU and MSE-vs-Topic2 numbers (real `Epochs=20` run, completed
-2026-08-27) are in the "Validation (NVIDIA GeForce GTX 680...)" section
-above, including the 26-outlier-voxel finding that explains the
-2.061e-02 MSE-vs-Topic2 figure.
+Full MSE-vs-CPU and MSE-vs-Python-reference numbers (real `Epochs=20`
+run, completed 2026-08-27) are in the "Validation (NVIDIA GeForce GTX
+680...)" section above, including the 26-outlier-voxel finding that
+explains the 2.061e-02 figure.
 
 ## Algorithm
 
