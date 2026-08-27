@@ -13,12 +13,19 @@ investigated numerical-stability bug in that script's unclamped MLEM
 update -- a handful of voxels (26 on one machine, 24 on the other, both
 under 0.0002% of the volume) diverged over its 20 iterations, not a
 correctness issue in any C/GPU/CPU code in this project. Reported to
-the course staff, who approved fixing it; a `[0.5, 2.0]` per-epoch
-ratio clamp has been added to both `Topic_2_CTreconstruction.py` and
-its 512^3 variant (documented in each file directly). The fix has not
-yet been re-verified with a full 20-epoch run at the time of writing --
-see the Validation section for the original (unclamped) numbers and
-investigation.
+the course staff, who approved fixing it. A per-epoch ratio clamp was
+tried first and does not work (the observed ~1.3 ratio is already
+inside any reasonable clamp range, so it never triggers and the
+compounding continues regardless -- verified with a standalone
+simulation before running anything for real). The actual fix clamps
+`v0` itself to `[0, 5]` after each update, added to both
+`Topic_2_CTreconstruction.py` and its 512^3 variant (documented in each
+file directly) -- bounding the reconstructed value directly stops
+runaway growth regardless of how many epochs compound, and 5.0 is well
+above the ~1.7-1.9 range normal converged voxels reach, so it should
+not affect correct voxels. The fix has not yet been re-verified with a
+full 20-epoch run at the time of writing -- see the Validation section
+for the original (unfixed) numbers and investigation.
 
 ## Performance
 
@@ -268,15 +275,19 @@ python/
                                  refers to. Two real bugs fixed early on
                                  (out_path placeholder, volume z-axis size)
                                  so it actually runs and saves. A third fix
-                                 -- a [0.5, 2.0] per-epoch ratio clamp on
-                                 the MLEM update -- was added after finding
-                                 and reporting a real numerical-stability
-                                 gap at a handful of voxels (course staff
+                                 -- clamping v0 to [0, 5] after each
+                                 update -- was added after finding and
+                                 reporting a real numerical-stability gap
+                                 at a handful of voxels (course staff
                                  approved fixing it; see the
                                  26-outlier-voxel finding in the Validation
-                                 section for the original, unclamped
-                                 numbers). fp_func/bp_func themselves
-                                 remain untouched.
+                                 section for the original, unfixed
+                                 numbers). A per-epoch ratio clamp was
+                                 tried first and does not work (verified
+                                 with a simulation, not run for real) --
+                                 see the comment in this file for why.
+                                 fp_func/bp_func themselves remain
+                                 untouched.
   Topic_2_CTreconstruction_512.py — 512^3 variant, path_data/out_path
                                  changed, same ratio clamp applied;
                                  attempted on both machines, ran out of
