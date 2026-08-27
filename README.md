@@ -90,13 +90,19 @@ rebuild with the flag stripped to test directly.
 
 ### 256³
 ```
-Mode       min      max     mean   nan  inf  MSE vs CPU         MSE vs Python
-python   0.0002   0.1225   0.0144    0    0  (python ref)      -
-cpu      0.0000   1.7303   0.0067    0    0  (reference)        MSE=1.215e-03
-gpu-buf  0.0000   1.7307   0.0067    0    0  MSE=6.436e-10  max=0.0511
-gpu-img  0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  max=1.1490
-gpu-opt  0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  max=1.1490
+Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Topic2
+topic2   0.0000   247.7164   0.0070    0    0  (topic2 ref)
+cpu      0.0000   1.7303   0.0067    0    0  (reference)    MSE=6.371e-03
+gpu-buf  0.0000   1.7307   0.0067    0    0  MSE=6.436e-10  MSE=6.371e-03  max=0.0511
+gpu-img  0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=6.371e-03  max=1.1490
+gpu-opt  0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=6.371e-03  max=1.1490
 ```
+
+Same outlier-voxel phenomenon as GTX 680's run (see the GTX 680
+Validation section below): 24 outlier voxels dominate this MSE-vs-Topic2
+figure (0.00030 excluding them vs 0.00637 including them), not a
+disagreement in any C/GPU mode -- confirmed the same finding independently
+on this machine's own Topic2 output.
 
 ### 512³
 ```
@@ -232,6 +238,14 @@ python/
                                  (python)" grading refers to. Two real bugs
                                  fixed (out_path placeholder, volume z-axis size)
                                  so it actually runs and saves; algorithm untouched.
+                                 Has a real, unfixed numerical-stability gap at
+                                 a handful of voxels -- see the 26-outlier-voxel
+                                 finding in the Validation section.
+  Topic_2_CTreconstruction_512.py — 512^3 variant, path_data/out_path
+                                 changed only; timing/feasibility unmeasured.
+  diag_bp_ones.py               — investigates the 26-outlier-voxel finding
+                                 above (checks whether bp_ones is near-zero
+                                 at those voxels; it isn't).
 ```
 
 ## Build
