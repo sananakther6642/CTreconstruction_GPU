@@ -107,11 +107,11 @@ on this machine's own Python-reference output.
 
 ### 512³
 ```
-Mode       min      max     mean   nan  inf  MSE vs CPU
-cpu      0.0000   1.0055   0.0330    0    0  (reference)
-gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.087e-11  max=0.0156
-gpu-img  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
-gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
+Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Python Ref
+cpu      0.0000   1.0055   0.0330    0    0  (reference)    n/a
+gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.087e-11  n/a  max=0.0156
+gpu-img  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  n/a  max=0.0169
+gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  n/a  max=0.0169
 ```
 
 ## Validation (NVIDIA GeForce GTX 680, 100 epochs, both datasets, all four modes)
