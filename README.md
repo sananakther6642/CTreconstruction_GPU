@@ -256,7 +256,9 @@ python/
                                  a handful of voxels -- see the 26-outlier-voxel
                                  finding in the Validation section.
   Topic_2_CTreconstruction_512.py — 512^3 variant, path_data/out_path
-                                 changed only; timing/feasibility unmeasured.
+                                 changed only; attempted on both machines,
+                                 ran out of memory before completing on
+                                 either -- see Validation section.
   diag_bp_ones.py               — investigates the 26-outlier-voxel finding
                                  above (checks whether bp_ones is near-zero
                                  at those voxels; it isn't).
