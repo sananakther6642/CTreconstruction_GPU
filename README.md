@@ -90,12 +90,12 @@ rebuild with the flag stripped to test directly.
 
 ### 256³
 ```
-Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Topic2
-topic2   0.0000   247.7164   0.0070    0    0  (topic2 ref)
-cpu      0.0000   1.7303   0.0067    0    0  (reference)    MSE=6.371e-03
-gpu-buf  0.0000   1.7307   0.0067    0    0  MSE=6.436e-10  MSE=6.371e-03  max=0.0511
-gpu-img  0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=6.371e-03  max=1.1490
-gpu-opt  0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=6.371e-03  max=1.1490
+Mode        min      max      mean   nan  inf  MSE vs CPU     MSE vs Python Ref
+python_ref  0.0000   247.7164 0.0070    0    0  (python ref)
+cpu         0.0000   1.7303   0.0067    0    0  (reference)    MSE=6.371e-03
+gpu-buf     0.0000   1.7307   0.0067    0    0  MSE=6.436e-10  MSE=6.371e-03  max=0.0511
+gpu-img     0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=6.371e-03  max=1.1490
+gpu-opt     0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=6.371e-03  max=1.1490
 ```
 
 Same outlier-voxel phenomenon as GTX 680's run (see the GTX 680
@@ -117,24 +117,23 @@ gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
 ## Validation (NVIDIA GeForce GTX 680, 100 epochs, both datasets, all four modes)
 
 MSE vs CPU matches the Performance section's numbers exactly (same
-`validate.py` output). MSE vs Topic2 (`validate.py`'s label for the
+`validate.py` output). MSE vs Python Ref (`validate.py`'s label for the
 course-provided Python reference, `Topic_2_CTreconstruction.py`) is now
 available at 256^3 (`Epochs=20` run completed) -- see the note below the
 256^3 table for why that number is dominated by 26 outlier voxels in the
 Python reference's own output, not a disagreement in any C/GPU mode.
 512^3 has no Python-reference comparison; that script hardcodes the
-256^3 dataset path (a
-512^3 variant, `Topic_2_CTreconstruction_512.py`, exists but has not
-been run yet -- see the Run section).
+256^3 dataset path (a 512^3 variant, `Topic_2_CTreconstruction_512.py`,
+exists but has not been run yet -- see the Run section).
 
 ### 256³
 ```
-Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Topic2
-topic2   0.0000   521.6699   0.0070    0    0  (topic2 ref)
-cpu      0.0000   1.7303   0.0067    0    0  (reference)    MSE=2.061e-02
-gpu-buf  0.0000   1.7292   0.0067    0    0  MSE=1.148e-10  MSE=2.061e-02  max=0.0203
-gpu-img  0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=2.061e-02  max=0.8966
-gpu-opt  0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=2.061e-02  max=0.8966
+Mode        min      max      mean   nan  inf  MSE vs CPU     MSE vs Python Ref
+python_ref  0.0000   521.6699 0.0070    0    0  (python ref)
+cpu         0.0000   1.7303   0.0067    0    0  (reference)    MSE=2.061e-02
+gpu-buf     0.0000   1.7292   0.0067    0    0  MSE=1.148e-10  MSE=2.061e-02  max=0.0203
+gpu-img     0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=2.061e-02  max=0.8966
+gpu-opt     0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=2.061e-02  max=0.8966
 ```
 
 **MSE vs the Python reference (`Topic_2_CTreconstruction.py`) is
@@ -161,8 +160,8 @@ magnitude).
 
 ### 512³
 ```
-Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Topic2
-topic2   (no 512^3 Python-reference run possible -- the reference script hardcodes the 256^3 dataset path, see Run section below)
+Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Python Ref
+python_ref (no 512^3 Python-reference run possible -- the reference script hardcodes the 256^3 dataset path, see Run section below)
 cpu      0.0000   1.0055   0.0330    0    0  (reference)    n/a
 gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.534e-11  n/a  max=0.0114
 gpu-img  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  n/a  max=0.0186
@@ -231,7 +230,7 @@ kernels/
   fp_image.cl         — fp (image): hardware trilinear + AABB
   bp_buffer_opt.cl    — bp_opt: image2d_array_t + float2 LUT + local mem
 python/
-  validate.py                 — MSE vs CPU + vs Topic2 reference, outlier diagnostics (256/512)
+  validate.py                 — MSE vs CPU + vs Python Ref, outlier diagnostics (256/512)
   validate_ops.py             — per-operator fp/bp vs Topic_2_CTreconstruction.py
   diag_voxel.py                — one-off debugging script, kept for reference
   diag_maxgap.py               — per-operator error attribution for the gpu-img/gpu-opt max-gap finding
