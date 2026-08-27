@@ -236,7 +236,7 @@ if __name__ == '__main__':
         # see the 256^3 copy, Topic_2_CTreconstruction.py, for the measured
         # 256^3 rate; 512^3 has 8x the voxels and was previously found to
         # OOM/freeze on AMD Hawaii PRO's 15GB RAM -- see README's Files
-        # section and session log. NVIDIA GTX 680's machine has 188GB RAM,
+        # section. NVIDIA GTX 680's machine has 188GB RAM,
         # much safer, but still unmeasured -- run under a memory cap.
         proj_f= lambda vol: fp_func(cb_para, vol,sample_ratio=1)
         bp_f = lambda projection:  bp_func(projection,cb_para)

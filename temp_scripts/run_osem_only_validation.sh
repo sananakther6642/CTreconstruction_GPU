@@ -1,6 +1,6 @@
 #!/bin/bash
 # ARCHIVED: paths assume this script runs from repo root (its original
-# location before the temp scripts/ cleanup move) -- "../python/X.py" and
+# location before the temp_scripts/ cleanup move) -- "../python/X.py" and
 # any "../*-worktree" paths need re-checking before rerunning from here.
 # Validate perf-v2-osem-only: baseline + OSEM only, C2/C3/C5 removed.
 # Checks: (1) all four modes still build and agree at default settings

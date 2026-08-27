@@ -1,6 +1,6 @@
 #!/bin/bash
 # ARCHIVED: paths assume this script runs from repo root (its original
-# location before the temp scripts/ cleanup move) -- "../python/X.py" and
+# location before the temp_scripts/ cleanup move) -- "../python/X.py" and
 # any "../*-worktree" paths need re-checking before rerunning from here.
 # Full AMD Hawaii PRO capture: speed-table timings + convergence
 # CSVs, all four modes, both dataset sizes, 100 epochs. Resumable -- safe to
