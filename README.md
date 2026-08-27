@@ -111,19 +111,44 @@ gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
 
 MSE vs CPU matches the Performance section's numbers exactly (same
 `validate.py` output). MSE vs Topic2 (`validate.py`'s label for the
-course-provided Python reference, `Topic_2_CTreconstruction.py`) not yet
-available here -- that run uses `Epochs=20` at this scale and is still
-in progress as of this writing; will be added once it completes.
+course-provided Python reference, `Topic_2_CTreconstruction.py`) is now
+available at 256^3 (`Epochs=20` run completed) -- see the note below the
+256^3 table for why that number is dominated by 26 outlier voxels in
+Topic2's own output, not a disagreement in any C/GPU mode. 512^3 has no
+Topic2 comparison; that script hardcodes the 256^3 dataset path (a
+512^3 variant, `Topic_2_CTreconstruction_512.py`, exists but has not
+been run yet -- see the Run section).
 
 ### 256³
 ```
 Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Topic2
-topic2   (pending -- Epochs=20 run in progress, see Run section below)
-cpu      0.0000   1.7303   0.0067    0    0  (reference)    pending
-gpu-buf  0.0000   1.7292   0.0067    0    0  MSE=1.148e-10  pending  max=0.0203
-gpu-img  0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  pending  max=0.8966
-gpu-opt  0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  pending  max=0.8966
+topic2   0.0000   521.6699   0.0070    0    0  (topic2 ref)
+cpu      0.0000   1.7303   0.0067    0    0  (reference)    MSE=2.061e-02
+gpu-buf  0.0000   1.7292   0.0067    0    0  MSE=1.148e-10  MSE=2.061e-02  max=0.0203
+gpu-img  0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=2.061e-02  max=0.8966
+gpu-opt  0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=2.061e-02  max=0.8966
 ```
+
+**MSE vs Topic2 is dominated by 26 outlier voxels in Topic2's own
+output (0.00016% of the volume), not a disagreement in any C/GPU
+mode** -- all four modes show the identical 2.061e-02, meaning it's
+Topic2's output that's the outlier here, not any implementation.
+Excluding just those 26 voxels drops MSE to ~3.2e-04. Investigated
+directly (`python/diag_bp_ones.py`), not assumed: the MLEM normalizer
+`bp_ones` is completely normal at every one of these voxels
+(364-443, same range as everywhere else in the volume) -- ruling out
+a division-by-near-zero. The real mechanism is geometric compounding:
+each outlier voxel's per-epoch multiplicative ratio is consistently
+~1.29-1.37 (backed out from `521.6699^(1/20)` and `174.32614^(1/20)`
+matching the observed final values starting from v0=1), so 20 unclamped
+MLEM iterations compound a small persistent per-epoch drift into a
+large final value. This is a real numerical-stability gap in the
+unmodified reference script at a handful of ill-conditioned voxels
+(likely sparse/near-tangent ray coverage there), not a bug in any of
+this project's C/GPU/CPU implementations -- reproduced independently on
+AMD Hawaii PRO's own Topic2 run too (24 outlier voxels, heavily
+overlapping indices, same z=1/z=254-concentrated pattern, same order of
+magnitude).
 
 ### 512³
 ```
@@ -264,17 +289,10 @@ script — results converge less but that's expected, not a defect —
 so `Epochs` set to 20 (~20hrs) instead. Run started on the NVIDIA GeForce GTX 680
 under `tmux -s topic2` to run unattended.
 
-Full MSE-vs-CPU numbers are in the "Validation (NVIDIA GeForce GTX 680...)"
-section above. An early `Epochs=2` smoke test against
-`Topic_2_CTreconstruction.py` (2026-08-26, before the real 20-epoch run
-was started) gave MSE-vs-Topic2 ~9.8e-04 for every mode alike — expected,
-since 2 epochs is barely into MLEM convergence (the reference's
-max=0.1462 vs ~1.73 for the 100-epoch C/GPU runs), not an algorithmic
-disagreement. cpu/gpu-buf/gpu-img/gpu-opt already agreed with each other
-at the float32 noise floor (1e-7 to 1e-10) even then, confirming the four
-implementations share the same fixed point `Topic_2_CTreconstruction.py`'s
-algorithm converges toward. Real MSE-vs-Topic2 at the actual `Epochs=20`
-will replace this once that run completes.
+Full MSE-vs-CPU and MSE-vs-Topic2 numbers (real `Epochs=20` run, completed
+2026-08-27) are in the "Validation (NVIDIA GeForce GTX 680...)" section
+above, including the 26-outlier-voxel finding that explains the
+2.061e-02 MSE-vs-Topic2 figure.
 
 ## Algorithm
 
