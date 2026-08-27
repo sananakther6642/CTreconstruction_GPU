@@ -130,7 +130,14 @@ available at 256^3 (`Epochs=20` run completed) -- see the note below the
 Python reference's own output, not a disagreement in any C/GPU mode.
 512^3 has no Python-reference comparison; that script hardcodes the
 256^3 dataset path (a 512^3 variant, `Topic_2_CTreconstruction_512.py`,
-exists but has not been run yet -- see the Run section).
+exists -- see the Run section). Attempted on AMD Hawaii PRO
+(2026-08-27): failed immediately at the first large-array allocation
+(`bp_ones`, `ArrayMemoryError` on a 1GB `(512,512,512)` float64 array,
+even under an 8GB memory cap) -- re-confirms the earlier finding that
+512^3 does not fit on that machine's 15GB RAM regardless of cap, since
+the physical RAM available (9GB at attempt time) is the real ceiling,
+not the `ulimit`. Not yet attempted to completion on the NVIDIA GTX 680
+(188GB RAM); in progress as of this writing.
 
 ### 256³
 ```
