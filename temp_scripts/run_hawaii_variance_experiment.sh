@@ -5,7 +5,7 @@
 # WHY THIS SCRIPT EXISTS AND IS SHAPED THIS WAY:
 # The variance is confirmed AMD-driver-specific (--diag repeat-slab is flat
 # to the millisecond on the NVIDIA GTX 680, ~0.796-0.797s across 40 repeats
-# -- see README.md and the session logs) and AMD Hawaii PRO (pool15-01) is
+# -- see README.md) and AMD Hawaii PRO (pool15-01) is
 # SSH-blocked (pam_restrict_login, unresolved, confirmed multiple times
 # this project). So there is no remote iteration possible -- this script
 # runs everything in ONE unattended pass so a single in-person visit

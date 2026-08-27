@@ -1,6 +1,6 @@
 #!/bin/bash
 # ARCHIVED: paths assume this script runs from repo root (its original
-# location before the temp scripts/ cleanup move) -- "../python/X.py"
+# location before the temp_scripts/ cleanup move) -- "../python/X.py"
 # paths need re-checking before rerunning from here.
 #
 # Runs Topic_2_CTreconstruction_512.py (the 512^3 variant of the
@@ -8,7 +8,7 @@
 # under a memory cap. Real risk here, not hypothetical: a prior attempt at
 # 512^3 in this project OOM'd and, once, froze the entire machine badly
 # enough to need a hard reset -- on AMD Hawaii PRO (pool15-01), which only
-# has 15GB RAM and no swap (see README's session log). The memory cap below
+# has 15GB RAM and no swap (see README's Validation section). The memory cap below
 # turns a repeat of that into a clean kill instead of a freeze -- it does
 # NOT make the workload fit if it doesn't fit; if this script gets killed,
 # that confirms it doesn't fit on this machine, not a script bug.

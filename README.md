@@ -4,10 +4,6 @@ Cone-beam CT reconstruction using iterative MLEM. CPU (OpenMP) and GPU
 (OpenCL) implementations, 256³ and 512³ datasets. All GPU modes
 validated against CPU at the float32 noise floor.
 
-Full investigation history (root causes, sweeps, negative results):
-`sessions/2026-08-25-readme-cleanup-investigation-log.md` (local only).
-Project methodology narrative: `sessions/2026-08-25-project-methodology-start-to-end.md`.
-
 ## Performance
 
 ### AMD Hawaii PRO, EPOCHS=10
@@ -41,8 +37,9 @@ over `gpu-img`/`gpu-opt` is scale-dependent, not a fixed ratio: ~980x
 tighter at 256³ (`1.148e-10` vs `1.128e-07`) but only ~13x tighter at
 512³ (`9.534e-11` vs `1.232e-09`) — `gpu-img`/`gpu-opt`'s absolute error
 shrinks much faster with resolution than `gpu-buf`'s does.
-(256³ re-confirmed 2026-08-26 on the NVIDIA GeForce GTX 680, fresh 100-epoch run, same worst
-voxels/order of magnitude as the original measurement — see session log.)
+(256³ re-confirmed 2026-08-26 on the NVIDIA GeForce GTX 680, fresh
+100-epoch run, same worst voxels/order of magnitude as the original
+measurement.)
 
 `gpu-img`/`gpu-opt` are not bit-exact vs CPU/`gpu-buf` — checked why with
 `diag_maxgap.py` rather than assumed. **Not** the earlier-suspected `1/U²`
@@ -59,9 +56,18 @@ fidelity to the CPU reference matters more than speed.
 OSEM `--subsets 5`, 256³, 100 epochs: 57.17s total.
 
 `gpu-buf` variance on AMD Hawaii PRO (75-102s for the same config) does not
-reproduce on the NVIDIA GeForce GTX 680 (flat to the ms). Root cause: AMD-driver memory-
-placement demotion of the volume buffer, not thermal throttling. Full
-writeup in the session log.
+reproduce on the NVIDIA GeForce GTX 680 (flat to the ms). Root cause:
+AMD-driver memory-placement demotion of the volume buffer, not thermal
+throttling. Thermal throttling ruled out three ways: the slowdown is a
+single step change that holds (not the gradual ramp thermal throttling
+would produce), its magnitude (6.6x) exceeds Hawaii's DVFS ceiling
+(~3.2x), and `gpu-img`/`gpu-opt` stay stable in the same sessions where
+`gpu-buf` goes slow (a device-wide thermal effect would hit all three).
+Confirmed instead as a `d_vol`-allocation-specific effect: freeing and
+recreating the 537MB buffer mid-run instantly recovers the fast timing,
+then it degrades again on its own after a further 6-13 launches --
+consistent with the driver periodically demoting that allocation's
+memory placement under sustained access, not a hardware/thermal cause.
 
 A mitigation (`FP_BUFFER_VOL_REALLOC_EVERY`, periodic buffer reallocation
 to force it back into fast memory) was tried and did **not** hold up:
@@ -168,7 +174,7 @@ gpu-img  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  n/a  max=0.0186
 gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  n/a  max=0.0186
 ```
 
-Correctness fixes that got here (full detail in session log):
+Correctness fixes that got here:
 - `fp_cpu` used `(int)xi` (truncation) instead of `floorf(xi)` — wrong
   bounds-check pass for `xi` in `(-1,0)`. Fixed.
 - GPU `bp` kernels zero-padded individual OOB taps instead of zeroing
