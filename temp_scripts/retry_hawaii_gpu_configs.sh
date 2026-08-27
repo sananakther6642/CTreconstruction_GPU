@@ -1,6 +1,6 @@
 #!/bin/bash
 # ARCHIVED: paths assume this script runs from repo root (its original
-# location before the temp scripts/ cleanup move) -- "../python/X.py" and
+# location before the temp_scripts/ cleanup move) -- "../python/X.py" and
 # any "../*-worktree" paths need re-checking before rerunning from here.
 # Retry the 4 configs that failed on AMD Hawaii PRO's main run with
 # "OpenCL error -1 at clGetDeviceIDs" (transient GPU unavailability,

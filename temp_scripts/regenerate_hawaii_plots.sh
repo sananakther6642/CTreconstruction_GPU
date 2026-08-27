@@ -1,6 +1,6 @@
 #!/bin/bash
 # ARCHIVED: paths assume this script runs from repo root (its original
-# location before the temp scripts/ cleanup move) -- "../python/X.py" and
+# location before the temp_scripts/ cleanup move) -- "../python/X.py" and
 # any "../*-worktree" paths need re-checking before rerunning from here.
 # Standalone: regenerate validate.py + plot_results.py output for AMD Hawaii PRO
 # once all 8 C/GPU configs (4 modes x 2 sizes) are present on disk, then

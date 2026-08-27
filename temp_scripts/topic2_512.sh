@@ -1,6 +1,6 @@
 #!/bin/bash
 # ARCHIVED: paths assume this script runs from repo root (its original
-# location before the temp scripts/ cleanup move) -- "../python/X.py"
+# location before the temp_scripts/ cleanup move) -- "../python/X.py"
 # paths need re-checking before rerunning from here.
 #
 # Runs Topic_2_CTreconstruction_512.py (the 512^3 variant of the
