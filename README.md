@@ -175,15 +175,13 @@ course-provided Python reference, `Topic_2_CTreconstruction.py`) is now
 available at 256^3 (`Epochs=20` run completed) -- see the note below the
 256^3 table for why that number is dominated by 26 outlier voxels in the
 Python reference's own output, not a disagreement in any C/GPU mode.
-512^3 has no Python-reference comparison; that script hardcodes the
-256^3 dataset path (a 512^3 variant, `Topic_2_CTreconstruction_512.py`,
-exists -- see the Run section). Attempted on both machines
-(2026-08-27); both ran out of memory before completing (AMD Hawaii
-PRO's 15GB RAM is a confirmed hard ceiling for this workload, per the
-earlier 2026-08-21 finding; the NVIDIA GTX 680 machine has far more
-RAM but still hit real allocation limits partway through). Paused for
-now, not abandoned -- real memory requirements at 512^3 are still
-unmeasured.
+512^3 is not possible with the Python reference: a 512^3 variant
+(`Topic_2_CTreconstruction_512.py`) exists and was attempted on both
+machines (2026-08-27), and both ran out of memory before completing.
+AMD Hawaii PRO's 15GB RAM is a confirmed hard limit for this workload
+(matches an earlier 2026-08-21 finding). The NVIDIA GTX 680 machine has
+much more RAM but still ran out partway through. Not attempted again
+since -- see the Run section for the script itself.
 
 ### 256³
 ```
