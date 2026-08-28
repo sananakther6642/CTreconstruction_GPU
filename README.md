@@ -376,8 +376,8 @@ across its 1.3M-pixel loop, not proportional to ray length; bp_func's cost
 is unaffected by sample_ratio at all). Full 100 epochs at this rate would be
 ~4.3 days; fewer epochs than 100 is an accepted tradeoff for this
 script — results converge less but that's expected, not a defect —
-so `Epochs` set to 20 (~20hrs) instead. Run started on the NVIDIA GeForce GTX 680
-under `tmux -s topic2` to run unattended.
+so `Epochs` set to 20 (~20hrs) instead. Run on the NVIDIA GeForce GTX
+680 under `tmux -s topic2` to run unattended, completed 2026-08-27.
 
 Full MSE-vs-CPU and MSE-vs-Python-reference numbers (real `Epochs=20`
 run, completed 2026-08-27) are in the "Validation (NVIDIA GeForce GTX
