@@ -218,7 +218,8 @@ magnitude).
 ### 512³
 
 No Python-reference output at 512³ -- ran out of memory on both
-machines (see the GTX 680 Validation section above).
+machines (see the Run section below for the 512^3 script and what was
+tried).
 
 ```
 Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Python Ref
