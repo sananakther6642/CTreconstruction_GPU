@@ -216,9 +216,12 @@ overlapping indices, same z=1/z=254-concentrated pattern, same order of
 magnitude).
 
 ### 512³
+
+No Python-reference output at 512³ -- ran out of memory on both
+machines (see the GTX 680 Validation section above).
+
 ```
 Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Python Ref
-python_ref (no 512^3 Python-reference output -- a 512^3 variant of this script exists but ran out of memory on both machines before completing, see the GTX 680 Validation section above and the Run section below)
 cpu      0.0000   1.0055   0.0330    0    0  (reference)    n/a
 gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.534e-11  n/a  max=0.0114
 gpu-img  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  n/a  max=0.0186
