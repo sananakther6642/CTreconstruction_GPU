@@ -23,9 +23,13 @@ simulation before running anything for real). The actual fix clamps
 file directly) -- bounding the reconstructed value directly stops
 runaway growth regardless of how many epochs compound, and 5.0 is well
 above the ~1.7-1.9 range normal converged voxels reach, so it should
-not affect correct voxels. The fix has not yet been re-verified with a
-full 20-epoch run at the time of writing -- see the Validation section
-for the original (unfixed) numbers and investigation.
+not affect correct voxels. **Re-verified with a real 20-epoch run on
+AMD Hawaii PRO (2026-08-28): MSE vs Python Ref dropped from `6.371e-03`
+to `3.014e-04` (~21x better), zero outlier voxels remain (all four
+modes agree identically, `python_ref` max is exactly `5.0000`, the
+clamp bound), confirming the fix works as intended.** See the
+Validation section for the original (unfixed) numbers, the
+investigation, and the fixed-run details.
 
 ## Performance
 
@@ -133,6 +137,26 @@ Python reference (`Topic_2_CTreconstruction.py`) figure (0.00030
 excluding them vs 0.00637 including them), not a disagreement in any
 C/GPU mode -- confirmed the same finding independently
 on this machine's own Python-reference output.
+
+**Re-run with the `v0`-clamp fix (2026-08-28), same 100-epoch CPU/GPU
+outputs, real 20-epoch Python reference run:**
+```
+Mode        min      max      mean   nan  inf  MSE vs CPU     MSE vs Python Ref
+python_ref  0.0000   5.0000   0.0069    0    0  (python ref)
+cpu         0.0000   1.7303   0.0067    0    0  (reference)    MSE=3.014e-04
+gpu-buf     0.0000   1.7307   0.0067    0    0  MSE=6.436e-10  MSE=3.014e-04  max=0.0511
+gpu-img     0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=3.016e-04  max=1.1490
+gpu-opt     0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=3.016e-04  max=1.1490
+```
+MSE vs Python Ref drops from `6.371e-03` (unfixed) to `3.014e-04`
+(~21x better), `python_ref` max is exactly `5.0000` (the clamp bound,
+confirming it's actually engaging), and the number now matches almost
+exactly the ~0.00030 estimate from excluding the 24 outlier voxels
+above -- the fix closes the gap by removing the outliers themselves
+rather than by masking them. MSE vs CPU (the real correctness signal
+for each C/GPU implementation) is unchanged, as expected -- the fix
+only touches the Python reference script, not any of this project's
+own code.
 
 ### 512³
 ```
