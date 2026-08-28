@@ -161,10 +161,10 @@ own code.
 ### 512³
 ```
 Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Python Ref
-cpu      0.0000   1.0055   0.0330    0    0  (reference)    n/a
-gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.087e-11  n/a  max=0.0156
-gpu-img  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  n/a  max=0.0169
-gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  n/a  max=0.0169
+cpu      0.0000   1.0055   0.0330    0    0  (reference)
+gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.087e-11  max=0.0156
+gpu-img  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
+gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
 ```
 
 ## Validation (NVIDIA GeForce GTX 680, 100 epochs, both datasets, all four modes)
@@ -175,15 +175,13 @@ course-provided Python reference, `Topic_2_CTreconstruction.py`) is now
 available at 256^3 (`Epochs=20` run completed) -- see the note below the
 256^3 table for why that number is dominated by 26 outlier voxels in the
 Python reference's own output, not a disagreement in any C/GPU mode.
-512^3 has no Python-reference comparison; that script hardcodes the
-256^3 dataset path (a 512^3 variant, `Topic_2_CTreconstruction_512.py`,
-exists -- see the Run section). Attempted on both machines
-(2026-08-27); both ran out of memory before completing (AMD Hawaii
-PRO's 15GB RAM is a confirmed hard ceiling for this workload, per the
-earlier 2026-08-21 finding; the NVIDIA GTX 680 machine has far more
-RAM but still hit real allocation limits partway through). Paused for
-now, not abandoned -- real memory requirements at 512^3 are still
-unmeasured.
+512^3 is not possible with the Python reference: a 512^3 variant
+(`Topic_2_CTreconstruction_512.py`) exists and was attempted on both
+machines (2026-08-27), and both ran out of memory before completing.
+AMD Hawaii PRO's 15GB RAM is a confirmed hard limit for this workload
+(matches an earlier 2026-08-21 finding). The NVIDIA GTX 680 machine has
+much more RAM but still ran out partway through. Not attempted again
+since -- see the Run section for the script itself.
 
 ### 256³
 ```
@@ -218,13 +216,17 @@ overlapping indices, same z=1/z=254-concentrated pattern, same order of
 magnitude).
 
 ### 512³
+
+No Python-reference output at 512³ -- ran out of memory on both
+machines (see the Run section below for the 512^3 script and what was
+tried).
+
 ```
 Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Python Ref
-python_ref (no 512^3 Python-reference run possible -- the reference script hardcodes the 256^3 dataset path, see Run section below)
-cpu      0.0000   1.0055   0.0330    0    0  (reference)    n/a
-gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.534e-11  n/a  max=0.0114
-gpu-img  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  n/a  max=0.0186
-gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  n/a  max=0.0186
+cpu      0.0000   1.0055   0.0330    0    0  (reference)
+gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.534e-11  max=0.0114
+gpu-img  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
+gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
 ```
 
 Correctness fixes that got here:
@@ -374,8 +376,8 @@ across its 1.3M-pixel loop, not proportional to ray length; bp_func's cost
 is unaffected by sample_ratio at all). Full 100 epochs at this rate would be
 ~4.3 days; fewer epochs than 100 is an accepted tradeoff for this
 script — results converge less but that's expected, not a defect —
-so `Epochs` set to 20 (~20hrs) instead. Run started on the NVIDIA GeForce GTX 680
-under `tmux -s topic2` to run unattended.
+so `Epochs` set to 20 (~20hrs) instead. Run on the NVIDIA GeForce GTX
+680 under `tmux -s topic2` to run unattended, completed 2026-08-27.
 
 Full MSE-vs-CPU and MSE-vs-Python-reference numbers (real `Epochs=20`
 run, completed 2026-08-27) are in the "Validation (NVIDIA GeForce GTX
