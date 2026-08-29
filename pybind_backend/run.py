@@ -3,11 +3,11 @@ Reference call site for the pybind11 CT reconstruction backend.
 
 Run from the repo root:
 
-    python3 -m pybind_backend.example_run --mode gpu-opt --epochs 100
+    python3 -m pybind_backend.run --mode gpu-opt --epochs 100
 
 or directly:
 
-    python3 pybind_backend/example_run.py --mode cpu --epochs 20
+    python3 pybind_backend/run.py --mode cpu --epochs 20
 """
 import argparse
 import os

@@ -42,12 +42,12 @@ Four entry points, mirroring the CLI's `--mode`:
 
 All four return the reconstructed volume as a numpy `float32` array; none
 of them touch HDF5 — read input and write output in Python (see
-`example_run.py`).
+`run.py`).
 
 Demo / reference call site:
 
 ```bash
-python3 -m pybind_backend.example_run --mode gpu-opt --epochs 100 --subsets 1
+python3 -m pybind_backend.run --mode gpu-opt --epochs 100 --subsets 1
 ```
 
 ## Notes
@@ -86,6 +86,6 @@ should agree at the float32 noise floor:
 
 ```bash
 make run-gpu-opt                                  # produces output_gpu_opt.hdf5
-python3 -m pybind_backend.example_run --mode gpu-opt --out output_gpu_opt_py.hdf5
+python3 -m pybind_backend.run --mode gpu-opt --out output_gpu_opt_py.hdf5
 python3 python/validate.py                         # or a direct h5py diff of the two Volume datasets
 ```
