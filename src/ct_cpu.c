@@ -409,40 +409,10 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
                  * each ray only accumulates while s is within its own
                  * [s_start,s_end) — same per-ray sample count as before,
                  * just interleaved with its tile neighbors' reads instead
-                 * of run sequentially to completion one ray at a time.
-                 *
-                 * C2 (perf-algorithmic): split into two passes per s.
-                 * Pass (a) is pure arithmetic + compares over the
-                 * contiguous wx/wy/wz/dox/doy/doz arrays (already SoA) --
-                 * no scattered memory access, so it's cleanly
-                 * vectorizable, unlike the combined loop this replaces
-                 * (confirmed via -fopt-info-vec-missed: the old loop
-                 * failed with "data ref analysis failed" on the volume[]
-                 * gather and "no vectype for stmt" on wx[t], both at the
-                 * point where address computation and the gather were
-                 * interleaved). Pass (b) does the 8-tap gather with every
-                 * address already known, so the out-of-order engine can
-                 * issue all of a tile's loads without waiting on each
-                 * one's own floor/compare chain first (more memory-level
-                 * parallelism), instead of the old form where each
-                 * gather was interleaved with -- and could stall behind
-                 * -- its own address computation.
-                 *
-                 * Same arithmetic, same per-(s,t) values, same
-                 * accumulation order into val[t] (s outer / t inner in
-                 * both passes, identical to the loop this replaces) --
-                 * no numerics change, purely a reordering for ILP. */
+                 * of run sequentially to completion one ray at a time. */
                 for (int s = tile_s_lo; s < tile_s_hi; s++) {
-                    int   base_arr[FP_TILE_MAX];
-                    float dxw[FP_TILE_MAX], dyw[FP_TILE_MAX], dzw[FP_TILE_MAX];
-                    unsigned char valid[FP_TILE_MAX];
-
                     for (int t = 0; t < tile_n; t++) {
-                        if (s < s_start[t] || s >= s_end[t]) {
-                            valid[t] = 0;
-                            wx[t] += dox[t]; wy[t] += doy[t]; wz[t] += doz[t];
-                            continue;
-                        }
+                        if (s < s_start[t] || s >= s_end[t]) continue;
 
                         float xi = wx[t] * inv_sv_xz + shift_xz;
                         float yi = wy[t] * inv_sv_y  + shift_y;
@@ -455,29 +425,20 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
                         if ((unsigned)x0 < (unsigned)(Nxz-1) &&
                             (unsigned)y0 < (unsigned)(Ny -1) &&
                             (unsigned)z0 < (unsigned)(Nxz-1)) {
-                            valid[t] = 1;
-                            base_arr[t] = x0*(Nxz*Ny) + y0*Ny + z0;
-                            dxw[t] = xi - x0; dyw[t] = yi - y0; dzw[t] = zi - z0;
-                        } else {
-                            valid[t] = 0;
+                            float dx = xi-x0, dy = yi-y0, dz = zi-z0;
+                            float nx = 1.f-dx, ny_ = 1.f-dy, nz_ = 1.f-dz;
+                            int base = x0*(Nxz*Ny) + y0*Ny + z0;
+                            int sNy  = Nxz*Ny;
+                            val[t] += volume[base]         * nx * ny_ * nz_
+                                    + volume[base+sNy]     * dx * ny_ * nz_
+                                    + volume[base+Ny]      * nx * dy  * nz_
+                                    + volume[base+sNy+Ny]  * dx * dy  * nz_
+                                    + volume[base+1]       * nx * ny_ * dz
+                                    + volume[base+sNy+1]   * dx * ny_ * dz
+                                    + volume[base+Ny+1]    * nx * dy  * dz
+                                    + volume[base+sNy+Ny+1]* dx * dy  * dz;
                         }
                         wx[t] += dox[t]; wy[t] += doy[t]; wz[t] += doz[t];
-                    }
-
-                    int sNy = Nxz * Ny;
-                    for (int t = 0; t < tile_n; t++) {
-                        if (!valid[t]) continue;
-                        int base = base_arr[t];
-                        float dx = dxw[t], dy = dyw[t], dz = dzw[t];
-                        float nx = 1.f-dx, ny_ = 1.f-dy, nz_ = 1.f-dz;
-                        val[t] += volume[base]         * nx * ny_ * nz_
-                                + volume[base+sNy]     * dx * ny_ * nz_
-                                + volume[base+Ny]      * nx * dy  * nz_
-                                + volume[base+sNy+Ny]  * dx * dy  * nz_
-                                + volume[base+1]       * nx * ny_ * dz
-                                + volume[base+sNy+1]   * dx * ny_ * dz
-                                + volume[base+Ny+1]    * nx * dy  * dz
-                                + volume[base+sNy+Ny+1]* dx * dy  * dz;
                     }
                 }
 
