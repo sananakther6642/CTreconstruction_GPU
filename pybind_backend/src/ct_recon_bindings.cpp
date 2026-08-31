@@ -18,10 +18,15 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#ifdef __linux__
+#include <sys/mman.h>
+#endif
 
 #include "utils.h"
 #include "ct_cpu.h"
@@ -153,12 +158,56 @@ void check_vram_budget(cl_device_id device, int Nxz, int Ny, int W, int H,
  * is created -- nothing in the C reconstruct call can move or reallocate
  * it, so returning py::array_t here (rather than malloc+copy) is both
  * simpler and safe across the whole call, including if it throws
- * partway through (RVO/py::array_t's own refcounting handles that). */
+ * partway through (RVO/py::array_t's own refcounting handles that).
+ *
+ * Allocation is explicitly 2MiB-aligned + madvise(MADV_HUGEPAGE) rather
+ * than plain numpy allocation. Measured on kale: the CLI's plain
+ * malloc() of this same 64MB buffer (src/main.c:119) ends up ~95%
+ * transparent-huge-page-backed (AnonHugePages/RSS via
+ * /proc/<pid>/smaps_rollup), while an equivalent numpy allocation in
+ * this pybind process -- which has already imported torch/h5py and
+ * allocated a 75MB projection array before this call, fragmenting the
+ * heap -- only reached ~68% huge-page-backed. fp_cpu (src/ct_cpu.c)
+ * does an 8-tap trilinear scatter-gather over this exact buffer every
+ * epoch; bp_cpu only memsets+writes it contiguously and is unaffected
+ * by page placement. That asymmetry (fp_cpu slows down over ~epochs
+ * 20-60 then partially recovers, bp_cpu stays flat) is consistent with
+ * khugepaged only partially, and slowly, collapsing an unaligned/
+ * fragmented allocation into huge pages rather than getting them
+ * up front. Explicitly aligning and advising removes the dependency on
+ * khugepaged's background timing. madvise/MADV_HUGEPAGE is Linux-only;
+ * backend.py already hard-fails on non-Linux (no new portability
+ * surface), but this still degrades to a plain aligned allocation if
+ * madvise is unavailable rather than failing outright. */
 py::array_t<float> make_initial_volume(int Nxz, int Ny)
 {
-    py::array_t<float> vol({Nxz, Nxz, Ny});
-    std::fill(vol.mutable_data(), vol.mutable_data() + vol.size(), 1.0f);
-    return vol;
+    size_t n = (size_t)Nxz * (size_t)Nxz * (size_t)Ny;
+    size_t nbytes = n * sizeof(float);
+    constexpr size_t kAlign = 2 * 1024 * 1024; /* 2MiB, THP size on x86_64 */
+    /* posix_memalign requires the size to be a multiple of the alignment
+     * for the mapping it returns to itself be a whole number of huge
+     * pages; round up rather than assume callers only ever pass sizes
+     * that already divide evenly (256^3 does, but this shouldn't rely
+     * on that silently). */
+    size_t alloc_bytes = ((nbytes + kAlign - 1) / kAlign) * kAlign;
+
+    void *ptr = nullptr;
+    int err = posix_memalign(&ptr, kAlign, alloc_bytes);
+    if (err != 0 || ptr == nullptr)
+        throw std::bad_alloc();
+
+#ifdef __linux__
+    /* Best-effort: if the kernel or THP config doesn't support this,
+     * madvise just returns an error we ignore -- the buffer is still a
+     * valid, correctly 2MiB-aligned allocation either way. */
+    madvise(ptr, alloc_bytes, MADV_HUGEPAGE);
+#endif
+
+    float *fptr = static_cast<float *>(ptr);
+    std::fill(fptr, fptr + n, 1.0f);
+
+    py::capsule owner(ptr, [](void *p) { std::free(p); });
+    return py::array_t<float>({Nxz, Nxz, Ny}, fptr, owner);
 }
 
 /* ---- reconstruct_cpu ------------------------------------------------ */
