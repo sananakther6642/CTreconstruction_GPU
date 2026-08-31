@@ -14,6 +14,39 @@
 static cl_program build_program_opts(cl_context ctx, cl_device_id dev,
                                        const char *src, const char *extra_opts);
 
+/* ── Phase 0b diagnostic: per-kernel resource usage ─────────────────────
+ * On Kepler (GTX 680, SM 3.0) full occupancy needs <=32 registers/thread
+ * (65536 regs / 2048 max threads per SMX); 63 regs/thread (the
+ * architectural max) caps you at ~50% occupancy. The OpenCL API exposes
+ * no direct register count, but CL_KERNEL_PRIVATE_MEM_SIZE (spilled
+ * registers, i.e. local/private memory beyond the register file) and
+ * CL_KERNEL_WORK_GROUP_SIZE (the max work-group size the compiler will
+ * allow given its actual register allocation, which drops below the
+ * device max once registers/thread * threads/group exceeds 65536) are
+ * the two numbers that let us infer register pressure without vendor
+ * extensions. A CL_KERNEL_WORK_GROUP_SIZE lower than the device's
+ * CL_DEVICE_MAX_WORK_GROUP_SIZE, or nonzero private mem, both indicate
+ * register pressure worth addressing (see the perf-algorithmic plan's
+ * Phase 1/G4 items). Printed once at init behind CT_DIAG_KERNEL_INFO=1
+ * since it adds several small blocking clGetKernelWorkGroupInfo calls. */
+static void diag_print_kernel_info(cl_kernel k, const char *name, cl_device_id dev)
+{
+    if (!k) return;
+    size_t wg_size = 0, pref_multiple = 0;
+    cl_ulong local_mem = 0, private_mem = 0;
+    clGetKernelWorkGroupInfo(k, dev, CL_KERNEL_WORK_GROUP_SIZE,
+                              sizeof(wg_size), &wg_size, NULL);
+    clGetKernelWorkGroupInfo(k, dev, CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE,
+                              sizeof(pref_multiple), &pref_multiple, NULL);
+    clGetKernelWorkGroupInfo(k, dev, CL_KERNEL_LOCAL_MEM_SIZE,
+                              sizeof(local_mem), &local_mem, NULL);
+    clGetKernelWorkGroupInfo(k, dev, CL_KERNEL_PRIVATE_MEM_SIZE,
+                              sizeof(private_mem), &private_mem, NULL);
+    printf("    [kernel-info] %-24s max_wg=%zu pref_mult=%zu local_mem=%llu B private_mem=%llu B\n",
+           name, wg_size, pref_multiple,
+           (unsigned long long)local_mem, (unsigned long long)private_mem);
+}
+
 /* ── Load a text file into a malloc'd buffer ────────────────────────────── */
 static char *load_source(const char *path)
 {
@@ -251,6 +284,23 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "preprocess_proj (opt)");
         cl->k_cone_hw  = clCreateKernel(cl->prog_opt, "cone_weight_hw", &err);
         CL_CHECK(err, "cone_weight_hw (opt)");
+    }
+
+    /* Phase 0b diagnostic (see diag_print_kernel_info above). Off by
+     * default -- opt in with CT_DIAG_KERNEL_INFO=1. */
+    {
+        const char *diag_env = getenv("CT_DIAG_KERNEL_INFO");
+        if (diag_env && atoi(diag_env) != 0) {
+            printf("  [kernel-info] per-kernel resource usage:\n");
+            diag_print_kernel_info(cl->k_bp_buf,  "bp_buffer",  cl->device);
+            diag_print_kernel_info(cl->k_fp_buf,  "fp_buffer",  cl->device);
+            diag_print_kernel_info(cl->k_bp_img,  "bp_image",   cl->device);
+            diag_print_kernel_info(cl->k_fp_img,  "fp_image",   cl->device);
+            diag_print_kernel_info(cl->k_bp_opt,  "bp_opt",     cl->device);
+            diag_print_kernel_info(cl->k_divide,  "proj_divide", cl->device);
+            diag_print_kernel_info(cl->k_update,  "vol_update", cl->device);
+            diag_print_kernel_info(cl->k_update_img, "vol_update_img", cl->device);
+        }
     }
 
     return 0;
