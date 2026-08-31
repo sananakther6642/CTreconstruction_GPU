@@ -76,6 +76,30 @@ python3 -m pybind_backend.run --mode gpu-opt --epochs 100 --subsets 1
   for` as the CLI, but without the Makefile's `OMP_NUM_THREADS` /
   `OMP_PROC_BIND` / `OMP_PLACES` pinning. Set those env vars yourself
   before importing if you want to match `make run-cpu`'s thread pinning.
+- **Flush-to-zero / denormals-are-zero**: `-ffast-math` sets FTZ/DAZ via
+  `crtfastmath.o`, which is only linked into a *main executable* — the
+  CLI's `main.c` gets it for free, but this extension's main executable
+  is `python3`, built without `-ffast-math`, so compiling the `.so` with
+  the flag alone did not set MXCSR here. Symptom on kale:
+  `reconstruct_cpu`'s `fp_cpu` time was flat for ~20 epochs, climbed to
+  ~2.9x by epoch ~30, then slowly recovered — background voxels decaying
+  through the float32 denormal range as MLEM converges, at the ~100x
+  per-op cost of unflushed denormal arithmetic. `bp_cpu` never showed it
+  (it only ever writes `volume`, never reads it back). Fixed by setting
+  FTZ/DAZ explicitly in `ct_recon_bindings.cpp`'s `PYBIND11_MODULE` init
+  (`_MM_SET_FLUSH_ZERO_MODE` / `_MM_SET_DENORMALS_ZERO_MODE`); confirmed
+  OpenMP worker threads inherit MXCSR from the thread that set it, so one
+  call at import time is sufficient. Confirmed on kale: `fp_cpu` now
+  holds flat for 40+ epochs, and output is bit-identical to the CLI
+  (`MSE: 0.0`, `max abs diff: 0.0`) — the earlier ~1e-79 noise floor was
+  itself residual denormal arithmetic, now gone entirely.
+- **Known residual gap, unexplained**: even with the above fixed,
+  `reconstruct_cpu`'s flat baseline still runs ~13% slower than the CLI
+  (`fp` 3.18s vs 2.84s, `bp` 1.11s vs 0.94s — both kernels, not just the
+  one that showed the hump). Ruled out so far: compiler (both paths use
+  the same `gcc`/`g++` 12.2.0), and C-vs-C++ compilation of `ct_cpu.c`
+  (byte-identical object code either way, verified with `objdump`/`size`).
+  Not yet resolved.
 - **VRAM**: `reconstruct_gpu_opt` checks the requested `subsets` against
   the device's available memory before running, and raises a Python
   exception (with the computed requirement) instead of letting an
