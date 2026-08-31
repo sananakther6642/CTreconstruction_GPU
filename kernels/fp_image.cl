@@ -40,30 +40,9 @@ __kernel void float_to_half(__global const float *src, __global half *dst, int n
  * Eliminates angle2pose_img() per work-item (cos/sin + 2x matmul per pixel).
  */
 
-/* CLK_ADDRESS_CLAMP (zero-fill outside [0,dim)), not CLK_ADDRESS_CLAMP_TO_EDGE
- * (replicates the edge texel) -- see the per-sample bounds test below,
- * which this sampler mode makes removable. bp_image.cl:15 and
- * bp_buffer_opt.cl:15 already use CLAMP; this brings fp_image in line.
- *
- * G2 (perf-algorithmic): this is a deliberate numerics change, not just
- * an optimization -- the removed bounds test implemented a *whole-cell*
- * zero rule (matching scipy RegularGridInterpolator(fill_value=0) /
- * map_coordinates(mode='constant'), see the identical comment at
- * bp_buffer.cl:25-28 and ct_cpu.c:127-135): if ANY corner of a sample's
- * interpolation cell was outside the grid, the WHOLE sample contributed
- * 0. CLK_ADDRESS_CLAMP with CLK_FILTER_LINEAR instead blends per-corner
- * against a zero border texel -- a straddling cell now contributes a
- * partial value instead of nothing. This affects only the outermost
- * ~1-voxel shell (estimated ~2.3% of interior samples at 256^3) and
- * arguably corrects a half-voxel-early truncation at each face, but it
- * moves away from the Python reference this project validates against.
- * MUST be verified with python/validate_ops.py fp against the Python
- * reference (not just MSE vs the CPU path, which implements the SAME
- * whole-cell rule and would not catch a divergence from the reference)
- * before this is trusted. */
 __constant sampler_t vol_samp =
     CLK_NORMALIZED_COORDS_FALSE |
-    CLK_ADDRESS_CLAMP           |
+    CLK_ADDRESS_CLAMP_TO_EDGE   |
     CLK_FILTER_LINEAR;
 
 /*
@@ -169,19 +148,18 @@ __kernel void fp_image(
     float wz = T[2] + rd[2] * (near_t + s_start * dt);
     float dox = rd[0] * dt, doy = rd[1] * dt, doz = rd[2] * dt;
 
-    /* Bounds test removed (see the vol_samp comment above) -- CLAMP +
-     * FILTER_LINEAR zero-fills/blends outside [0,dim) automatically, so
-     * every sample can now unconditionally read_imagef. Was 6 compares
-     * + a divergent skip per sample; now straight-line. */
     float val = 0.f;
     for (int s = s_start; s < s_end; s++) {
         float xi = wx * inv_sv_xz + shift_xz;
         float yi = wy * inv_sv_y  + shift_y;
         float zi = wz * inv_sv_xz + shift_xz;
 
-        float4 coord = (float4)(zi + 0.5f, yi + 0.5f, xi + 0.5f, 0.f);
-        val += read_imagef(volume_img, vol_samp, coord).x;
-
+        if (xi >= 0.f && xi < (float)(Nxz - 1) &&
+            yi >= 0.f && yi < (float)(Ny  - 1) &&
+            zi >= 0.f && zi < (float)(Nxz - 1)) {
+            float4 coord = (float4)(zi + 0.5f, yi + 0.5f, xi + 0.5f, 0.f);
+            val += read_imagef(volume_img, vol_samp, coord).x;
+        }
         wx += dox; wy += doy; wz += doz;
     }
     val *= step_val;
