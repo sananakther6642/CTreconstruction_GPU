@@ -7,25 +7,15 @@
  * Backprojection (CPU)
  * proj:   [num_projs * detector_height * detector_width]  (pre-weighted)
  * volume: [Nxz * Nxz * Ny]  output, must be zeroed by caller
- *
- * `restrict` (C2 perf-algorithmic): every caller (src/ct_cpu.c:501,510,523
- * and src/main.c) passes distinct, non-overlapping buffers -- verified
- * before adding this. Without it, GCC must assume `volume`'s writes
- * (strip[iz] += ...) could alias `proj`'s reads (slice[...]), blocking
- * LICM of the loop-invariant row-pointer/weight computations in bp_cpu's
- * inner iz loop.
  */
-void bp_cpu(const float *restrict proj, float *restrict volume, const CBpara *p);
+void bp_cpu(const float *proj, float *volume, const CBpara *p);
 
 /*
  * Forward projection (CPU)
  * volume: [Nxz * Nxz * Ny]  input
  * proj:   [num_projs * detector_height * detector_width]  output
- *
- * `restrict`: same rationale as bp_cpu above -- callers always pass
- * distinct buffers.
  */
-void fp_cpu(const float *restrict volume, float *restrict proj, const CBpara *p);
+void fp_cpu(const float *volume, float *proj, const CBpara *p);
 
 /*
  * Apply cone-weight to projections in-place.

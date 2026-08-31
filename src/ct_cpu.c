@@ -75,7 +75,7 @@ void cone_weight_cpu(float *proj, const CBpara *p)
  *  3. x_sin/x_cos hoisted out of j/k loops
  *  4. 1/U multiply instead of division
  */
-void bp_cpu(const float *restrict proj, float *restrict volume, const CBpara *p)
+void bp_cpu(const float *proj, float *volume, const CBpara *p)
 {
     int Nxz = p->Volumen_num_xz;
     int Ny   = p->Volumen_num_y;
@@ -242,7 +242,7 @@ static void angle2pose(float SOD, float angle, float R[3][3], float T[3])
     T[2] = 0.f;
 }
 
-void fp_cpu(const float *restrict volume, float *restrict proj, const CBpara *p)
+void fp_cpu(const float *volume, float *proj, const CBpara *p)
 {
     int Nxz = p->Volumen_num_xz;
     int Ny   = p->Volumen_num_y;
