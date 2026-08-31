@@ -43,6 +43,17 @@ _repo_root = os.path.dirname(_here)
 _src_dir = os.path.join(_repo_root, "src")
 KERNEL_DIR = os.path.join(_repo_root, "kernels")
 
+# Match the Makefile's run-cpu target (OMP_NUM_THREADS/OMP_PROC_BIND=close/
+# OMP_PLACES=cores). Without this, reconstruct_cpu's OpenMP threads are
+# free to migrate across cores/sockets during a run -- observed on kale
+# as per-epoch fp_cpu time climbing steadily (5.5s -> 14s+ over ~25
+# epochs) instead of staying flat, consistent with threads drifting out
+# of cache-friendly placement over time. Set only if the caller hasn't
+# already exported these, so an explicit environment still wins.
+os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count() or 1))
+os.environ.setdefault("OMP_PROC_BIND", "close")
+os.environ.setdefault("OMP_PLACES", "cores")
+
 # Fail loudly and specifically at import time. Without this, a relocated
 # pybind_backend/ or a missing kernel file surfaces as
 # clCreateProgramWithSource failing inside gpu_init, which goes through
