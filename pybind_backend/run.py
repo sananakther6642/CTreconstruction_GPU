@@ -10,10 +10,24 @@ or directly:
     python3 pybind_backend/run.py --mode cpu --epochs 20
 """
 import argparse
+import ctypes
 import os
 
 import h5py
 import numpy as np
+
+# Force large allocations (the 64 MiB volume, the 75 MiB projection array)
+# to come from a fresh mmap rather than glibc's fragmented main arena.
+# The CLI (src/main.c:119) mallocs the volume in a near-empty process, so
+# it always lands on a clean anonymous mapping; here, torch + h5py + the
+# projection read have already churned the heap by the time the volume is
+# allocated. M_MMAP_THRESHOLD is glibc's -3; setting it below 64 MiB makes
+# numpy's allocator behave like the CLI's for these buffers. Best-effort:
+# non-glibc or a missing symbol just leaves the default in place.
+try:
+    ctypes.CDLL("libc.so.6").mallopt(-3, 32 * 1024 * 1024)
+except (OSError, AttributeError):
+    pass
 
 from pybind_backend.backend import KERNEL_DIR, _backend
 
@@ -48,7 +62,12 @@ def main():
     args = ap.parse_args()
 
     with h5py.File(args.data, "r") as f:
-        proj = f["Projection"][:].astype(np.float32)
+        # read_direct instead of [:].astype(float32): the latter
+        # materializes the full native-dtype array first and then a second
+        # float32 copy, leaving a large freed hole in the heap that the
+        # volume allocation below can land in.
+        proj = np.empty(f["Projection"].shape, dtype=np.float32)
+        f["Projection"].read_direct(proj)
         angles = f["Angle"][:].astype(np.float64)
         voxelSize = float(_scalar(f, "voxelSize"))
         pixelSize = float(_scalar(f, "pixelSize"))
