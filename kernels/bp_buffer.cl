@@ -66,9 +66,15 @@ __kernel void bp_buffer(
     int   ip_count
 )
 {
-    int ix = get_global_id(0);
+    /* iz on dim 0 (fastest-varying local id), ix on dim 2 (slowest) --
+     * see the host-side comment at run_bp_buffer's lws for why: iz drives
+     * vf, the stride-1 direction in `proj`'s [W][H] layout (bilinear_buf's
+     * v0/v1 taps), while ix/iy drive uf, the stride-H (2KB) direction. A
+     * warp needs iz to be its fastest-varying id so consecutive lanes read
+     * near-consecutive vf, not near-consecutive uf. */
+    int iz = get_global_id(0);
     int iy = get_global_id(1);
-    int iz = get_global_id(2);
+    int ix = get_global_id(2);
 
     if (ix >= Nxz || iy >= Nxz || iz >= Ny) return;
 

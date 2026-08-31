@@ -448,37 +448,36 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,12, sizeof(int),    &ip_start);
     clSetKernelArg(k,13, sizeof(int),    &ip_count);
 
-    /* {4,4,16} tuned once early on (718ms->290ms, the biggest measured win
-     * at the time) and never re-swept until fp_image/fp_buffer's sweeps
-     * (both found significant headroom over their similarly-untested
-     * defaults) prompted re-checking this one too. Re-swept at 512^3
-     * (gpu-opt, 3-epoch runs): {4,4,16} 0.874-0.879s still wins outright;
-     * every alternative tried was 14-49% slower (e.g. {8,4,8} ~0.997s,
-     * {4,16,4} ~1.10s, {2,2,64} ~1.17-1.19s, {8,8,4} ~1.30s). Unlike
-     * fp_image/fp_buffer, this one really was already at (or very near)
-     * its optimum — confirmed, not assumed. Shared BP_LWS env override
-     * across all four bp call sites (run_bp_buffer, run_bp_image, bp_opt
-     * x2) kept for any future re-test. Keep lws[2] a divisor of
-     * Z_SLAB=64 below (1,2,4,8,16,32,64) — the z-slab chunking
-     * requires it. */
-    size_t lws[3] = {4, 4, 16};  /* 16 contiguous z-threads → coalesced writes */
+    /* Axis reassignment (see the kernel's own comment at bp_buffer.cl):
+     * iz is now dim 0 (fastest local id), ix is dim 2 (slowest). {4,4,16}
+     * was swept and won repeatedly, but every candidate in that sweep
+     * kept ix as dim 0 -- the sweep never tested *which axis* is fastest,
+     * only work-group *shape*. Kept the same shape {4,4,16} here, just
+     * reinterpreted: lws[0] (was ix's 4) is now iz's chunk width, lws[2]
+     * (was iz's 16) is now ix's. Re-sweep BP_LWS after this change lands
+     * -- the old sweep's conclusion doesn't transfer across an axis swap.
+     * Keep lws[0] a divisor of Z_SLAB=64 below (1,2,4,8,16,32,64) — the
+     * z-slab chunking requires it, same constraint as before just moved
+     * to dim 0. */
+    size_t lws[3] = {16, 4, 4};
     {
         const char *bp_lws_env = getenv("BP_LWS");
         if (bp_lws_env) {
-            unsigned long a=4, b=4, c=16;
+            unsigned long a=16, b=4, c=4;
             if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
                 lws[0]=a; lws[1]=b; lws[2]=c;
             }
         }
     }
-    size_t gws_full[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
+    size_t gws_full[3] = {(size_t)Ny, (size_t)Nxz, (size_t)Nxz};
     for (int d=0;d<3;d++)
         if (gws_full[d] % lws[d]) gws_full[d] += lws[d] - gws_full[d] % lws[d];
 
-    /* Chunk the z-dimension into slabs so no single kernel launch runs long
-     * enough to trip the GPU watchdog (bp_buffer does 4 uncoalesced global
-     * loads/angle/voxel with no texture cache — at 512^3 one unchunked
-     * launch can exceed the ~10s driver timeout and reset the GPU). */
+    /* Chunk the z-dimension (now dim 0) into slabs so no single kernel
+     * launch runs long enough to trip the GPU watchdog (bp_buffer does 4
+     * uncoalesced global loads/angle/voxel with no texture cache — at
+     * 512^3 one unchunked launch can exceed the ~10s driver timeout and
+     * reset the GPU). */
     const size_t Z_SLAB = 64;
 
     /* Mirrors FP_BUFFER_SKIP_SLAB_FINISH (run_fp_buffer, above): the
@@ -495,10 +494,10 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
     }
 
     int slab_idx = 0;
-    for (size_t z0 = 0; z0 < gws_full[2]; z0 += Z_SLAB) {
-        size_t slab = (gws_full[2] - z0 < Z_SLAB) ? (gws_full[2] - z0) : Z_SLAB;
-        size_t offset[3] = {0, 0, z0};
-        size_t gws[3]    = {gws_full[0], gws_full[1], slab};
+    for (size_t z0 = 0; z0 < gws_full[0]; z0 += Z_SLAB) {
+        size_t slab = (gws_full[0] - z0 < Z_SLAB) ? (gws_full[0] - z0) : Z_SLAB;
+        size_t offset[3] = {z0, 0, 0};
+        size_t gws[3]    = {slab, gws_full[1], gws_full[2]};
 
         if (skip_slab_finish) {
             /* batched path: enqueue only, no per-slab sync/timing/watchdog.
