@@ -165,6 +165,12 @@ __kernel void preprocess_proj(
  * same memory transactions vload4 would -- no loss from dropping the
  * explicit vectorization.
  */
+/* ip_start/ip_count: OSEM support, mirrors fp_image's pattern -- the host
+ * launches with offset[2]=ip_start, gws[2]=ip_count (rounded up to lws),
+ * so get_global_id(2) never goes below ip_start; only the upper bound
+ * needs guarding here for the lws round-up. num_projs itself is not
+ * needed as a separate arg since ip_start+ip_count <= num_projs always
+ * (subset ranges partition [0,num_projs) by construction). */
 __kernel void divide_preprocess_img(
     __global const float *p0,
     __global const float *b,
@@ -173,13 +179,15 @@ __kernel void divide_preprocess_img(
     int   H,
     float voxelSize,
     float SDD,
-    float pixelSize
+    float pixelSize,
+    int   ip_start,
+    int   ip_count
 )
 {
     int iw = get_global_id(0);
     int ih = get_global_id(1);
     int ip = get_global_id(2);
-    if (iw >= W || ih >= H) return;
+    if (iw >= W || ih >= H || ip >= ip_start + ip_count) return;
 
     int src_idx = ip * H * W + (H - 1 - ih) * W + iw;
     float p0v = p0[src_idx];

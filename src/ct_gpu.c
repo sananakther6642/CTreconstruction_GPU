@@ -331,13 +331,16 @@ static void run_preprocess(CLState *cl, const CBpara *p,
  * as dead code. See divide_preprocess_img in kernels/bp_buffer.cl for the
  * kernel and its math-equivalence note against the original two kernels.
  */
+/* ip_start/ip_count: OSEM support, mirrors run_fp_image's pattern (see
+ * that function's comment). np is still needed for gws sizing at S=1
+ * (ip_count==np then), but the kernel itself only sees ip_start/ip_count. */
 static void run_divide_preprocess_img(CLState *cl, const CBpara *p,
                                        cl_mem d_proj_meas, cl_mem d_proj_b,
-                                       cl_mem dst_img)
+                                       cl_mem dst_img, int ip_start, int ip_count)
 {
     cl_int err;
     cl_kernel k = cl->k_divide_preproc_img;
-    int W = p->detector_width, H = p->detector_height, np = p->num_projs;
+    int W = p->detector_width, H = p->detector_height;
     float vs  = (float)p->voxelSize;
     float SDD = (float)p->SDD;
     float px  = (float)p->pixelSize;
@@ -350,12 +353,15 @@ static void run_divide_preprocess_img(CLState *cl, const CBpara *p,
     clSetKernelArg(k, 5, sizeof(float),  &vs);
     clSetKernelArg(k, 6, sizeof(float),  &SDD);
     clSetKernelArg(k, 7, sizeof(float),  &px);
+    clSetKernelArg(k, 8, sizeof(int),    &ip_start);
+    clSetKernelArg(k, 9, sizeof(int),    &ip_count);
 
-    size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
+    size_t gws[3] = {(size_t)W, (size_t)H, (size_t)ip_count};
     size_t lws[3] = {16, 16, 1};
     for (int d = 0; d < 3; d++)
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
-    err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
+    size_t offset[3] = {0, 0, (size_t)ip_start};
+    err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, NULL);
     CL_CHECK(err, "divide_preprocess_img enqueue");
 }
 
@@ -1212,7 +1218,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             run_preprocess(cl, p, d_ratio, d_ratio_prep);  /* fused: cone_weight + flip + transpose */
             run_bp_buffer(cl, p, d_ratio_prep, d_ang_cs, d_bp_ratio, 0, np);
         } else {
-            run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img_buf);
+            run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img_buf, 0, np);
             run_bp_image(cl, p, ratio_img_buf, d_ang_cs, d_bp_ratio, 0, np);
         }
 
@@ -1561,9 +1567,18 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
              * transpose+write-to-image into one kernel -- no d_ratio
              * intermediate buffer, no buffer->image copy (was ~0.80GB/epoch
              * at 512^3 plus two kernel launches). Same math, same values.
-             * Computed over the full angle range (ratio_img is shared by
-             * all subsets); bp below only reads the subset's slice. */
-            run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img);
+             *
+             * OSEM step 2 (see the function-level comment above for step
+             * 1): now restricted to this subset's ip_start/ip_count, the
+             * other half of the S-fold saving -- d_proj_b outside the
+             * subset already only holds stale fp() values (step 1), so
+             * computing ratio/cone-weight/write-to-image for them was
+             * pure waste. ratio_img's out-of-subset slices are simply
+             * never written this sub-iteration instead of being
+             * (re)written with a value nothing reads: ratio_img is read
+             * only by bp_opt below, which is itself launched with this
+             * same ip_start/ip_count and never touches other slices. */
+            run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img, ip_start, ip_count);
 
             /* ── bp_opt(ratio_img), this subset's angle range only ── */
             {
