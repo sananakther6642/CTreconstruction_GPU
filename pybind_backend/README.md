@@ -93,13 +93,17 @@ python3 -m pybind_backend.run --mode gpu-opt --epochs 100 --subsets 1
   holds flat for 40+ epochs, and output is bit-identical to the CLI
   (`MSE: 0.0`, `max abs diff: 0.0`) — the earlier ~1e-79 noise floor was
   itself residual denormal arithmetic, now gone entirely.
-- **Known residual gap, unexplained**: even with the above fixed,
-  `reconstruct_cpu`'s flat baseline still runs ~13% slower than the CLI
-  (`fp` 3.18s vs 2.84s, `bp` 1.11s vs 0.94s — both kernels, not just the
-  one that showed the hump). Ruled out so far: compiler (both paths use
-  the same `gcc`/`g++` 12.2.0), and C-vs-C++ compilation of `ct_cpu.c`
-  (byte-identical object code either way, verified with `objdump`/`size`).
-  Not yet resolved.
+- **Env vars must be set before `import torch`, not just before the C
+  call**: `backend.py` sets `OMP_NUM_THREADS`/`OMP_PROC_BIND`/`OMP_PLACES`
+  via `os.environ.setdefault(...)` above the `torch.utils.cpp_extension`
+  import. This ordering matters, not just the values — torch's own C++
+  init reads/caches OpenMP configuration once at import time, and GOMP's
+  runtime is shared in-process with torch's. Setting the vars *after*
+  `import torch` (even via `setdefault`, even moments later) left
+  `reconstruct_cpu` a flat, reproducible ~13% slower than the CLI on both
+  `fp` and `bp` (3.18s/1.11s vs 2.84s/0.94s per epoch) despite identical
+  values ending up in `os.environ` either way. An identical in-process
+  call with the vars set before `import torch` matched the CLI exactly.
 - **VRAM**: `reconstruct_gpu_opt` checks the requested `subsets` against
   the device's available memory before running, and raises a Python
   exception (with the computed requirement) instead of letting an

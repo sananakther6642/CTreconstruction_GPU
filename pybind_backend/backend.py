@@ -33,6 +33,29 @@ import platform
 import subprocess
 import sys
 
+# Match the Makefile's run-cpu target (OMP_NUM_THREADS/OMP_PROC_BIND=close/
+# OMP_PLACES=cores). Without this, reconstruct_cpu's OpenMP threads are
+# free to migrate across cores/sockets during a run -- observed on kale
+# as per-epoch fp_cpu time climbing steadily (5.5s -> 14s+ over ~25
+# epochs) instead of staying flat, consistent with threads drifting out
+# of cache-friendly placement over time. Set only if the caller hasn't
+# already exported these, so an explicit environment still wins.
+#
+# MUST run before `import torch` below, not after. Torch's own C++ init
+# reads/caches OpenMP configuration once at import time; setting these
+# afterward (even moments later) is too late -- GOMP's runtime, shared
+# in-process with torch's, has already initialized against whatever the
+# environment looked like when torch was imported. Measured on kale:
+# with the env vars set after `import torch`, reconstruct_cpu ran ~13%
+# slower than the CLI on both fp and bp (3.18s/1.11s vs 2.84s/0.94s),
+# flat and reproducible -- not a bug in reconstruct_cpu itself (an
+# identical in-process call with the vars set *before* import matched
+# the CLI exactly, 2.84s/0.94s). Moving these four lines above the
+# `torch.utils.cpp_extension` import closes the gap entirely.
+os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count() or 1))
+os.environ.setdefault("OMP_PROC_BIND", "close")
+os.environ.setdefault("OMP_PLACES", "cores")
+
 from torch.utils.cpp_extension import load
 
 if sys.platform == "darwin":
@@ -45,17 +68,6 @@ _here = os.path.dirname(os.path.abspath(__file__))
 _repo_root = os.path.dirname(_here)
 _src_dir = os.path.join(_repo_root, "src")
 KERNEL_DIR = os.path.join(_repo_root, "kernels")
-
-# Match the Makefile's run-cpu target (OMP_NUM_THREADS/OMP_PROC_BIND=close/
-# OMP_PLACES=cores). Without this, reconstruct_cpu's OpenMP threads are
-# free to migrate across cores/sockets during a run -- observed on kale
-# as per-epoch fp_cpu time climbing steadily (5.5s -> 14s+ over ~25
-# epochs) instead of staying flat, consistent with threads drifting out
-# of cache-friendly placement over time. Set only if the caller hasn't
-# already exported these, so an explicit environment still wins.
-os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count() or 1))
-os.environ.setdefault("OMP_PROC_BIND", "close")
-os.environ.setdefault("OMP_PLACES", "cores")
 
 # Fail loudly and specifically at import time. Without this, a relocated
 # pybind_backend/ or a missing kernel file surfaces as
