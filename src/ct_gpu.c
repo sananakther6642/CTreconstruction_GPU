@@ -257,6 +257,14 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "bp_image");
         cl->k_fp_img = clCreateKernel(cl->prog_image, "fp_image", &err);
         CL_CHECK(err, "fp_image");
+        /* G3 fusion (bp_image + vol_update_img) -- kernel lives in the
+         * same source (bp_image.cl) so it's created here regardless of
+         * IMAGE vs OPT, but only ever launched from the plain gpu-img
+         * path (reconstruct_gpu). Cheap to create unconditionally,
+         * consistent with how the other kernels in this block are
+         * handled. */
+        cl->k_bp_img_update = clCreateKernel(cl->prog_image, "bp_image_update", &err);
+        CL_CHECK(err, "bp_image_update");
         /* float_to_half only exists in the compiled program when
          * HAVE_FP16 was defined (see kernels/fp_image.cl's #ifdef) --
          * k_f2h stays NULL on devices without cl_khr_fp16, and --half
@@ -300,6 +308,7 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
             diag_print_kernel_info(cl->k_divide,  "proj_divide", cl->device);
             diag_print_kernel_info(cl->k_update,  "vol_update", cl->device);
             diag_print_kernel_info(cl->k_update_img, "vol_update_img", cl->device);
+            diag_print_kernel_info(cl->k_bp_img_update, "bp_image_update", cl->device);
         }
     }
 
@@ -318,6 +327,7 @@ void gpu_cleanup(CLState *cl)
     }
     if (cl->mode == GPU_MODE_IMAGE) {
         clReleaseKernel(cl->k_bp_img); clReleaseKernel(cl->k_fp_img);
+        clReleaseKernel(cl->k_bp_img_update);
         if (cl->k_f2h) clReleaseKernel(cl->k_f2h);
         clReleaseProgram(cl->prog_image);
     }
@@ -328,6 +338,7 @@ void gpu_cleanup(CLState *cl)
         clReleaseKernel(cl->k_divide_preproc_img); clReleaseKernel(cl->k_update_img);
         clReleaseKernel(cl->k_cone_hw);
         clReleaseKernel(cl->k_fp_img); clReleaseKernel(cl->k_bp_img);
+        clReleaseKernel(cl->k_bp_img_update);
         if (cl->k_f2h) clReleaseKernel(cl->k_f2h);
         clReleaseProgram(cl->prog_opt);
         clReleaseProgram(cl->prog_image);
@@ -1054,6 +1065,12 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     int Nxz = p->Volumen_num_xz, Ny = p->Volumen_num_y;
     int W   = p->detector_width,  H  = p->detector_height;
     int np  = p->num_projs;
+    /* Needed by the G3 fused bp_image_update call below (float32
+     * GPU_MODE_IMAGE) -- run_bp_image/run_bp_buffer compute their own
+     * copies of these locally since they're separate functions; this one
+     * is inlined directly into reconstruct_gpu's epoch loop instead. */
+    float SOD = (float)p->SOD, SDD = (float)p->SDD;
+    float vs  = (float)p->voxelSize, px = (float)p->pixelSize;
 
     size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
     size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
@@ -1254,44 +1271,85 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
          * that writes straight into ratio_img_buf -- no d_ratio
          * intermediate buffer, no buffer->image copy. Buffer mode is
          * unaffected: it still needs proj_divide's plain-buffer output
-         * for run_preprocess/run_bp_buffer, which don't use an image. */
-        if (cl->mode == GPU_MODE_BUFFER) {
-            cl_kernel k = cl->k_divide;
-            clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
-            clSetKernelArg(k,1,sizeof(cl_mem),&d_proj_b);
-            clSetKernelArg(k,2,sizeof(cl_mem),&d_ratio);
-            clSetKernelArg(k,3,sizeof(int),   &proj_n);
-            size_t gws=((size_t)proj_n + 3) / 4;
-            err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
-            CL_CHECK(err,"proj_divide");
-            run_preprocess(cl, p, d_ratio, d_ratio_prep);  /* fused: cone_weight + flip + transpose */
-            run_bp_buffer(cl, p, d_ratio_prep, d_ang_cs, d_bp_ratio, 0, np);
-        } else {
-            run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img_buf, 0, np);
-            run_bp_image(cl, p, ratio_img_buf, d_ang_cs, d_bp_ratio, 0, np);
-        }
-
-        /* v0 *= bp_ratio / bp_ones
+         * for run_preprocess/run_bp_buffer, which don't use an image.
          *
-         * vol_img fusion: image mode in float32 uses vol_update_img,
-         * which does the same update AND writes straight into vol_img,
-         * replacing the copy that used to run at the top of the NEXT
-         * epoch. --half keeps the plain vol_update (its vol_img is
-         * refreshed via float_to_half+copy above instead). Buffer mode
-         * has no vol_img at all, so it always uses plain vol_update. */
+         * G3 fusion (bp_image_update, kernels/bp_image.cl): float32
+         * GPU_MODE_IMAGE takes a further-fused path below instead of
+         * this block -- it skips the separate d_bp_ratio buffer and
+         * vol_update_img launch entirely, computing the backprojection
+         * sum and immediately applying v *= bp_ratio/bp_ones and the
+         * vol_img write in the same kernel invocation, at the same
+         * voxel. See that kernel's comment for why this is scoped to
+         * float32 GPU_MODE_IMAGE only (not --half, not gpu-opt/bp_opt,
+         * not the bp(ones) precompute) -- this function (reconstruct_gpu)
+         * is never called for GPU_MODE_OPT, so the only cases reaching
+         * the un-fused branches below are GPU_MODE_BUFFER and
+         * GPU_MODE_IMAGE with --half. */
         if (cl->mode == GPU_MODE_IMAGE && !p->use_half_vol) {
-            cl_kernel k = cl->k_update_img;
-            clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
-            clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
-            clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
-            clSetKernelArg(k,3,sizeof(cl_mem),&vol_img);
-            clSetKernelArg(k,4,sizeof(int),   &Nxz);
-            clSetKernelArg(k,5,sizeof(int),   &Ny);
-            clSetKernelArg(k,6,sizeof(int),   &vol_n);
-            size_t gws=((size_t)vol_n + 3) / 4;
-            err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
-            CL_CHECK(err,"vol_update_img");
+            run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img_buf, 0, np);
+
+            cl_kernel k = cl->k_bp_img_update;
+            clSetKernelArg(k, 0, sizeof(cl_mem), &ratio_img_buf);
+            clSetKernelArg(k, 1, sizeof(cl_mem), &d_ang_cs);
+            clSetKernelArg(k, 2, sizeof(cl_mem), &d_vol);
+            clSetKernelArg(k, 3, sizeof(cl_mem), &d_bp_ones);
+            clSetKernelArg(k, 4, sizeof(cl_mem), &vol_img);
+            clSetKernelArg(k, 5, sizeof(int),    &Nxz);
+            clSetKernelArg(k, 6, sizeof(int),    &Ny);
+            clSetKernelArg(k, 7, sizeof(int),    &W);
+            clSetKernelArg(k, 8, sizeof(int),    &H);
+            clSetKernelArg(k, 9, sizeof(int),    &np);
+            clSetKernelArg(k,10, sizeof(float),  &SOD);
+            clSetKernelArg(k,11, sizeof(float),  &SDD);
+            clSetKernelArg(k,12, sizeof(float),  &vs);
+            clSetKernelArg(k,13, sizeof(float),  &px);
+            int ip_start0 = 0;
+            clSetKernelArg(k,14, sizeof(int),    &ip_start0);
+            clSetKernelArg(k,15, sizeof(int),    &np);
+
+            size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
+            size_t lws[3] = {4, 4, 16};  /* same shape as run_bp_image */
+            {
+                const char *bp_lws_env = getenv("BP_LWS");
+                if (bp_lws_env) {
+                    unsigned long a=4, b=4, c=16;
+                    if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
+                        lws[0]=a; lws[1]=b; lws[2]=c;
+                    }
+                }
+            }
+            for (int d=0;d<3;d++)
+                if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
+            err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
+            CL_CHECK(err, "bp_image_update");
         } else {
+            if (cl->mode == GPU_MODE_BUFFER) {
+                cl_kernel k = cl->k_divide;
+                clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
+                clSetKernelArg(k,1,sizeof(cl_mem),&d_proj_b);
+                clSetKernelArg(k,2,sizeof(cl_mem),&d_ratio);
+                clSetKernelArg(k,3,sizeof(int),   &proj_n);
+                size_t gws=((size_t)proj_n + 3) / 4;
+                err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
+                CL_CHECK(err,"proj_divide");
+                run_preprocess(cl, p, d_ratio, d_ratio_prep);  /* fused: cone_weight + flip + transpose */
+                run_bp_buffer(cl, p, d_ratio_prep, d_ang_cs, d_bp_ratio, 0, np);
+            } else {
+                /* GPU_MODE_IMAGE && use_half_vol -- the only other case
+                 * that reaches here (see the comment above). */
+                run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img_buf, 0, np);
+                run_bp_image(cl, p, ratio_img_buf, d_ang_cs, d_bp_ratio, 0, np);
+            }
+
+            /* v0 *= bp_ratio / bp_ones. GPU_MODE_IMAGE reaching this point
+             * is always --half (the plain-float32 case took the G3 fused
+             * branch above) -- --half keeps plain vol_update since its
+             * vol_img is refreshed via float_to_half+copy above instead,
+             * so vol_update_img (the unfused float32 update+image-write)
+             * is now dead code and has been removed; use it again only
+             * if a case that needs it (float32, non-fused) is reintroduced.
+             * Buffer mode has no vol_img at all, so it always uses plain
+             * vol_update too. */
             cl_kernel k = cl->k_update;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
