@@ -23,6 +23,11 @@
 #include <string>
 #include <vector>
 
+#if defined(__x86_64__) || defined(__i386__)
+#include <pmmintrin.h>
+#include <xmmintrin.h>
+#endif
+
 #include "utils.h"
 #include "ct_cpu.h"
 #include "ct_gpu.h"
@@ -30,6 +35,36 @@
 namespace py = pybind11;
 
 namespace {
+
+/* Enable flush-to-zero / denormals-are-zero, matching what the CLI binary
+ * gets for free and this extension does not.
+ *
+ * -ffast-math implies -ffast-math's FTZ/DAZ only by linking crtfastmath.o
+ * into the *main executable*, where it sets MXCSR before main() runs. The
+ * CLI links its own main.c that way. Here the main executable is python3,
+ * built without -ffast-math -- compiling this .so with the flag does not
+ * set MXCSR, so the extension computed denormals that the CLI flushed.
+ *
+ * Measured on kale: fp_cpu's per-epoch time was flat ~3.17s for ~20 epochs,
+ * then climbed to 9.2s by epoch 30 and slowly recovered, tracking MLEM's
+ * background voxels decaying through the float32 denormal range (~1e-38 to
+ * ~1e-45) on their way to zero. Denormal arithmetic costs roughly 100x a
+ * normal op. The curve reproduced to the hundredth of a second across
+ * separate calls in one process and across thread counts -- deterministic
+ * and data-dependent, which is what ruled out every environmental
+ * explanation (THP, NUMA, thermal, scheduling, allocator). With FTZ/DAZ
+ * set, fp_cpu holds 3.17s flat for all 40 epochs.
+ *
+ * MXCSR is per-thread, but OpenMP workers are created after this runs and
+ * inherit it (verified: setting it on the main thread alone removed the
+ * slowdown from the parallel region). */
+void enable_flush_to_zero()
+{
+#if defined(__x86_64__) || defined(__i386__)
+    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+    _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+#endif
+}
 
 using FloatArr = py::array_t<float, py::array::c_style | py::array::forcecast>;
 using DoubleArr = py::array_t<double, py::array::c_style | py::array::forcecast>;
@@ -356,6 +391,8 @@ py::array_t<float> py_reconstruct_gpu_opt(
 
 PYBIND11_MODULE(ct_recon, m) {
     m.doc() = "CT cone-beam reconstruction (MLEM/OSEM), OpenCL + OpenMP backend";
+
+    enable_flush_to_zero();
 
     /* Line-buffer C stdout so the library's per-epoch progress printf()s
      * (there is no fflush anywhere in src/*.c) appear as they happen
