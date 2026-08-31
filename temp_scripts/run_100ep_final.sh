@@ -22,6 +22,27 @@ cd "$(dirname "$0")/.."
 DATA=/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5
 EPOCHS=100
 OUTDIR=results_100ep_$(date +%Y%m%d_%H%M%S)
+
+echo "=== $(date) : cleanup before run ==="
+# Stale markers/sentinels from an earlier run would make run_topic2_20ep.sh
+# (or a re-run of this script) think a step already finished when it
+# didn't -- clear them first, every time.
+rm -f cpu_done.marker run_100ep_final.DONE run_topic2_20ep.DONE
+# Stale root-level output_*.hdf5 from earlier ad-hoc testing this
+# session (make run-cpu/run-gpu-* write here by default) -- not this
+# script's own outputs (those go in $OUTDIR, timestamped, never
+# overwritten), but leaving old ones around risks someone eyeballing
+# the wrong file. Also drop old run_100ep_final*.log /
+# run_topic2_20ep*.log from any previous attempt.
+rm -f output_cpu.hdf5 output_gpu_buf.hdf5 output_gpu_img.hdf5 \
+      output_gpu_opt.hdf5 output_gpu_opt_512.hdf5 output_cpu_512.hdf5 \
+      output_gpu_buf_512.hdf5 output_gpu_img_512.hdf5
+rm -f run_100ep_final.log run_topic2_20ep.log topic2_20ep.log
+# Build artifacts -- 'make clean && make' below rebuilds these, but
+# clear first so a partial/interrupted previous build can't linger.
+rm -rf build
+echo "cleanup done."
+
 mkdir -p "$OUTDIR"
 
 echo "=== $(date) : build ==="
