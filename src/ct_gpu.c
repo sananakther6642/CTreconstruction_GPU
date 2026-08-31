@@ -424,23 +424,49 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
      * loads/angle/voxel with no texture cache — at 512^3 one unchunked
      * launch can exceed the ~10s driver timeout and reset the GPU). */
     const size_t Z_SLAB = 64;
+
+    /* Mirrors FP_BUFFER_SKIP_SLAB_FINISH (run_fp_buffer, above): the
+     * per-slab clFinish here is also what makes the SLOW-slab diagnostic
+     * possible (each slab individually timed). Skipping it (enqueue all
+     * slabs, sync once at the end) trades that diagnostic for fewer
+     * pipeline drains -- at 256^3, Z_SLAB=64 means only 4 slabs/call, so
+     * the expected win is small (a few percent at most). Off by default
+     * so the diagnostic stays on unless explicitly opted out of. */
+    int skip_slab_finish = 0;
+    {
+        const char *skip_env = getenv("BP_BUFFER_SKIP_SLAB_FINISH");
+        if (skip_env && atoi(skip_env) != 0) skip_slab_finish = 1;
+    }
+
     int slab_idx = 0;
     for (size_t z0 = 0; z0 < gws_full[2]; z0 += Z_SLAB) {
         size_t slab = (gws_full[2] - z0 < Z_SLAB) ? (gws_full[2] - z0) : Z_SLAB;
         size_t offset[3] = {0, 0, z0};
         size_t gws[3]    = {gws_full[0], gws_full[1], slab};
-        double t0 = get_time_sec();
-        err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, NULL);
-        CL_CHECK(err, "bp_buffer enqueue (slab)");
-        err = clFinish(cl->queue);
-        CL_CHECK(err, "bp_buffer slab finish");
-        double dt = get_time_sec() - t0;
-        /* flag any slab that takes much longer than a healthy slab should —
-         * pinpoints WHICH slab stalls within a slow epoch, since epoch
-         * totals alone can't distinguish "one bad slab" from "uniformly
-         * slower this epoch" */
-        if (dt > 2.0)
-            printf("    [bp_buffer slab %d, z0=%zu] %.3f s (SLOW)\n", slab_idx, z0, dt);
+
+        if (skip_slab_finish) {
+            /* batched path: enqueue only, no per-slab sync/timing/watchdog.
+             * The queue is in-order, so the final clFinish after this loop
+             * (called by the caller before reading results) still ensures
+             * completion -- just without per-slab visibility. */
+            cl_event evt;
+            err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, &evt);
+            CL_CHECK(err, "bp_buffer enqueue (slab, batched)");
+            clReleaseEvent(evt);
+        } else {
+            double t0 = get_time_sec();
+            err = clEnqueueNDRangeKernel(cl->queue, k, 3, offset, gws, lws, 0, NULL, NULL);
+            CL_CHECK(err, "bp_buffer enqueue (slab)");
+            err = clFinish(cl->queue);
+            CL_CHECK(err, "bp_buffer slab finish");
+            double dt = get_time_sec() - t0;
+            /* flag any slab that takes much longer than a healthy slab should —
+             * pinpoints WHICH slab stalls within a slow epoch, since epoch
+             * totals alone can't distinguish "one bad slab" from "uniformly
+             * slower this epoch" */
+            if (dt > 2.0)
+                printf("    [bp_buffer slab %d, z0=%zu] %.3f s (SLOW)\n", slab_idx, z0, dt);
+        }
         slab_idx++;
     }
 }
@@ -981,11 +1007,9 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 
     /* Build float2 cos/sin LUT for bp_buffer */
     float *ang_cs = (float *)malloc(np * 2 * sizeof(float));
-    float *ang_f  = (float *)malloc(np * sizeof(float));
     for (int i=0;i<np;i++) {
         ang_cs[2*i]   = (float)cos(p->angles[i]);
         ang_cs[2*i+1] = (float)sin(p->angles[i]);
-        ang_f[i]      = (float)p->angles[i];
     }
 
     /* ── Allocate device buffers ── */
@@ -996,9 +1020,6 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     cl_mem d_ang_cs = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR,
                                       np*2*sizeof(float), ang_cs, &err);
     CL_CHECK(err, "d_ang_cs buf");
-    cl_mem d_angles = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR,
-                                      np*sizeof(float), ang_f, &err);
-    CL_CHECK(err, "d_angles");
 
     cl_mem d_vol = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
                                    vol_bytes, volume, &err);
@@ -1011,8 +1032,6 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     CL_CHECK(err, "d_ratio");
     cl_mem d_ratio_prep= clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
     CL_CHECK(err, "d_ratio_prep");
-    cl_mem d_proj_prep = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
-    CL_CHECK(err, "d_proj_prep");
     cl_mem d_bp_ratio  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes,  NULL, &err);
     CL_CHECK(err, "d_bp_ratio");
     cl_mem d_bp_ones   = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes,  NULL, &err);
@@ -1060,22 +1079,10 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     }
 
     /* ── Image objects for image mode ── */
-    cl_mem proj_img_array = NULL;
     cl_mem vol_img        = NULL;
     cl_image_format img_fmt = {CL_R, CL_FLOAT};
 
     if (cl->mode == GPU_MODE_IMAGE) {
-        /* proj image array */
-        cl_image_desc desc = {0};
-        desc.image_type       = CL_MEM_OBJECT_IMAGE2D_ARRAY;
-        desc.image_width      = (size_t)W;
-        desc.image_height     = (size_t)H;
-        desc.image_array_size = (size_t)np;
-        proj_img_array = clCreateImage(cl->ctx,
-            CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR, &img_fmt, &desc,
-            (void*)proj_measured, &err);
-        CL_CHECK(err,"proj_img_array");
-
         /* persistent vol image3D — CL_HALF_FLOAT halves texture bandwidth but
          * quantizes to ~3 decimal digits; use --half to opt in, default float32 */
         cl_image_format vol_fmt_img = p->use_half_vol
@@ -1261,15 +1268,12 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 
     /* Cleanup */
     clReleaseMemObject(d_proj_meas);
-    clReleaseMemObject(d_proj_prep);
-    clReleaseMemObject(d_angles);
     clReleaseMemObject(d_vol);
     clReleaseMemObject(d_proj_b);
     clReleaseMemObject(d_ratio);
     clReleaseMemObject(d_ratio_prep);
     clReleaseMemObject(d_bp_ratio);
     clReleaseMemObject(d_bp_ones);
-    if (proj_img_array) clReleaseMemObject(proj_img_array);
     if (vol_img)        clReleaseMemObject(vol_img);
     if (d_vol_half_img) clReleaseMemObject(d_vol_half_img);
     if (ratio_img_buf)  clReleaseMemObject(ratio_img_buf);
@@ -1277,7 +1281,6 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     clReleaseMemObject(cl->d_R_mats);
     clReleaseMemObject(cl->d_T_vecs);
     free(ang_cs);
-    free(ang_f);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1320,22 +1323,17 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     size_t vol_bytes  = (size_t)Nxz * Nxz * Ny * sizeof(float);
     size_t proj_bytes = (size_t)np  * H   * W  * sizeof(float);
 
-    /* Build float2 cos/sin LUT + raw float angles for fp_image */
+    /* Build float2 cos/sin LUT for fp_image */
     float *ang_cs = (float *)malloc(np * 2 * sizeof(float));
-    float *ang_f  = (float *)malloc(np * sizeof(float));
     for (int i = 0; i < np; i++) {
         ang_cs[2*i]   = (float)cos(p->angles[i]);
         ang_cs[2*i+1] = (float)sin(p->angles[i]);
-        ang_f[i]      = (float)p->angles[i];
     }
 
     /* Device buffers */
     cl_mem d_ang_cs = clCreateBuffer(cl->ctx,
         CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR, np*2*sizeof(float), ang_cs, &err);
     CL_CHECK(err, "d_ang_cs");
-    cl_mem d_angles = clCreateBuffer(cl->ctx,
-        CL_MEM_READ_ONLY|CL_MEM_COPY_HOST_PTR, np*sizeof(float), ang_f, &err);
-    CL_CHECK(err, "d_angles opt");
 
     cl_mem d_proj_meas = clCreateBuffer(cl->ctx,
         CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR, proj_bytes, (void*)proj_measured, &err);
@@ -1350,8 +1348,6 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     /* Kernel fusion: d_ratio and d_ratio_prep both removed --
      * run_divide_preprocess_img now fuses divide+preprocess and writes
      * straight into ratio_img, no intermediate buffers needed. */
-    cl_mem d_proj_prep = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
-    CL_CHECK(err, "d_proj_prep opt");
     cl_mem d_bp_ratio  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
     CL_CHECK(err, "d_bp_ratio opt");
     /* OSEM: one normalizer bp(cone_weight(ones)) per
@@ -1512,16 +1508,16 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
      * MLEM loop -- the only structural difference from before is this
      * added (degenerate, S=1) inner loop.
      *
-     * fp is still computed over the FULL angle range every
-     * sub-iteration (via vol_img, which holds the current whole
-     * volume) -- OSEM restricts which angles' DATA feed the update,
-     * not how fp is computed; only the ratio/bp/update stage uses the
-     * subset's ip_start/ip_count. Practically this means fp_image
-     * still does a full pass each sub-iteration rather than a 1/S
-     * pass -- an accepted cost of this implementation, not a
-     * correctness issue (fp(v) for angles outside the subset is wasted
-     * work this sub-iteration, but harmless: the divide+bp+update
-     * below only reads the subset's slice of ratio_img).
+     * fp is now restricted to the subset's ip_start/ip_count (used to
+     * cover the full angle range every sub-iteration -- an accepted
+     * S-fold cost). Bit-identical to the full-range version: d_proj_b
+     * slices outside the subset now hold stale values from a previous
+     * sub-iteration instead of a fresh fp(v_current), but those slices
+     * are only ever consumed by run_divide_preprocess_img below (which
+     * still runs full-range and writes all of ratio_img), and bp_opt
+     * is launched with this same ip_start/ip_count -- it never reads
+     * ratio_img outside the subset. The stale fp values are computed,
+     * written into ratio_img, and discarded; the update is unchanged.
      */
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
@@ -1552,9 +1548,10 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             }
             /* float32 mode: no copy needed here -- vol_img was seeded before
              * the loop and is kept current by vol_update_img at the end of
-             * every sub-iteration (Phase B4). fp still covers the full
-             * angle range -- see function-level comment above. */
-            run_fp_image(cl, p, vol_img, d_proj_b, 0, np);
+             * every sub-iteration (Phase B4). fp now restricted to this
+             * subset -- see function-level comment above for why this is
+             * bit-identical to the previous full-range call. */
+            run_fp_image(cl, p, vol_img, d_proj_b, ip_start, ip_count);
 
             if (conv_log && s == 0)
                 clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
@@ -1656,9 +1653,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     if (v_cur_host)  free(v_cur_host);
 
     clReleaseMemObject(d_ang_cs);
-    clReleaseMemObject(d_angles);
     clReleaseMemObject(d_proj_meas);
-    clReleaseMemObject(d_proj_prep);
     clReleaseMemObject(d_vol);
     clReleaseMemObject(d_proj_b);
     clReleaseMemObject(d_bp_ratio);
@@ -1669,5 +1664,4 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     clReleaseMemObject(cl->d_R_mats);
     clReleaseMemObject(cl->d_T_vecs);
     free(ang_cs);
-    free(ang_f);
 }

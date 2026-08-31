@@ -22,6 +22,12 @@
 static void prep_proj_for_bp(const float *src, float *dst,
                               int np, int W, int H, float voxelSize)
 {
+    /* Each ip writes only its own dst slice -- no cross-iteration
+     * dependency, safe to parallelize. dst/src are documented as
+     * required-distinct (callers pass separate buffers), so no aliasing
+     * hazard. Was single-threaded while fp_cpu/bp_cpu around it use all
+     * cores; called every epoch. */
+    #pragma omp parallel for schedule(static)
     for (int ip = 0; ip < np; ip++) {
         const float *s = src + ip * H * W;
         float       *d = dst + ip * W * H;
