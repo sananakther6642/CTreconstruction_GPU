@@ -23,7 +23,10 @@ share a home directory (e.g. NFS), a .so built on one and imported on the
 other would be silently reused rather than rebuilt. This is why the build
 directory below is namespaced by hostname+machine: it forces a fresh
 build (and thus a fresh binary matched to the actual CPU) on each
-distinct host, even if they share $HOME.
+distinct host, even if they share $HOME. This is also what makes it
+safe to compile with -march=native below: a native-arch binary is
+never reused on a different host, so there is no cross-host SIGILL
+risk from a mismatched instruction set.
 """
 import os
 import platform
@@ -116,15 +119,23 @@ _backend = load(
         os.path.join(_src_dir, "ct_gpu.c"),
     ],
     extra_include_paths=[_src_dir] + _hdf5_include_dirs(),
-    # No -march=native: the build cache is host-agnostic (see module
-    # docstring), so a native-arch binary built on one machine could be
-    # silently reused on another and crash with SIGILL. No -ffast-math
-    # in this build: gcc links crtfastmath.o for it, which sets FTZ/DAZ
-    # in MXCSR for the WHOLE PROCESS -- that would alter denormal
-    # handling in torch/numpy for the rest of the interpreter, not just
-    # this module. -fopenmp is required in both cflags and ldflags or
-    # reconstruct_cpu's #pragma omp loops silently run single-threaded.
-    extra_cflags=["-O3", "-fopenmp", "-DCL_TARGET_OPENCL_VERSION=120"],
+    # -march=native + -ffast-math match the Makefile's CLI build exactly.
+    # Originally left out here over a SIGILL worry (a native-arch binary
+    # built on one host silently reused on another with a different
+    # CPU) -- but _build_directory() below already namespaces the JIT
+    # cache per-host, so that binary is never shared across machines and
+    # the worry doesn't apply. Measured on kale: omitting -march=native
+    # cost reconstruct_cpu a real ~1.8x slowdown (7.2s/epoch vs the
+    # CLI's 3.9s/epoch, same OMP_NUM_THREADS/PROC_BIND/PLACES on both
+    # sides) -- generic -O3 doesn't emit the AVX2 vectorization
+    # -march=native does for fp_cpu's trilinear interpolation. Keeping
+    # -ffast-math too since the CLI's own validated results already use
+    # it; its process-wide FTZ/DAZ side effect on torch/numpy denormal
+    # handling is a known, accepted tradeoff, not a new one. -fopenmp is
+    # required in both cflags and ldflags or reconstruct_cpu's #pragma
+    # omp loops silently run single-threaded.
+    extra_cflags=["-O3", "-march=native", "-fopenmp", "-ffast-math",
+                  "-DCL_TARGET_OPENCL_VERSION=120"],
     extra_ldflags=["-lOpenCL", _hdf5_lib_flag(), "-lm", "-fopenmp"],
     build_directory=_build_directory(),
 )

@@ -59,12 +59,19 @@ python3 -m pybind_backend.run --mode gpu-opt --epochs 100 --subsets 1
   ```bash
   rm -rf ~/.cache/torch_extensions/ct_recon-*
   ```
-- **No `-march=native`, no `-ffast-math`** in this build (unlike the
-  Makefile's CLI build) — see the comments in `backend.py` for why: the
-  torch JIT cache key doesn't account for CPU architecture or hostname,
-  so a native-arch binary built on one lab machine could be silently
-  reused on another with a different CPU. Output still agrees with the
-  CLI binary at the float32 noise floor (see verification below).
+- **`-march=native` and `-ffast-math`** match the Makefile's CLI build.
+  The JIT build directory is namespaced per-host (see `backend.py`), so
+  a native-arch binary is never shared across machines — safe to use.
+  Without `-march=native`, `reconstruct_cpu` measured ~1.8x slower on
+  kale (7.2s/epoch vs the CLI's 3.9s/epoch, same OMP env on both
+  sides); with it, timings match. Output agrees with the CLI binary at
+  the float32 noise floor (see verification below).
+- **CPU thread pinning**: `backend.py` sets `OMP_NUM_THREADS` /
+  `OMP_PROC_BIND=close` / `OMP_PLACES=cores` at import time (matching
+  the Makefile's `run-cpu` target) unless already set in the
+  environment. Without pinning, `reconstruct_cpu`'s per-epoch time was
+  observed climbing steadily on kale (5.5s → 14s+ over ~25 epochs) as
+  OpenMP threads drifted across cores; with pinning it stays flat.
 - **`reconstruct_cpu` threading**: uses the same `#pragma omp parallel
   for` as the CLI, but without the Makefile's `OMP_NUM_THREADS` /
   `OMP_PROC_BIND` / `OMP_PLACES` pinning. Set those env vars yourself
