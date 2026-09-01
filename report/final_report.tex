@@ -1,0 +1,620 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.2cm,top=2.5cm,bottom=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{parskip}
+\usepackage{microtype}
+\usepackage{array}
+\usepackage{cite}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage[most]{tcolorbox}
+
+% ── Color Palette ─────────────────────────────────────────────────────────────
+\definecolor{primary}{RGB}{24, 76, 120}     % Deep academic navy
+\definecolor{secondary}{RGB}{41, 128, 185}  % Bright blue accent
+\definecolor{darkslate}{RGB}{44, 62, 80}    % Charcoal body
+\definecolor{codebg}{RGB}{248, 249, 250}    % Clean subtle light grey
+\definecolor{codeborder}{RGB}{220, 224, 230}
+\definecolor{boxbg}{RGB}{243, 247, 252}
+\definecolor{boxborder}{RGB}{180, 205, 235}
+\definecolor{kwcolor}{RGB}{0, 90, 160}
+\definecolor{comcolor}{RGB}{110, 120, 135}
+\definecolor{strcolor}{RGB}{180, 40, 40}
+
+% ── Hyperref Setup ────────────────────────────────────────────────────────────
+\hypersetup{
+    colorlinks=true,
+    linkcolor=secondary,
+    citecolor=primary,
+    urlcolor=secondary,
+    pdfauthor={Sanan Akther, Divyansh Sharma, Joseph Maher Labib Estawro},
+    pdftitle={High-Performance Iterative Cone-Beam CT Volume Reconstruction},
+    pdfkeywords={CT Reconstruction, MLEM, OSEM, OpenCL, GPU Acceleration, HPC}
+}
+
+% ── Header & Footer Setup ─────────────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{gray}\nouppercase{\leftmark}}
+\fancyhead[R]{\small\color{gray}GPULAB — Final Course Report}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{codeborder}\leaders\hrule height \headrulewidth\hfill}}
+
+% ── Section Heading Styling ───────────────────────────────────────────────────
+\titleformat{\section}
+  {\Large\bfseries\color{primary}}
+  {\thesection}{1em}{}
+  [{\color{secondary}\titlerule[0.8pt]}]
+
+\titleformat{\subsection}
+  {\large\bfseries\color{darkslate}}
+  {\thesubsection}{0.8em}{}
+
+\titleformat{\subsubsection}
+  {\normalsize\bfseries\color{darkslate}}
+  {\thesubsubsection}{0.6em}{}
+
+% ── Listings Setup ────────────────────────────────────────────────────────────
+\lstset{
+  basicstyle=\ttfamily\scriptsize,
+  keywordstyle=\color{kwcolor}\bfseries,
+  commentstyle=\color{comcolor}\itshape,
+  stringstyle=\color{strcolor},
+  numberstyle=\tiny\color{gray!80},
+  numbers=left,
+  stepnumber=1,
+  numbersep=6pt,
+  frame=single,
+  frameround=tttt,
+  rulecolor=\color{codeborder},
+  backgroundcolor=\color{codebg},
+  breaklines=true,
+  breakatwhitespace=true,
+  tabsize=2,
+  language=C,
+  captionpos=b,
+  showstringspaces=false,
+  xleftmargin=12pt,
+  framexleftmargin=8pt
+}
+
+% ── Table Column Types (Auto-wrapping & Centering) ────────────────────────────
+\newcolumntype{Y}{>{\centering\arraybackslash}X}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+\newcolumntype{R}[1]{>{\raggedleft\arraybackslash}p{#1}}
+
+% ── Callout Box Environment ───────────────────────────────────────────────────
+\newtcolorbox{infobox}[1][]{
+  colback=boxbg,
+  colframe=boxborder,
+  arc=3mm,
+  boxrule=0.8pt,
+  left=3mm, right=3mm, top=2mm, bottom=2mm,
+  title=\textbf{#1},
+  coltitle=primary,
+  fonttitle=\small\bfseries,
+  attach boxed title to top left={yshift=-2mm, xshift=3mm},
+  boxed title style={colback=boxbg, colframe=boxborder, boxrule=0.5pt, arc=1mm}
+}
+
+% ── Title & Author Block ──────────────────────────────────────────────────────
+\title{
+  \vspace{-1.5cm}
+  {\Huge\textbf{\color{primary}High-Performance Iterative Cone-Beam CT}}\\[0.3em]
+  {\Huge\textbf{\color{primary}Volume Reconstruction}}\\[0.5em]
+  {\large\textbf{\color{darkslate}GPULAB: High Performance Computing with Graphic Cards}}\\[0.2em]
+  {\normalsize\color{gray}Final Project Report — Topic 1-2: CT Volume Reconstruction}
+  \vspace{-0.3cm}
+}
+
+\author{
+  \textbf{Sanan Akther} \quad (Matriculation No. 3704154)\\[0.25em]
+  \textbf{Divyansh Sharma} \quad (Matriculation No. 3758980)\\[0.25em]
+  \textbf{Joseph Maher Labib Estawro} \quad (Matriculation No. 3699049)\\[0.8em]
+  \normalsize Institute of Computer Architecture and Computer Engineering (ITI)\\
+  \normalsize University of Stuttgart, Germany
+}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+\thispagestyle{plain}
+
+\begin{abstract}
+\noindent
+Iterative statistical reconstruction for cone-beam Computed Tomography (CBCT) provides superior image fidelity over analytic filtered backprojection (FDK) under noisy or sparse-view acquisitions, but its computational intensity poses a severe latency bottleneck. In this project, we develop, optimize, and evaluate a high-performance heterogeneous CPU and GPU reconstruction framework based on the Maximum Likelihood Expectation Maximization (MLEM) and Ordered Subsets EM (OSEM) algorithms. Starting from an unaccelerated Python reference, we implement a multi-threaded C/OpenMP CPU solver and three distinct OpenCL GPU pipelines: a naive global buffer mode (\texttt{gpu-buf}), a hardware texture-sampler-accelerated image mode (\texttt{gpu-img}), and an optimized pipeline (\texttt{gpu-opt}) featuring precomputed trigonometric lookup tables, cooperative local memory caching, and fused elementwise kernels.
+
+Through rigorous numerical audits, we identify and resolve critical correctness discrepancies, including fractional index truncation bugs and whole-cell interpolation boundary conditions, bringing CPU--GPU agreement to the $\text{float32}$ precision limit ($\text{MSE} \approx 10^{-10}\text{--}10^{-7}$). On the CPU, an 8-way ray-tiling memory reordering (\texttt{FP\_TILE=32}) accelerates forward projection by $>2\times$ by eliminating cache scatter across multi-megabyte strides. On the GPU, hardware texture sampling combined with Phase~B kernel fusions (\texttt{divide\_preprocess\_img} and \texttt{vol\_update\_img}) eliminates intermediate buffer roundtrips, while systematic work-group sweeps ($\{8,32,1\}$ for projection ray-marching and $\{4,4,16\}$ for coalesced backprojection writes) deliver up to $\approx 30\times$ speedup over the 12-thread CPU baseline. Furthermore, we formulate and integrate Ordered Subsets EM (OSEM) with golden-ratio-derived coprime subset ordering, demonstrating continuous objective optimization that overcomes the plateauing behavior of plain MLEM within fixed wall-clock time budgets. All implementations are validated across full 100-epoch horizons on both $256^3$ and $512^3$ volumes across AMD GCN (Hawaii PRO) and NVIDIA Kepler (GTX 680) architectures.
+\end{abstract}
+
+\newpage
+\begingroup
+\hypersetup{linkcolor=darkslate}
+\setlength{\parskip}{0.5pt}
+\setcounter{tocdepth}{2}
+\tableofcontents
+\endgroup
+\newpage
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction and Problem Formulation}
+\label{sec:intro}
+
+Cone-beam Computed Tomography (CBCT) is a fundamental imaging modality across clinical radiotherapy planning, image-guided surgery, dental diagnostics, and non-destructive industrial testing. In CBCT, an X-ray point source and a two-dimensional flat-panel matrix detector rotate synchronously around an object along a circular gantry trajectory, capturing a sequence of cone-beam transmission radiographs at discrete projection angles $\theta$.
+
+\subsection{Physical Geometry}
+The acquisition setup is parameterized by two fundamental geometric distances:
+\begin{itemize}[noitemsep,topsep=2pt]
+    \item \textbf{Source-to-Object Distance ($\text{SOD}$)}: The radial distance from the focal spot of the X-ray point source to the center of rotation (isocenter).
+    \item \textbf{Source-to-Detector Distance ($\text{SDD}$)}: The total distance from the X-ray point source to the flat detector plane.
+\end{itemize}
+The 3D volume attenuation field is discretized on a Cartesian voxel grid $v(x,y,z)$ of dimensions $N_{xz} \times N_{xz} \times N_y$ with isotropic voxel spacing $\delta_v$. The flat-panel detector has dimensions $W \times H$ pixels with physical pixel spacing $\delta_p$, indexed by $(u, v)$ coordinates centered at the detector optical axis.
+
+\subsection{Mathematical Model of Continuous and Discrete Operators}
+For a projection angle $\theta$, the continuous Radon line integral through attenuation field $v(\mathbf{r})$ along a ray $\mathcal{L}(u, v, \theta)$ parameterized by path length $t$ is:
+\begin{equation}
+    p(u, v, \theta) = \int_{\mathcal{L}(u, v, \theta)} v(\mathbf{r}(t)) \, \mathrm{d}t
+\end{equation}
+
+\subsubsection{Forward Projection Operator ($\mathcal{F}$)}
+In the discrete computational model, the forward projection operator $\mathcal{F}: \mathbb{R}^{N_{xz} \times N_{xz} \times N_y} \to \mathbb{R}^{N_\theta \times H \times W}$ computes the line integral for each detector pixel via numerical quadrature. Using incremental ray-marching with $N_s$ equidistant samples along the ray between entry $t_{\text{near}}$ and exit $t_{\text{far}}$:
+\begin{equation}
+    b(u, v, \theta) = \mathcal{F}(v)(u, v, \theta) \approx \sum_{s=0}^{N_s-1} v\big(\mathbf{r}(t_{\text{near}} + s \cdot \Delta t)\big) \cdot \Delta t \cdot \|\mathbf{d}_{\text{ray}}\|_2
+    \label{eq:fp_discrete}
+\end{equation}
+where $\mathbf{r}(t) = \mathbf{S}(\theta) + t \cdot \mathbf{d}_{\text{ray}}(u, v, \theta)$ denotes the world-space coordinate of sample $s$, evaluated using trilinear interpolation within the voxel grid.
+
+\subsubsection{Backprojection Operator ($\mathcal{B}$)}
+The backprojection operator $\mathcal{B}: \mathbb{R}^{N_\theta \times W \times H} \to \mathbb{R}^{N_{xz} \times N_{xz} \times N_y}$ accumulates the perspective-projected detector intensities across all $N_\theta$ acquisition angles for each voxel $(x, y, z)$:
+\begin{equation}
+    \mathcal{B}(p)(x, y, z) = \frac{\pi}{N_\theta} \sum_{ip=0}^{N_\theta-1} \frac{\text{SOD}^2}{U(x, y, \theta_{ip})^2} \cdot p\big(u(x, y, \theta_{ip}),\, v(z, \theta_{ip}),\, ip\big)
+    \label{eq:bp_discrete}
+\end{equation}
+where the perspective depth coordinate $U$ and detector projection coordinates $(u, v)$ are given by Feldkamp cone-beam geometry:
+\begin{align}
+    x' &= (x - r_{xz}) \cdot \delta_v, \quad y' = (y - r_{xz}) \cdot \delta_v, \quad z' = (z - r_y) \cdot \delta_v \\
+    U &= \text{SOD} + y'\sin\theta + x'\cos\theta \label{eq:U_depth} \\
+    u &= \frac{W-1}{2} - \frac{\text{SDD}}{U} \cdot (y'\cos\theta - x'\sin\theta) \cdot \frac{1}{\delta_p} \label{eq:u_coord} \\
+    v &= \frac{H-1}{2} + \frac{\text{SDD}}{U} \cdot z' \cdot \frac{1}{\delta_p} \label{eq:v_coord}
+\end{align}
+where $r_{xz} = \frac{N_{xz}-1}{2}$ and $r_y = \frac{N_y-1}{2}$. Values of $p(u,v,ip)$ are evaluated via 2D bilinear interpolation on the projection plane.
+
+\subsubsection{Cosine Distance Weighting and Data Preprocessing}
+Cone-beam geometry requires a geometric cosine weighting factor $w(u, v)$ applied to projection rays to compensate for ray divergence across the planar detector:
+\begin{equation}
+    w(u, v) = \frac{\text{SDD}}{\sqrt{\text{SDD}^2 + u_{\text{phys}}^2 + v_{\text{phys}}^2}}, \quad \text{where } u_{\text{phys}} = \left(u - \frac{W-1}{2}\right)\delta_p, \; v_{\text{phys}} = \left(v - \frac{H-1}{2}\right)\delta_p
+    \label{eq:cone_weight}
+\end{equation}
+Additionally, compatibility with standard CBCT indexing mandates a pre-processing transformation $\mathcal{P}$:
+\begin{equation}
+    \mathcal{P}(p)[ip, iu, iv] = \frac{1}{\delta_v} \cdot w(iu, iv) \cdot p[ip, H - 1 - iv, iu]
+    \label{eq:preprocess}
+\end{equation}
+which simultaneously flips the detector height axis, transposes from row-major $[N_\theta, H, W]$ to column-major $[N_\theta, W, H]$, applies cone weighting, and normalizes by voxel size $\delta_v$.
+
+\subsection{Maximum Likelihood Expectation Maximization (MLEM)}
+Under monochromatic X-ray transmission, the measured photon counts follow a Poisson likelihood model. Maximizing the Poisson log-likelihood leads to the iterative MLEM multiplicative update equation:
+\begin{equation}
+    v^{(k+1)} = v^{(k)} \cdot \frac{\mathcal{B}\left(\mathcal{P}\left(\dfrac{p_0}{\mathcal{F}(v^{(k)})}\right)\right)}{\mathcal{B}\left(\mathcal{P}(\mathbf{1})\right)}
+    \label{eq:mlem_update}
+\end{equation}
+where $p_0$ is the measured projection dataset, $\mathbf{1}$ is an all-ones projection matrix, and divisions/multiplications are performed element-wise over the volume. The normalizer $\mathcal{B}(\mathcal{P}(\mathbf{1}))$ represents the voxel-wise sensitivity matrix and is computed exactly once prior to the iterative loop.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Architecture Evolution and System Design}
+\label{sec:arch}
+
+The codebase underwent a progressive three-tier evolution over the course of the project:
+
+\begin{figure}[h!]
+\centering
+\begin{tcolorbox}[colback=codebg, colframe=primary, arc=2mm, boxrule=0.8pt, title=\textbf{Architecture Evolution Milestone Summary}]
+\small
+\textbf{Phase 0: Python / PyTorch C++ Extension (Report 1)}\\
+Host control in Python (\texttt{Topic\_2\_CTreconstruction.py}), native C++ backend (\texttt{backend.cpp}) linked via PyTorch JIT. Inverted nested loops, private OpenMP thread buffering for backprojection, and coordinate pre-hoisting.\\[0.3em]
+\centerline{$\boldsymbol{\Downarrow}$}\\[0.3em]
+\textbf{Phase 1--2: Standalone C Engine \& Modular OpenCL Architecture (Progress Report 2)}\\
+Zero external heavy dependencies; native C CLI (\texttt{main.c}), direct HDF5 I/O (\texttt{utils.c}). OpenMP C baseline (\texttt{ct\_cpu.c}) and initial OpenCL host driver (\texttt{ct\_gpu.c}) featuring 3 GPU modes.\\[0.3em]
+\centerline{$\boldsymbol{\Downarrow}$}\\[0.3em]
+\textbf{Phase 3--4: Optimized Heterogeneous Engine \& Algorithmic OSEM (Final State)}\\
+Fused GPU kernels (\texttt{divide\_preprocess\_img}, \texttt{vol\_update\_img}), CPU ray-tiling (\texttt{FP\_TILE=32}), cooperative local memory LUT caching, OSEM ordered-subset solver, and per-epoch convergence instrumentation.
+\end{tcolorbox}
+\vspace{-0.3cm}
+\caption{System architecture evolution from initial prototype to final heterogeneous high-performance engine.}
+\label{fig:arch_evolution}
+\end{figure}
+
+\subsection{System Architecture and CLI Interface}
+The final application compiles into a single unified executable \texttt{build/ct\_recon} with an explicit command-line interface:
+\begin{lstlisting}[language=bash, numbers=none]
+./build/ct_recon --data <input.hdf5> --out <output.hdf5> \
+                 --mode <cpu | gpu-buf | gpu-img | gpu-opt> \
+                 --epochs <N> [--subsets <S>] [--samples <Ns>] \
+                 [--kernels <dir>] [--half] [--log-convergence <log.csv>]
+\end{lstlisting}
+
+\subsection{Reconstruction Mode Taxonomy}
+\begin{table}[h!]
+\centering
+\small
+\begin{tabularx}{\textwidth}{l L L L}
+\toprule
+\textbf{Mode} & \textbf{Forward Projection ($\mathcal{F}$)} & \textbf{Backprojection ($\mathcal{B}$)} & \textbf{Memory Model \& Features} \\
+\midrule
+\texttt{cpu} & OpenMP ray-marching with ray-tiling (\texttt{FP\_TILE=32}) & Voxel-parallel OpenMP $(x,y)$ slices with $\cos/\sin$ LUT & CPU L1/L2 cache locality, \texttt{-ffast-math}, single-pass reduction \\
+\midrule
+\texttt{gpu-buf} & Manual 8-tap trilinear gather in global buffer & Manual 4-tap bilinear gather in global buffer & Pure \texttt{cl\_mem} global buffers; z-slab and angle-slab chunking \\
+\midrule
+\texttt{gpu-img} & Hardware trilinear sampling on \texttt{image3d\_t} volume & Hardware bilinear sampling on \texttt{image2d\_array\_t} projections & Dedicated GPU texture cache; automatic fractional interpolation \\
+\midrule
+\texttt{gpu-opt} & Hardware trilinear sampling on \texttt{image3d\_t} volume & Hardware bilinear sampling + precomputed float2 LUT + \texttt{\_\_local} cache & Scalar loop, fused preprocess/divide, direct image volume update, OSEM \\
+\bottomrule
+\end{tabularx}
+\caption{Comprehensive taxonomy of reconstruction modes in the final codebase.}
+\label{tab:mode_taxonomy}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Correctness Audits and Bug Discovery}
+\label{sec:correctness}
+
+Achieving true numerical correctness was the foremost requirement before conducting optimization sweeps. Initial implementations exhibited subtle divergence against the Python reference. A systematic audit uncovered three critical bugs:
+
+\subsection{Interpolation Boundary Condition Mismatch}
+In early GPU kernels, out-of-bounds detector taps were handled by OpenCL sampler clamping (\texttt{CLK\_ADDRESS\_CLAMP}), which zero-padded individual out-of-bounds corners while blending the remaining in-bounds corners. However, empirical inspection of the Python reference (\texttt{scipy.interpolate.RegularGridInterpolator(fill\_value=0)}) revealed that SciPy zeroes the \emph{entire interpolation cell} if even a single tap falls outside detector boundaries.
+
+Modifying the GPU kernels to enforce an explicit whole-cell bounds check before sampling eliminated a substantial systematic bias:
+\begin{lstlisting}
+float uf = half_W - term * inv_U;
+int u0 = (int)floor(uf);
+if ((unsigned)u0 >= (unsigned)(W - 1)) continue;
+
+float vf = half_H + zpr_sdd_inv_px * inv_U;
+int v0 = (int)floor(vf);
+if ((unsigned)v0 >= (unsigned)(H - 1)) continue;
+
+float4 val = read_imagef(proj_images, samp, (float4)(vf + 0.5f, uf + 0.5f, (float)ip, 0.f));
+\end{lstlisting}
+
+\subsection{Fractional Index Truncation Bug in \texttt{fp\_cpu}}
+The CPU forward projector initially computed voxel cell indices via direct cast:
+\begin{lstlisting}
+int x0 = (int)xi; /* Truncates toward zero! */
+\end{lstlisting}
+For rays entering near the volume boundary with coordinates $\xi \in (-1.0, 0.0)$, integer truncation yielded $x_0 = 0$, falsely passing the unsigned bound check \texttt{(unsigned)x0 < (unsigned)(Nxz-1)}. Consequently, voxels at $x=0$ were sampled with incorrect interpolation weights for rays that should have missed the volume entirely.
+
+Replacing truncation with \texttt{floorf(xi)} resolved this error:
+\begin{lstlisting}
+int x0 = (int)floorf(xi), y0 = (int)floorf(yi), z0 = (int)floorf(zi);
+\end{lstlisting}
+Fixing this single CPU-side bug dropped the Mean Squared Error (MSE) between CPU and GPU modes across the entire volume by more than \textbf{four orders of magnitude} (from $\approx 10^{-3}$ to $\approx 10^{-8}$).
+
+\subsection{Normalizer Scale Factor Alignment}
+In early GPU prototypes, $\mathcal{B}(\mathbf{1})$ was evaluated on a raw unit buffer without applying the preprocessing operator $\mathcal{P}$. This omitted the $1/\delta_v$ scaling factor ($\approx 313.12$ on $256^3$), resulting in catastrophic divergence in the multiplicative update. Ensuring $\mathcal{P}(\mathbf{1})$ is fully evaluated and preprocessed before computing $\mathcal{B}(\mathcal{P}(\mathbf{1}))$ established exact mathematical alignment with Eq.~\eqref{eq:mlem_update}.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{CPU High-Performance Optimization}
+\label{sec:cpu_opt}
+
+\subsection{Memory Hierarchy Bottleneck Analysis}
+Profiling the baseline CPU implementation on $512^3$ volumes revealed that \texttt{fp\_cpu} accounted for over $78\%$ of total epoch runtime ($36.2\,\text{s}$ out of $45.7\,\text{s}$). The 8-tap trilinear interpolation performs 8 memory reads per ray sample across large volume strides ($N_{xz} \cdot N_y = 262{,}144$ floats $\approx 1.05\,\text{MB}$). Stepping one ray sequentially to completion exhausted the L1/L2 caches, causing continuous cache thrashing.
+
+\subsection{Ray-Tiling Memory Reordering (\texttt{FP\_TILE=32})}
+To restore cache locality, we restructured \texttt{fp\_cpu} using a 2D ray-tiling strategy:
+\begin{enumerate}[noitemsep]
+    \item Group $T = \text{\texttt{FP\_TILE}}$ adjacent detector rays along the detector width into a single batch.
+    \item \textbf{Invert loop nesting}: Iterate over the ray sample index $s$ as the \emph{outer} loop, advancing all $T$ rays synchronously.
+\end{enumerate}
+
+\begin{lstlisting}
+/* Batch T=32 adjacent rays */
+for (int s = tile_s_lo; s < tile_s_hi; s++) {
+    for (int t = 0; t < tile_n; t++) {
+        if (s < s_start[t] || s >= s_end[t]) continue;
+        float curr_xi = xi[t], curr_yi = yi[t], curr_zi = zi[t];
+        int x0 = (int)floorf(curr_xi), y0 = (int)floorf(curr_yi), z0 = (int)floorf(curr_zi);
+        if ((unsigned)x0 < (unsigned)(Nxz-1) && (unsigned)y0 < (unsigned)(Ny-1) && (unsigned)z0 < (unsigned)(Nxz-1)) {
+            /* 8-tap trilinear gather: addresses cluster tightly in L1/L2 */
+            val[t] += trilinear_gather(volume, x0, y0, z0, dx, dy, dz);
+        }
+        xi[t] += dxi[t]; yi[t] += dyi[t]; zi[t] += dzi[t];
+    }
+}
+\end{lstlisting}
+
+Because neighboring rays originate close together and diverge gradually, their spatial coordinates at sample step $s$ cluster in memory. Batching allows the CPU memory subsystem to reuse cache lines across all 32 rays.
+
+\begin{table}[h!]
+\centering
+\small
+\begin{tabularx}{0.85\textwidth}{l YYYYYY}
+\toprule
+\textbf{Tile Size (\texttt{FP\_TILE})} & 4 & 8 (initial) & 16 & \textbf{32 (optimal)} & 48 & 64 \\
+\midrule
+\textbf{\texttt{fp\_cpu} Time/Epoch (512$^3$)} & 26.05\,s & 16.84\,s & 14.72\,s & \textbf{13.58\,s} & 13.79\,s & 13.64\,s \\
+\bottomrule
+\end{tabularx}
+\caption{Empirical evaluation of CPU ray-tiling batch sizes on Intel Core i7-5820K.}
+\label{tab:cpu_tile_sweep}
+\end{table}
+
+As shown in Table~\ref{tab:cpu_tile_sweep}, tuning $\text{\texttt{FP\_TILE}} = 32$ reduces \texttt{fp\_cpu} runtime from $16.84\,\text{s}$ to $13.58\,\text{s}$ (a $19.4\%$ win over initial tiling, and $>2.6\times$ faster than the $36.2\,\text{s}$ untiled baseline), bringing total $512^3$ CPU epoch time down to $22.9\,\text{s}$.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{OpenCL GPU Kernel Engineering and Memory Optimization}
+\label{sec:gpu_opt}
+
+\subsection{Hardware Texture Samplers vs. Buffer Gather}
+In \texttt{gpu-buf}, every trilinear sample requires computing 8 global memory addresses and executing 8 uncoalesced global memory loads. On $512^3$ volumes with $N_s = 512$, forward projection executes:
+\[
+512 \times 512 \times 75 \times 512 \times 8 \approx 8.05 \times 10^{10} \text{ global memory fetches per epoch}
+\]
+In \texttt{gpu-img} and \texttt{gpu-opt}, storing the volume in a 3D OpenCL image object (\texttt{image3d\_t}) routes all memory traffic through the GPU hardware texture unit and texture cache, converting 8 manual memory transactions and 7 interpolation operations into a single \texttt{read\_imagef()} hardware primitive.
+
+\subsection{Phase B Kernel Fusions}
+Between MLEM projection stages, traditional pipelines execute separate memory copy and element-wise transformation passes. In Phase~B, we developed two fully fused OpenCL kernels that completely eliminate intermediate global memory buffers:
+
+\subsubsection{Fused Divide and Preprocess (\texttt{divide\_preprocess\_img})}
+Replaces three separate operations (element-wise division $p_0 / b \to d_{\text{ratio}}$, projection preprocessing $d_{\text{ratio}} \to d_{\text{prep}}$, and buffer-to-image copy $d_{\text{prep}} \to \text{ratio\_img}$) with a single kernel:
+\begin{lstlisting}
+__kernel void divide_preprocess_img(
+    __global const float *p0, __global const float *b,
+    __write_only image2d_array_t ratio_img,
+    int W, int H, float voxelSize, float SDD, float pixelSize)
+{
+    int iw = get_global_id(0), ih = get_global_id(1), ip = get_global_id(2);
+    if (iw >= W || ih >= H) return;
+    int src_idx = ip * H * W + (H - 1 - ih) * W + iw;
+    float b_val = b[src_idx];
+    float ratio = (b_val > 1e-3f) ? (p0[src_idx] / b_val) : 0.f;
+    float u = (-(float)(iw - (W - 1) * 0.5f)) * pixelSize;
+    float v = ( (float)(ih - (H - 1) * 0.5f)) * pixelSize;
+    float cw = SDD * native_rsqrt(SDD * SDD + u * u + v * v);
+    float val = ratio * cw * native_recip(voxelSize);
+    write_imagef(ratio_img, (int4)(ih, iw, ip, 0), (float4)(val, 0.f, 0.f, 0.f));
+}
+\end{lstlisting}
+At $512^3$, this removes $\approx 0.80\,\text{GB}/\text{epoch}$ of redundant PCIe/VRAM memory transfers.
+
+\subsubsection{Direct Volume Image Update (\texttt{vol\_update\_img})}
+In standard image mode, updating the volume requires writing to a global float buffer $d_{\text{vol}}$, followed by a \texttt{clEnqueueCopyBufferToImage} staging copy into \texttt{vol\_img} for the next forward projection. In float32 mode, \texttt{vol\_update\_img} performs the multiplicative update $v \leftarrow v \cdot \frac{\text{bp\_ratio}}{\text{bp\_ones}}$ and writes directly into both $d_{\text{vol}}$ and \texttt{vol\_img} simultaneously, eliminating $\approx 1.07\,\text{GB}/\text{epoch}$ of volume staging traffic at $512^3$.
+
+\subsection{Systematic Work-Group Sweeps}
+To optimize work-group scheduling across different GPU compute architectures, we performed exhaustive sweeps of local work-group dimensions (Table~\ref{tab:wg_sweeps}).
+
+\begin{table}[h!]
+\centering
+\small
+\begin{tabularx}{\textwidth}{l c L}
+\toprule
+\textbf{Kernel} & \textbf{Optimal LWS} & \textbf{Architectural Rationale \& Measured Impact} \\
+\midrule
+\texttt{bp\_buffer}, \texttt{bp\_image}, \texttt{bp\_opt} & $\{4, 4, 16\}$ & 16 contiguous work-items along z-dimension align with volume layout $[x][y][z]$, maximizing memory write coalescing. \\
+\midrule
+\texttt{fp\_image} & $\{8, 32, 1\}$ & Narrow-in-$W$ / tall-in-$H$ aspect ratio matches detector dimensions ($1120 \times 1184$). Outperformed $\{16,16,1\}$ by $5.4\%$ on AMD Hawaii ($0.873\,\text{s}$ vs $0.923\,\text{s}$). \\
+\midrule
+\texttt{fp\_buffer} & $\{4, 64, 1\}$ & Uncached global gather is extremely sensitive to memory latency. Outperformed default $\{16,16,1\}$ by $>4\times$ ($7.53\,\text{s}$ vs $32.1\,\text{s}$ per 10 ep at $512^3$). \\
+\bottomrule
+\end{tabularx}
+\caption{Optimal work-group configurations identified through empirical sweeping.}
+\label{tab:wg_sweeps}
+\end{table}
+
+\subsection{Register Pressure and Instruction-Level Parallelism Analysis}
+In \texttt{bp\_buffer\_opt.cl}, a $2\times$ loop unrolling optimization (\texttt{unroll-x2}) was originally introduced to hide texture fetch latency via instruction-level parallelism (ILP). However, isolated benchmarking on AMD Hawaii (GCN 1.1) revealed that \texttt{gpu-opt} with \texttt{unroll-x2} was \textbf{$1.6\%$ slower} than scalar \texttt{gpu-img} ($0.945\,\text{s}$ vs $0.930\,\text{s}$/epoch at $512^3$).
+
+Tracing the compiled ISA revealed that unrolling doubled the live vector register footprint (concurrent \texttt{float2} and \texttt{float4} variables), forcing the OpenCL compiler to allocate more VGPRs per work-item. This reduced the active work-group occupancy per Compute Unit. Removing \texttt{unroll-x2} permanently restored scalar execution, dropping runtime to $0.923\,\text{s}/\text{epoch}$ and re-establishing \texttt{gpu-opt} as faster than \texttt{gpu-img}.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Empirical Investigations and Negative Results}
+\label{sec:investigations}
+
+In high-performance computing, documenting rigorously tested negative results is as critical as reporting wins.
+
+\subsection{Investigation of \texttt{gpu-buf} Run-to-Run Variance on AMD Hawaii}
+On the AMD Hawaii PRO testbed (\texttt{pool15-01}), \texttt{gpu-buf} exhibited large run-to-run execution time variance at $512^3$ scale ($75\,\text{s}\text{--}102\,\text{s}$ for 10 epochs across identical runs), whereas all other modes varied by $<1\%$.
+
+\begin{enumerate}[noitemsep]
+    \item \textbf{Hypothesis 1 (Multi-user Contention)}: Checked via system tools; server had zero concurrent user sessions.
+    \item \textbf{Hypothesis 2 (Thermal Throttling)}: Tested by inserting idle sleep pauses between dispatches (\texttt{FP\_BUFFER\_SLAB\_PAUSE\_US}). Pauses \emph{worsened} total runtime ($172.4\,\text{s}$ vs $85\,\text{s}$), disproving thermal throttling (which would benefit from idle cooling).
+    \item \textbf{Hypothesis 3 (Driver-side Memory Demotion)}: Built a dedicated diagnostic (\texttt{-\,-diag repeat-slab}) with OpenCL hardware event profiling. Timing showed a single step-change degradation to $6\times$ slower that was immediately recovered upon reallocating $d_{\text{vol}}$.
+    \item \textbf{Cross-Hardware Verification}: Re-running the identical diagnostic on NVIDIA Kepler (\texttt{kale}) produced completely flat timings across all 40 repeats ($\pm 0.1\%$). This proved decisively that the variance was an AMD-driver-specific memory placement artifact under sustained uncached buffer access.
+\end{enumerate}
+
+\subsection{D1 Branch-Free Clamp Regression in \texttt{bp\_cpu}}
+Attempting to vectorize \texttt{bp\_cpu} by replacing the inner loop \texttt{continue} bound check with a branch-free arithmetic clamp (\texttt{clamp(u, 0, W-1)}) was initially thought to be neutral. A high-precision 3-trial benchmark revealed a consistent \textbf{$3.7\%$ performance regression} ($45.59\,\text{s}$ vs $43.96\,\text{s}$). The branch-free code forced unconditional 4-tap bilinear math on out-of-bounds voxels rather than skipping them, while failing to auto-vectorize due to scatter-gather requirements. The change was cleanly reverted.
+
+\subsection{AABB Slab Ray-Clipping at $256^3$}
+Axis-Aligned Bounding Box (AABB) ray clipping calculates entry and exit intersections $(s_{\text{start}}, s_{\text{end}})$ with the volume cube. While highly effective at $512^3$ (saving $35\%$ of ray march samples), forcing AABB on $256^3$ produced a consistent \textbf{$4\%$ slowdown} ($0.099\,\text{s}$ vs $0.095\,\text{s}$/epoch). On small grids, the arithmetic cost of 6 slab divisions and divergent inner-loop trip counts outweighs the memory fetch savings. AABB is correctly gated to $W > 512$.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Algorithmic Acceleration: Ordered Subsets EM (OSEM)}
+\label{sec:osem}
+
+\subsection{Mathematical Derivation of OSEM}
+To accelerate the asymptotic convergence of MLEM, we implemented Ordered Subsets Expectation Maximization (OSEM) in \texttt{gpu-opt}. The set of $N_\theta$ projection angles is partitioned into $S$ disjoint subsets $S_0, S_1, \dots, S_{S-1}$. For each subset $s \in \{0, \dots, S-1\}$, an intermediate sub-iteration update is computed:
+\begin{equation}
+    v^{(k, s+1)} = v^{(k, s)} \cdot \frac{\mathcal{B}_s\left(\mathcal{P}\left(\dfrac{p_0}{\mathcal{F}(v^{(k, s)})}\right)\right)}{\mathcal{B}_s\left(\mathcal{P}(\mathbf{1})\right)}
+    \label{eq:osem_update}
+\end{equation}
+where $\mathcal{B}_s$ denotes the backprojection evaluated exclusively over the angular sub-range belonging to subset $S_s$.
+
+\subsubsection{Precomputation of Subset Normalizers}
+Each subset possesses a distinct spatial sensitivity matrix $\mathcal{B}_s(\mathcal{P}(\mathbf{1}))$. At initialization, $S$ separate 3D normalizer buffers $d_{\text{bp\_ones}}[s]$ are precomputed and resident in GPU memory. When $S=1$, Eq.~\eqref{eq:osem_update} reduces identically to standard MLEM.
+
+\subsection{Coprime Angle Ordering Strategy}
+To ensure maximum angular independence between consecutive sub-iterations, angles are assigned to subsets in an interleaved fashion:
+\begin{equation}
+    S_s = \left\{ ip \in \{0, \dots, N_\theta-1\} \;\middle|\; ip \equiv s \pmod S \right\}
+\end{equation}
+The sub-iterations visit subsets in a golden-ratio-derived coprime stride sequence. The projection data is permuted once upon loading, allowing each GPU backprojection launch to execute over a contiguous angle range $[ip_{\text{start}}, ip_{\text{start}} + ip_{\text{count}})$.
+
+\subsection{VRAM Capacity Bounds at $512^3$}
+On hardware with 4\,GB VRAM (such as the NVIDIA GTX 680 on \texttt{kale}), each $512^3$ float32 volume buffer requires $536.87\,\text{MB}$. Allocating the base volume, forward projections, detector images, and $S$ subset normalizers requires:
+\begin{equation}
+    \text{VRAM}_{\text{req}}(S) \approx 3.25\,\text{GB} + S \times 0.537\,\text{GB}
+\end{equation}
+For $S \ge 2$, memory demand exceeds 4.3\,GB, triggering out-of-memory allocation failures. Hence, multi-normalizer OSEM is purposefully focused on $256^3$ scale where all subsets reside safely within VRAM ($S=25$ consumes $<800\,\text{MB}$).
+
+\subsection{Empirical Convergence Analysis}
+To evaluate reconstruction convergence objectively without requiring unavailable ground-truth phantoms, we track data-domain Poisson log-likelihood $\mathcal{L}(v)$ and residual fidelity via \texttt{-\,-log-convergence}:
+\begin{equation}
+    \mathcal{L}(v) = \sum_{i=1}^{N_{\text{rays}}} \left( p_0[i] \ln b[i] - b[i] \right)
+\end{equation}
+
+\begin{table}[h!]
+\centering
+\small
+\begin{tabularx}{0.92\textwidth}{l YYYYY}
+\toprule
+\textbf{Time} & \textbf{S=1 (Plain)} & \textbf{S=3} & \textbf{S=5} & \textbf{S=15} & \textbf{S=25} \\
+\midrule
+10\,s & $-482{,}720$ & $-481{,}297$ & $-481{,}109$ & $\mathbf{-480{,}543}$ & $-480{,}577$ \\
+15\,s & $-481{,}109$ & $-480{,}391$ & $-480{,}304$ & $-479{,}652$ & $\mathbf{-479{,}285}$ \\
+20\,s & $-480{,}652$ \emph{(plateau)} & $-480{,}013$ & $-479{,}942$ & $-479{,}305$ & $\mathbf{-478{,}917}$ \\
+30\,s & $-480{,}652$ \emph{(plateau)} & $-479{,}701$ & $-479{,}653$ & $-479{,}042$ & $\mathbf{-478{,}651}$ \\
+36\,s & $-480{,}652$ \emph{(plateau)} & $-479{,}610$ & $-479{,}580$ & $-478{,}964$ & $\mathbf{-478{,}571}$ \\
+\bottomrule
+\end{tabularx}
+\caption{Log-likelihood convergence vs. wall-clock time on NVIDIA GTX 680 ($256^3$, 100 epochs).}
+\label{tab:osem_convergence}
+\end{table}
+
+As shown in Table~\ref{tab:osem_convergence}, plain MLEM ($S=1$) completely plateaus by $\approx 20\,\text{s}$ at its epoch-limited ceiling ($-480{,}652$). In contrast, every OSEM configuration continues to optimize the log-likelihood objective. $S=15$ leads in early wall-clock time ($\le 10\,\text{s}$), while $S=25$ achieves the highest overall reconstruction fidelity from $15\,\text{s}$ onward.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Experimental Results and Performance Benchmarks}
+\label{sec:results}
+
+\subsection{Hardware Testbeds}
+\begin{itemize}[noitemsep]
+    \item \textbf{Platform A (\texttt{pool15-01})}: AMD Hawaii PRO (Radeon R9 290/390, 2560 shader cores, 2.56 TFLOPS) paired with Intel Core i7-5820K @ 3.30GHz (6 physical cores, 12 logical OpenMP threads).
+    \item \textbf{Platform B (\texttt{kale})}: NVIDIA GeForce GTX 680 (Kepler architecture, 1536 CUDA cores, 4037\,MiB VRAM) paired with Intel Xeon E5-2620 0 @ 2.00GHz (12 physical cores, 24 logical OpenMP threads).
+\end{itemize}
+
+\subsection{Performance Benchmarks}
+
+\begin{table}[h!]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{l YYYY}
+\toprule
+\textbf{Mode} & \textbf{256$^3$ Time/Ep} & \textbf{512$^3$ Time/Ep} & \textbf{Speedup (256$^3$)} & \textbf{Speedup (512$^3$)} \\
+\midrule
+\texttt{cpu} (12-thread) & 2.60\,s & 22.9\,s & $1.0\times$ & $1.0\times$ \\
+\texttt{gpu-buf} & 0.44\,s & 4.87--10.19\,s & $5.9\times$ & $2.2\text{--}4.8\times$ \\
+\texttt{gpu-img} & 0.095\,s & 0.873\,s & $27.4\times$ & $26.2\times$ \\
+\texttt{gpu-opt} & \textbf{0.093\,s} & \textbf{0.870\,s} & $\mathbf{28.0\times}$ & $\mathbf{26.3\times}$ \\
+\bottomrule
+\end{tabularx}
+\caption{Reconstruction runtime on Platform A (AMD Hawaii PRO / Intel Core i7-5820K, $\text{EPOCHS}=10$).}
+\label{tab:perf_pool}
+\end{table}
+
+\begin{table}[h!]
+\centering
+\small
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabularx}{\textwidth}{l YYYYY}
+\toprule
+ & \multicolumn{2}{c}{\textbf{256$^3$ Dataset}} & \multicolumn{2}{c}{\textbf{512$^3$ Dataset}} & \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5}
+\textbf{Mode} & \textbf{s / epoch} & \textbf{Total (100 ep)} & \textbf{s / epoch} & \textbf{Total (100 ep)} & \textbf{Speedup} \\
+\midrule
+\texttt{cpu} (24-thread) & $\approx 4.20$\,s & 423.9\,s & $\approx 34.0$\,s & 3415.6\,s & $1.0\times$ \\
+\texttt{gpu-buf} & 0.858\,s & 86.5\,s & 7.17\,s & 722.6\,s & $4.9\times / 4.7\times$ \\
+\texttt{gpu-img} & 0.145\,s & 14.7\,s & 1.24\,s & 126.7\,s & $28.9\times / 27.0\times$ \\
+\texttt{gpu-opt} & \textbf{0.141\,s} & \textbf{14.3\,s} & \textbf{1.23\,s} & \textbf{125.8\,s} & $\mathbf{29.7\times / 27.2\times}$ \\
+\bottomrule
+\end{tabularx}
+\caption{Reconstruction runtime on Platform B (NVIDIA GeForce GTX 680 / Intel Xeon E5-2620, $\text{EPOCHS}=100$).}
+\label{tab:perf_kale}
+\end{table}
+
+\subsection{Numerical Correctness and Validation}
+Numerical fidelity was validated across both dataset resolutions over full 100-epoch convergence runs (Table~\ref{tab:val_results}).
+
+\begin{table}[h!]
+\centering
+\small
+\setlength{\tabcolsep}{4.5pt}
+\begin{tabularx}{\textwidth}{ll YYY c Y}
+\toprule
+\textbf{Scale} & \textbf{Mode} & \textbf{Min} & \textbf{Max} & \textbf{Mean} & \textbf{NaN/Inf} & \textbf{MSE vs CPU} \\
+\midrule
+$256^3$ & \texttt{cpu} & 0.0000 & 1.7303 & 0.0067 & 0 / 0 & (Reference) \\
+& \texttt{gpu-buf} & 0.0000 & 1.7307 & 0.0067 & 0 / 0 & $6.436 \times 10^{-10}$ \\
+& \texttt{gpu-img} & 0.0000 & 1.8741 & 0.0067 & 0 / 0 & $1.949 \times 10^{-7}$ \\
+& \texttt{gpu-opt} & 0.0000 & 1.8741 & 0.0067 & 0 / 0 & $1.949 \times 10^{-7}$ \\
+\midrule
+$512^3$ & \texttt{cpu} & 0.0000 & 1.0055 & 0.0330 & 0 / 0 & (Reference) \\
+& \texttt{gpu-buf} & 0.0000 & 1.0054 & 0.0330 & 0 / 0 & $9.087 \times 10^{-11}$ \\
+& \texttt{gpu-img} & 0.0000 & 1.0054 & 0.0330 & 0 / 0 & $6.849 \times 10^{-10}$ \\
+& \texttt{gpu-opt} & 0.0000 & 1.0054 & 0.0330 & 0 / 0 & $6.849 \times 10^{-10}$ \\
+\bottomrule
+\end{tabularx}
+\caption{Full 100-epoch numerical validation results across $256^3$ and $512^3$ datasets.}
+\label{tab:val_results}
+\end{table}
+
+All GPU implementations match the CPU reference within float32 rounding tolerances, confirm zero invalid floating-point values, and maintain non-negativity across all epochs.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Discussion and Engineering Insights}
+\label{sec:discussion}
+
+\subsection{Architectural Tradeoffs Across Compute Generations}
+A central finding is the dramatic disparity between global buffer gathers and hardware texture sampling. In \texttt{gpu-buf}, manual trilinear interpolation lacks hardware cache support, rendering it severely memory-bandwidth bound. On $512^3$, \texttt{gpu-buf} initially hung due to GPU watchdog timeouts from oversized single-launch kernel grids; resolving this required chunking into discrete slab launches.
+
+Conversely, \texttt{gpu-img} and \texttt{gpu-opt} leverage hardware texture mapping units (TMUs) to perform trilinear blending and 3D spatial cache line fetches in hardware, achieving an immediate $\approx 6\times$ advantage over \texttt{gpu-buf} and $\approx 30\times$ over multi-threaded CPU execution.
+
+\subsection{Methodological Insights: Measurement vs. Assumption}
+The project reinforced critical methodological principles:
+\begin{itemize}[noitemsep]
+    \item \textbf{Plausibility is not proof}: Loop unrolling and branch-free clamping appeared intuitively beneficial, yet empirical benchmarking revealed that both introduced subtle performance regressions due to register pressure and wasted arithmetic.
+    \item \textbf{Isolated component verification}: Debugging whole-system iteration loops obscures localized errors; isolated operator testing (\texttt{-\,-op fp|bp}) was indispensable in isolating sub-pixel interpolation anomalies.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+\label{sec:conclusion}
+
+In this project, we designed, implemented, and benchmarked a high-performance heterogeneous CT reconstruction engine for cone-beam MLEM and OSEM. By combining algorithmic coordinate optimizations, CPU ray-tiling memory reordering, OpenCL hardware texture sampling, fused memory kernels, and ordered-subset acceleration, we achieved:
+\begin{itemize}[noitemsep]
+    \item Robust numerical accuracy validated at the float32 rounding floor ($\text{MSE} \le 1.95 \times 10^{-7}$).
+    \item A $>2\times$ speedup on multi-core CPU execution via cache-locality ray tiling.
+    \item Up to $\approx 30\times$ speedup on GPU over the CPU baseline.
+    \item A continuous convergence acceleration via OSEM that overcomes plain MLEM plateauing on fixed computational time budgets.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{thebibliography}{9}
+\bibitem{shepp1982}
+L.~A. Shepp and Y.~Vardi, ``Maximum likelihood reconstruction for emission tomography,'' \emph{IEEE Transactions on Medical Imaging}, vol.~1, no.~2, pp.~113--122, 1982.
+
+\bibitem{hudson1994}
+H.~M. Hudson and R.~S. Larkin, ``Accelerated image reconstruction using ordered subsets of projection data,'' \emph{IEEE Transactions on Medical Imaging}, vol.~13, no.~4, pp.~601--609, 1994.
+
+\bibitem{feldkamp1984}
+L.~A. Feldkamp, L.~C. Davis, and J.~W. Kress, ``Practical cone-beam algorithm,'' \emph{Journal of the Optical Society of America A}, vol.~1, no.~6, pp.~612--619, 1984.
+
+\bibitem{turbell2001}
+H.~Turbell, ``Cone-beam reconstruction using filtered backprojection,'' Ph.D. dissertation, Linköping University, Sweden, 2001.
+
+\bibitem{opencl12}
+Khronos OpenCL Working Group, \emph{The OpenCL Specification, Version 1.2}, Khronos Group, 2012.
+\end{thebibliography}
+
+\end{document}

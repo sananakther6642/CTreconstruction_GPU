@@ -24,11 +24,14 @@ SRCS = $(SRC_DIR)/main.c \
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
 TARGET = $(BUILD_DIR)/ct_recon
 
-.PHONY: all clean run-cpu run-gpu-buf run-gpu-img run-gpu-opt \
+.PHONY: all clean report run-cpu run-gpu-buf run-gpu-img run-gpu-opt \
                run-cpu-512 run-gpu-buf-512 run-gpu-img-512 run-gpu-opt-512 \
                run-python run-op-fp run-op-bp run-op-fp-512 run-op-bp-512
 
 all: $(BUILD_DIR) $(TARGET)
+
+report:
+	cd report && pdflatex final_report.tex && pdflatex final_report.tex
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
