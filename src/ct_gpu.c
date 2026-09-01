@@ -1118,10 +1118,27 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     /* proj_prep: [np*W*H] — preprocessed (flip+transpose+scale) layout for bp */
     cl_mem d_proj_b    = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
     CL_CHECK(err, "d_proj_b");
-    cl_mem d_ratio     = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
-    CL_CHECK(err, "d_ratio");
-    cl_mem d_ratio_prep= clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
-    CL_CHECK(err, "d_ratio_prep");
+    /* P1b (perf-512): d_ratio/d_ratio_prep are only ever bound to a
+     * kernel inside the GPU_MODE_BUFFER branch below (proj_divide's
+     * output and run_preprocess's output feeding run_bp_buffer) --
+     * image mode fuses divide+preprocess straight into ratio_img_buf
+     * and never touches these. Were allocated unconditionally
+     * regardless of mode: 2 * proj_bytes = 758.8 MiB wasted in
+     * gpu-img/gpu-opt at 512^3 (379.4 MiB each), on a card already at
+     * 97.7% occupancy in gpu-img -- this is a genuine VRAM leak in
+     * everything but buffer mode, not just an optimization. Gating
+     * allocation (and the matching release below) on the actual mode
+     * frees that headroom, which is what makes OSEM S>=2 feasible at
+     * 512^3 (previously S=1's own precompute block already peaked near
+     * the card's 4037 MiB limit -- see the 256^3-only VRAM comment near
+     * reconstruct_gpu_opt). */
+    cl_mem d_ratio = NULL, d_ratio_prep = NULL;
+    if (cl->mode == GPU_MODE_BUFFER) {
+        d_ratio = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+        CL_CHECK(err, "d_ratio");
+        d_ratio_prep = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
+        CL_CHECK(err, "d_ratio_prep");
+    }
     cl_mem d_bp_ratio  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes,  NULL, &err);
     CL_CHECK(err, "d_bp_ratio");
     cl_mem d_bp_ones   = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes,  NULL, &err);
@@ -1401,8 +1418,8 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     clReleaseMemObject(d_proj_meas);
     clReleaseMemObject(d_vol);
     clReleaseMemObject(d_proj_b);
-    clReleaseMemObject(d_ratio);
-    clReleaseMemObject(d_ratio_prep);
+    if (d_ratio)      clReleaseMemObject(d_ratio);
+    if (d_ratio_prep) clReleaseMemObject(d_ratio_prep);
     clReleaseMemObject(d_bp_ratio);
     clReleaseMemObject(d_bp_ones);
     if (vol_img)        clReleaseMemObject(vol_img);
