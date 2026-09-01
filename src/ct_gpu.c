@@ -572,8 +572,19 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &SDD);
     clSetKernelArg(k,12, sizeof(float),  &vs);
     clSetKernelArg(k,13, sizeof(float),  &px);
-    clSetKernelArg(k,14, sizeof(int),    &ip_start);
-    clSetKernelArg(k,15, sizeof(int),    &ip_count);
+    /* Was hardcoded "if (W > 512)" inside fp_buffer.cl; same default
+     * threshold, now overridable via FP_IMAGE_AABB (shared with
+     * run_fp_image -- one env var controls AABB on both fp paths) so
+     * its actual 512^3 benefit for gpu-buf specifically can be
+     * measured instead of assumed. */
+    int use_aabb = (W > 512) ? 1 : 0;
+    {
+        const char *aabb_env = getenv("FP_IMAGE_AABB");
+        if (aabb_env) use_aabb = atoi(aabb_env);
+    }
+    clSetKernelArg(k,14, sizeof(int),    &use_aabb);
+    clSetKernelArg(k,15, sizeof(int),    &ip_start);
+    clSetKernelArg(k,16, sizeof(int),    &ip_count);
 
     /* Hardware target switched from AMD Hawaii PRO,
      * GCN 1.1, 64-wide wavefront) to NVIDIA GTX 680 (Kepler,

@@ -270,6 +270,19 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
         if (dr_env && atoi(dr_env) != 0) diag_aabb_range = 1;
     }
 
+    /* Was hardcoded "if (W > 512)" at the AABB clip site below; same
+     * default threshold, now overridable via FP_IMAGE_AABB (shared with
+     * the GPU paths' identical env var, ct_gpu.c) so AABB's actual
+     * 512^3 benefit on CPU specifically can be measured instead of
+     * assumed -- previously this gate could not be turned off without
+     * editing source. Read once per call, matching diag_aabb_range's
+     * pattern above. */
+    int use_aabb = (W > 512) ? 1 : 0;
+    {
+        const char *aabb_env = getenv("FP_IMAGE_AABB");
+        if (aabb_env) use_aabb = atoi(aabb_env);
+    }
+
     /* constants for world→voxel mapping */
     float inv_sv_xz = (float)Nxz / sVoxel_xz;
     float inv_sv_y  = (float)Ny  / sVoxel_y;
@@ -358,10 +371,11 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
 
                     /* AABB slab clipping: tighten sample range for large
                      * detectors (many edge rays miss the volume entirely).
-                     * Same gate (W>512) and math as fp_image.cl/fp_buffer.cl
-                     * so CPU does the same work as GPU. */
+                     * Same math as fp_image.cl/fp_buffer.cl so CPU does the
+                     * same work as GPU; use_aabb (read once above, default
+                     * W>512) keeps the default gate but is now overridable. */
                     int s0 = 0, s1 = n_samples;
-                    if (W > 512) {
+                    if (use_aabb) {
                         float hxz = 0.5f * Nxz * vs;
                         float hy  = 0.5f * Ny  * vs;
                         float tmin = near_t, tmax = far_t;
