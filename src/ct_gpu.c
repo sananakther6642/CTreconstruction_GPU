@@ -1028,7 +1028,8 @@ static void run_fp_image(CLState *cl, const CBpara *p,
      * actually matters: fp produces the ratio driving every MLEM update, so
      * its error re-enters the loop each epoch, while bp's averages out over
      * 75 angles. Measured on GTX 680, 100 epochs, MSE vs CPU:
-     *   256^3  1.128e-07 -> 2.524e-09 (45x), 14.65s -> 21.34s
+     *   256^3  1.128e-07 -> 2.524e-09 (45x)
+     *            gpu-img 14.65s -> 21.34s, gpu-opt 14.20s -> 20.48s
      *   512^3  1.232e-09 -> 5.528e-10 (2.2x)
      * Off by default; unset leaves the hardware-filtered path untouched. */
     int tex_exact = 0;
