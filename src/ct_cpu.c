@@ -22,6 +22,12 @@
 static void prep_proj_for_bp(const float *src, float *dst,
                               int np, int W, int H, float voxelSize)
 {
+    /* Each ip writes only its own dst slice -- no cross-iteration
+     * dependency, safe to parallelize. dst/src are documented as
+     * required-distinct (callers pass separate buffers), so no aliasing
+     * hazard. Was single-threaded while fp_cpu/bp_cpu around it use all
+     * cores; called every epoch. */
+    #pragma omp parallel for schedule(static)
     for (int ip = 0; ip < np; ip++) {
         const float *s = src + ip * H * W;
         float       *d = dst + ip * W * H;
@@ -40,6 +46,11 @@ void cone_weight_cpu(float *proj, const CBpara *p)
     float SDD = (float)p->SDD;
     float px  = (float)p->pixelSize;
 
+    /* Each ip writes only its own slice -- no dependencies between
+     * iterations, safe to parallelize. Was single-threaded while
+     * fp_cpu/bp_cpu around it use all cores; called twice per epoch
+     * (once for `ones`, once for `ratio`) over up to np*H*W elements. */
+    #pragma omp parallel for schedule(static)
     for (int ip = 0; ip < p->num_projs; ip++) {
         float *slice = proj + ip * H * W;  /* [H][W] row-major per slice */
         for (int ih = 0; ih < H; ih++) {
@@ -494,6 +505,10 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
         fp_cpu(volume, b, p);
         double t1 = get_time_sec();
 
+        /* Elementwise, no cross-iteration dependency -- was single-threaded
+         * on the main thread while fp_cpu/bp_cpu around it use all cores.
+         * proj_size is np*H*W (~19.6M elements at 75x512x512). */
+        #pragma omp parallel for schedule(static)
         for (size_t i = 0; i < proj_size; i++)
             ratio[i] = (b[i] > 1e-3f) ? proj_measured[i] / b[i] : 0.f;
 
@@ -503,6 +518,9 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
         bp_cpu(ratio_bp, bp_ratio, p);
         double t3 = get_time_sec();
 
+        /* Same as above -- elementwise, independent, previously
+         * single-threaded. vol_size is Nxz*Nxz*Ny (~16.7M at 256^3). */
+        #pragma omp parallel for schedule(static)
         for (size_t i = 0; i < vol_size; i++) {
             float denom = bp_ones[i];
             if (denom > 1e-10f)
