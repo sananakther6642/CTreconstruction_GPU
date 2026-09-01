@@ -327,13 +327,46 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "cone_weight_hw");
     }
 
+    /* HYBRID_PRECISION: compile the image/opt programs with the manual
+     * float32 bilinear path instead of the hardware sampler's quantized
+     * blend (see kernels/bp_image.cl's block for the full rationale).
+     * Compile-time define rather than a new mode -- unset by default, in
+     * which case the whole block preprocesses away and output is
+     * byte-identical to a build without it. Re-opened 2026-09-01 to
+     * re-measure at 100 epochs; the prior negative result was scoped
+     * entirely to 10-epoch runs. */
+    int hybrid_precision = 0;
+    {
+        const char *hyb_env = getenv("HYBRID_PRECISION");
+        if (hyb_env && atoi(hyb_env) != 0) hybrid_precision = 1;
+    }
+    cl->hybrid_precision = hybrid_precision;
+    /* Coverage knobs, clamped here rather than trusted raw from getenv.
+     * Defaults reproduce the prior investigation's settings; the 100-epoch
+     * re-test drives full coverage via HYBRID_RADIUS_FRAC=0.001
+     * HYBRID_GRAD_THRESH=0. */
+    cl->hybrid_radius_frac = 0.75f;
+    cl->hybrid_grad_thresh = 1e-3f;
+    {
+        const char *rf = getenv("HYBRID_RADIUS_FRAC");
+        if (rf) { float v = atof(rf); if (v > 0.f && v <= 1.f) cl->hybrid_radius_frac = v; }
+        const char *gt = getenv("HYBRID_GRAD_THRESH");
+        if (gt) { float v = atof(gt); if (v >= 0.f) cl->hybrid_grad_thresh = v; }
+    }
+    if (hybrid_precision)
+        printf("  HYBRID_PRECISION on: radius_frac=%.4f grad_thresh=%.3g\n",
+               cl->hybrid_radius_frac, cl->hybrid_grad_thresh);
+
     /* ── Image-mode program (also used by OPT for fp_image) ── */
     if (mode == GPU_MODE_IMAGE || mode == GPU_MODE_OPT) {
         char *src_bp  = load_source(path_bp_img);
         char *src_fp  = load_source(path_fp_img);
         char *combined = concat_src(src_bp, src_fp);
-        cl->prog_image = build_program_opts(cl->ctx, cl->device, combined,
-                                            cl->has_fp16 ? "-DHAVE_FP16" : "");
+        char img_opts[64];
+        snprintf(img_opts, sizeof(img_opts), "%s%s",
+                 cl->has_fp16 ? "-DHAVE_FP16 " : "",
+                 hybrid_precision ? "-DHYBRID_PRECISION" : "");
+        cl->prog_image = build_program_opts(cl->ctx, cl->device, combined, img_opts);
         free(src_bp); free(src_fp); free(combined);
 
         cl->k_bp_img = clCreateKernel(cl->prog_image, "bp_image", &err);
@@ -362,7 +395,8 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         /* also need utility kernels (cone_weight, proj_divide, vol_update) */
         char *src_util = load_source(path_bp_buf);
         char *combined = concat_src(src_bp, src_util);
-        cl->prog_opt = build_program(cl->ctx, cl->device, combined);
+        cl->prog_opt = build_program_opts(cl->ctx, cl->device, combined,
+                                          hybrid_precision ? "-DHYBRID_PRECISION" : "");
         free(src_bp); free(src_util); free(combined);
 
         cl->k_bp_opt   = clCreateKernel(cl->prog_opt, "bp_opt", &err);
@@ -1157,6 +1191,12 @@ static void run_bp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &px);
     clSetKernelArg(k,12, sizeof(int),    &ip_start);
     clSetKernelArg(k,13, sizeof(int),    &ip_count);
+    /* HYBRID_PRECISION build only: these two trailing args exist
+     * solely in that build (see kernels/bp_image.cl). */
+    if (cl->hybrid_precision) {
+        clSetKernelArg(k,14,sizeof(float),&cl->hybrid_radius_frac);
+        clSetKernelArg(k,15,sizeof(float),&cl->hybrid_grad_thresh);
+    }
 
     size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
     size_t lws[3] = {4, 4, 16};  /* see BP_LWS note in run_bp_buffer above */
@@ -1558,6 +1598,12 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             int ip_start0 = 0;
             clSetKernelArg(k,14, sizeof(int),    &ip_start0);
             clSetKernelArg(k,15, sizeof(int),    &np);
+            /* HYBRID_PRECISION build only: these two trailing args exist
+             * solely in that build (see kernels/bp_image.cl). */
+            if (cl->hybrid_precision) {
+                clSetKernelArg(k,16,sizeof(float),&cl->hybrid_radius_frac);
+                clSetKernelArg(k,17,sizeof(float),&cl->hybrid_grad_thresh);
+            }
 
             size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
             size_t lws[3] = {4, 4, 16};  /* same shape as run_bp_image */
@@ -1788,6 +1834,12 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,12,sizeof(float),&px);
             clSetKernelArg(k,13,sizeof(int),&subset_start[s]);
             clSetKernelArg(k,14,sizeof(int),&subset_count[s]);
+            /* HYBRID_PRECISION build only: these two trailing args exist
+             * solely in that build (see kernels/bp_image.cl). */
+            if (cl->hybrid_precision) {
+                clSetKernelArg(k,15,sizeof(float),&cl->hybrid_radius_frac);
+                clSetKernelArg(k,16,sizeof(float),&cl->hybrid_grad_thresh);
+            }
             size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
             size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
             {
@@ -1957,6 +2009,12 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                 clSetKernelArg(k,12,sizeof(float),&px);
                 clSetKernelArg(k,13,sizeof(int),&ip_start);
                 clSetKernelArg(k,14,sizeof(int),&ip_count);
+                /* HYBRID_PRECISION build only: these two trailing args exist
+                 * solely in that build (see kernels/bp_image.cl). */
+                if (cl->hybrid_precision) {
+                    clSetKernelArg(k,15,sizeof(float),&cl->hybrid_radius_frac);
+                    clSetKernelArg(k,16,sizeof(float),&cl->hybrid_grad_thresh);
+                }
                 size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
                 size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
                 {

@@ -15,6 +15,62 @@ __constant sampler_t samp =
     CLK_ADDRESS_CLAMP           |
     CLK_FILTER_LINEAR;
 
+#ifdef HYBRID_PRECISION
+/* ── HYBRID_PRECISION: manual float32 bilinear instead of the hardware
+ * sampler's quantized blend ──────────────────────────────────────────
+ *
+ * Re-opened 2026-09-01. A prior version of this experiment (branch
+ * `hybrid-precision`, 2026-08-26) measured NET NEGATIVE and was not
+ * shipped -- but that entire measurement was taken at 10 EPOCHS, where
+ * its own baseline was already 8.42e-10, i.e. ~134x better than the
+ * 1.1278e-07 at 100 epochs that actually misses the project's accuracy
+ * bar. The regime that matters was never tested; that, not a flaw in the
+ * blend math, is why this is being re-run rather than repeated. The
+ * original blend was verified correct three independent ways (hand
+ * derivation, a numpy sim matching bilinear_buf to 1e-6, and a
+ * byte-identical baseline reproduction with the gate disabled) -- that
+ * verification is inherited here unchanged, only the call sites moved.
+ *
+ * CLK_FILTER_NEAREST returns the exact stored texel with no hardware
+ * blending, so four nearest fetches + a manual float32 blend reproduce
+ * bp_buffer.cl's bilinear_buf. Reads still go through the texture cache,
+ * so the spatial-locality advantage over gpu-buf's raw global loads is
+ * retained; only the fixed-function filter stage is bypassed.
+ *
+ * Unlike the original (which inlined this twice), the four corner
+ * fetches live in one helper shared by bp_image and bp_image_update --
+ * the same four reads still serve both the gradient-check decision and
+ * the returned value, so there is no extra fetch cost from factoring it
+ * out. image axes are (col=v-ish, row=u-ish) matching the callers'
+ * texel_u=vf+0.5 / texel_v=uf+0.5 convention, so (v, u) order into
+ * read_imagef is required to hit the same four corners bilinear_buf does. */
+__constant sampler_t samp_exact =
+    CLK_NORMALIZED_COORDS_FALSE |
+    CLK_ADDRESS_CLAMP           |
+    CLK_FILTER_NEAREST;
+
+static float bp_sample_hybrid(__read_only image2d_array_t proj_images,
+                               int ip, float uf, float vf, int u0, int v0,
+                               float texel_u, float texel_v,
+                               int in_radius_band, float grad_thresh)
+{
+    if (in_radius_band) {
+        float c00 = read_imagef(proj_images, samp_exact, (float4)(v0 + 0.5f, u0 + 0.5f, (float)ip, 0.f)).x;
+        float c10 = read_imagef(proj_images, samp_exact, (float4)(v0 + 0.5f, u0 + 1.5f, (float)ip, 0.f)).x;
+        float c01 = read_imagef(proj_images, samp_exact, (float4)(v0 + 1.5f, u0 + 0.5f, (float)ip, 0.f)).x;
+        float c11 = read_imagef(proj_images, samp_exact, (float4)(v0 + 1.5f, u0 + 1.5f, (float)ip, 0.f)).x;
+        float cmin = fmin(fmin(c00,c10), fmin(c01,c11));
+        float cmax = fmax(fmax(c00,c10), fmax(c01,c11));
+        if (cmax - cmin > grad_thresh) {
+            float du = uf - u0, dv = vf - v0;
+            return c00*(1-du)*(1-dv) + c10*du*(1-dv)
+                 + c01*(1-du)*dv     + c11*du*dv;
+        }
+    }
+    return read_imagef(proj_images, samp, (float4)(texel_u, texel_v, (float)ip, 0.f)).x;
+}
+#endif /* HYBRID_PRECISION */
+
 /* OSEM: see bp_buffer.cl's kernel comment for the
  * full ip_start/ip_count/M_PI_F-num_projs-cancellation rationale --
  * identical here. */
@@ -33,6 +89,17 @@ __kernel void bp_image(
     float pixelSize,
     int   ip_start,
     int   ip_count
+#ifdef HYBRID_PRECISION
+    /* radius_frac: fraction of Nxz/2 beyond which the manual path is
+     * considered at all -- 62%/100% of >100xRMS outliers sit beyond
+     * 0.8xFOV radius, so the interior majority skips the check.
+     * grad_thresh: min |max-min| across the 4 corner texels before
+     * paying for the blend; skips flat regions inside the band too.
+     * Set radius_frac tiny + grad_thresh 0 for full coverage. Both
+     * clamped host-side (ct_gpu.c), not trusted raw from getenv. */
+    , float radius_frac
+    , float grad_thresh
+#endif
 )
 {
     int ix = get_global_id(0);
@@ -47,6 +114,15 @@ __kernel void bp_image(
     float xpr = ((float)ix - radius)   * voxelSize;
     float ypr = ((float)iy - radius)   * voxelSize;
     float zpr = ((float)iz - radius_z) * voxelSize;
+
+#ifdef HYBRID_PRECISION
+    /* Cheap radius gate, once per voxel (not per angle) -- matches
+     * diag_maxgap.py's radial_dist_from_center_xy metric exactly. */
+    float cx = (float)ix - radius, cy = (float)iy - radius;
+    float r2 = cx*cx + cy*cy;
+    float rg = radius_frac * (Nxz * 0.5f);
+    int in_radius_band = (r2 > rg*rg);
+#endif
 
     float sum = 0.f;
 
@@ -77,8 +153,14 @@ __kernel void bp_image(
 
         float texel_u = vf + 0.5f;
         float texel_v = uf + 0.5f;
+#ifdef HYBRID_PRECISION
+        float sval = bp_sample_hybrid(proj_images, ip, uf, vf, u0, v0,
+                                       texel_u, texel_v, in_radius_band, grad_thresh);
+        sum += sval * (SOD*SOD) * inv_U * inv_U;
+#else
         float4 val = read_imagef(proj_images, samp, (float4)(texel_u, texel_v, (float)ip, 0.f));
         sum += val.x * (SOD*SOD) * inv_U * inv_U;
+#endif
     }
 
     sum *= M_PI_F / (float)num_projs;
@@ -132,6 +214,17 @@ __kernel void bp_image_update(
     float pixelSize,
     int   ip_start,
     int   ip_count
+#ifdef HYBRID_PRECISION
+    /* radius_frac: fraction of Nxz/2 beyond which the manual path is
+     * considered at all -- 62%/100% of >100xRMS outliers sit beyond
+     * 0.8xFOV radius, so the interior majority skips the check.
+     * grad_thresh: min |max-min| across the 4 corner texels before
+     * paying for the blend; skips flat regions inside the band too.
+     * Set radius_frac tiny + grad_thresh 0 for full coverage. Both
+     * clamped host-side (ct_gpu.c), not trusted raw from getenv. */
+    , float radius_frac
+    , float grad_thresh
+#endif
 )
 {
     int ix = get_global_id(0);
@@ -146,6 +239,15 @@ __kernel void bp_image_update(
     float xpr = ((float)ix - radius)   * voxelSize;
     float ypr = ((float)iy - radius)   * voxelSize;
     float zpr = ((float)iz - radius_z) * voxelSize;
+
+#ifdef HYBRID_PRECISION
+    /* Cheap radius gate, once per voxel (not per angle) -- matches
+     * diag_maxgap.py's radial_dist_from_center_xy metric exactly. */
+    float cx = (float)ix - radius, cy = (float)iy - radius;
+    float r2 = cx*cx + cy*cy;
+    float rg = radius_frac * (Nxz * 0.5f);
+    int in_radius_band = (r2 > rg*rg);
+#endif
 
     float sum = 0.f;
 
@@ -167,8 +269,14 @@ __kernel void bp_image_update(
 
         float texel_u = vf + 0.5f;
         float texel_v = uf + 0.5f;
+#ifdef HYBRID_PRECISION
+        float sval = bp_sample_hybrid(proj_images, ip, uf, vf, u0, v0,
+                                       texel_u, texel_v, in_radius_band, grad_thresh);
+        sum += sval * (SOD*SOD) * inv_U * inv_U;
+#else
         float4 val = read_imagef(proj_images, samp, (float4)(texel_u, texel_v, (float)ip, 0.f));
         sum += val.x * (SOD*SOD) * inv_U * inv_U;
+#endif
     }
 
     sum *= M_PI_F / (float)num_projs;

@@ -15,6 +15,42 @@ __constant sampler_t samp =
     CLK_ADDRESS_CLAMP           |
     CLK_FILTER_LINEAR;
 
+#ifdef HYBRID_PRECISION
+/* HYBRID_PRECISION: manual float32 bilinear replacing the hardware
+ * sampler's quantized blend. See kernels/bp_image.cl's block for the
+ * full rationale and the re-open reason (the prior negative result was
+ * measured only at 10 epochs). Identical math; bp_opt's (vf+.5f, uf+.5f)
+ * read convention already matches bp_image's texel_u/texel_v ordering,
+ * so the same corner mapping applies unchanged.
+ *
+ * Applied to bp_opt only -- bp_angle_parallel further down this file is
+ * dead code (never clCreateKernel'd, see ct_gpu.c) and is left alone. */
+__constant sampler_t samp_exact =
+    CLK_NORMALIZED_COORDS_FALSE |
+    CLK_ADDRESS_CLAMP           |
+    CLK_FILTER_NEAREST;
+
+static float bp_opt_sample_hybrid(__read_only image2d_array_t proj_images,
+                                   int ip, float uf, float vf, int u0, int v0,
+                                   int in_radius_band, float grad_thresh)
+{
+    if (in_radius_band) {
+        float c00 = read_imagef(proj_images, samp_exact, (float4)(v0 + 0.5f, u0 + 0.5f, (float)ip, 0.f)).x;
+        float c10 = read_imagef(proj_images, samp_exact, (float4)(v0 + 0.5f, u0 + 1.5f, (float)ip, 0.f)).x;
+        float c01 = read_imagef(proj_images, samp_exact, (float4)(v0 + 1.5f, u0 + 0.5f, (float)ip, 0.f)).x;
+        float c11 = read_imagef(proj_images, samp_exact, (float4)(v0 + 1.5f, u0 + 1.5f, (float)ip, 0.f)).x;
+        float cmin = fmin(fmin(c00,c10), fmin(c01,c11));
+        float cmax = fmax(fmax(c00,c10), fmax(c01,c11));
+        if (cmax - cmin > grad_thresh) {
+            float du = uf - u0, dv = vf - v0;
+            return c00*(1-du)*(1-dv) + c10*du*(1-dv)
+                 + c01*(1-du)*dv     + c11*du*dv;
+        }
+    }
+    return read_imagef(proj_images, samp, (float4)(vf+.5f, uf+.5f, (float)ip, 0.f)).x;
+}
+#endif /* HYBRID_PRECISION */
+
 /* OSEM: ip_start/ip_count select a contiguous angle
  * subrange for the compute loop (see bp_buffer.cl for the full
  * rationale, identical here). lcs is still sized/loaded for the FULL
@@ -37,6 +73,11 @@ __kernel void bp_opt(
     float pixelSize,
     int   ip_start,
     int   ip_count
+#ifdef HYBRID_PRECISION
+    /* See bp_image.cl for semantics; clamped host-side in ct_gpu.c. */
+    , float radius_frac
+    , float grad_thresh
+#endif
 )
 {
     /* Cooperatively load angle_cs into local memory.
@@ -62,6 +103,13 @@ __kernel void bp_opt(
     float xpr = ((float)ix - radius)   * voxelSize;
     float ypr = ((float)iy - radius)   * voxelSize;
     float zpr = ((float)iz - radius_z) * voxelSize;
+
+#ifdef HYBRID_PRECISION
+    float cx = (float)ix - radius, cy = (float)iy - radius;
+    float r2 = cx*cx + cy*cy;
+    float rg = radius_frac * (Nxz * 0.5f);
+    int in_radius_band = (r2 > rg*rg);
+#endif
 
     float sum = 0.f;
     float sod2 = SOD * SOD;
@@ -97,8 +145,14 @@ __kernel void bp_opt(
         float vf = (zpr*SDD*inv_U)*inv_px + half_H;
         int u0 = (int)floor(uf), v0 = (int)floor(vf);
         if (u0 < 0 || u0+1 >= W || v0 < 0 || v0+1 >= H) continue;
+#ifdef HYBRID_PRECISION
+        float sval = bp_opt_sample_hybrid(proj_images, ip, uf, vf, u0, v0,
+                                           in_radius_band, grad_thresh);
+        sum += sval * sod2 * inv_U * inv_U;
+#else
         float4 val = read_imagef(proj_images, samp, (float4)(vf+.5f, uf+.5f, (float)ip, 0.f));
         sum += val.x * sod2 * inv_U * inv_U;
+#endif
     }
 
     sum *= M_PI_F / (float)num_projs;
