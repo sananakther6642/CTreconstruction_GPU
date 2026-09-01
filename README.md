@@ -317,11 +317,20 @@ To satisfy strict scientific accuracy bars ($\le 10^{-8}$ MSE vs CPU) without fo
 | Tier | Command / Flag | 256³ MSE vs CPU | 100-Epoch Time | Microarchitecture Mechanism |
 |---|---|---|---|---|
 | **1. Throughput (Default)** | `./build/ct_recon --mode gpu-opt` | `1.128e-07` | **14.20 s** | Hardware TMU filtering (fastest possible) |
-| **2. Fast Exact (Dominant)** | `FP_TEX_EXACT=1 ./build/ct_recon --mode gpu-opt` | **`2.524e-09`** | **21.34 s** | 3D Texture cache + IEEE float32 software blend (passes $\le 10^{-8}$) |
+| **2. Fast Exact (Dominant)** | `FP_TEX_EXACT=1 ./build/ct_recon --mode gpu-opt` | **`2.524e-09`** | **21.34 s** (measured on `gpu-img`) | 3D Texture cache + IEEE float32 software blend (passes $\le 10^{-8}$) |
 | **3. Exact Buffer FP** | `./build/ct_recon --mode gpu-opt --fp-buf` | **`2.524e-09`** | 26.82 s | Clean IEEE float32 ray marching + texture backprojection (passes $\le 10^{-8}$) |
 | **4. Bit Reference** | `./build/ct_recon --mode gpu-buf` | **`1.148e-10`** | 39.05 s | Pure IEEE float32 software buffers for both FP and BP |
 
 #### Reproduction Commands (GTX 680):
+The MSE figures are measured for both `gpu-img` and `gpu-opt` (they share
+`fp_image`, and both return `2.524e-09`). The 21.34 s in tier 2 was timed on
+`gpu-img`; `gpu-opt`'s time under that flag has not been separately measured,
+though it should track closely since the change is confined to the shared
+kernel. Tiers 1, 3 and 4 are `gpu-opt` timings.
+
+At 512³ the same flag takes `gpu-img`/`gpu-opt` from `1.232e-09` to
+`5.528e-10` (2.2×) — a smaller gain because 512³ was already near the bar.
+
 ```bash
 # 1. Baseline high-throughput run (14.2s, 1.13e-07):
 ./build/ct_recon --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --out out_base.hdf5 --mode gpu-opt --epochs 100
