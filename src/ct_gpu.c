@@ -572,12 +572,19 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &SDD);
     clSetKernelArg(k,12, sizeof(float),  &vs);
     clSetKernelArg(k,13, sizeof(float),  &px);
-    /* Was hardcoded "if (W > 512)" inside fp_buffer.cl; same default
-     * threshold, now overridable via FP_IMAGE_AABB (shared with
-     * run_fp_image -- one env var controls AABB on both fp paths) so
-     * its actual 512^3 benefit for gpu-buf specifically can be
-     * measured instead of assumed. */
-    int use_aabb = (W > 512) ? 1 : 0;
+    /* Was hardcoded "if (W > 512)" inside fp_buffer.cl. Measured on
+     * kale at 512^3 (W=1120, so the old gate was ON): AABB is ~6%
+     * SLOWER on gpu-buf (5.10-5.11s/epoch off vs 5.40-5.41s/epoch on,
+     * 3-epoch runs). Unlike fp_image/fp_cpu (where AABB is a real win --
+     * CPU measured ~26% faster / ~32% on fp alone at the same
+     * resolution), gpu-buf's cost is dominated by uncoalesced memory
+     * access, which AABB's sample-range narrowing does nothing for; its
+     * 6-divide setup cost is pure overhead here. Default now OFF
+     * unconditionally (not W>512 -- that threshold was inherited from
+     * fp_image without being re-verified for this kernel, and turned
+     * out wrong for it). FP_IMAGE_AABB override still works, for
+     * further testing. */
+    int use_aabb = 0;
     {
         const char *aabb_env = getenv("FP_IMAGE_AABB");
         if (aabb_env) use_aabb = atoi(aabb_env);
