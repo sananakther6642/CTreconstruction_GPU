@@ -9,27 +9,19 @@
  */
 
 
-static float trilinear_buf(__global const float *vol,
-                            int Nxz, int Ny,
-                            float xi, float yi, float zi)
+static inline float trilinear_buf(__global const float *vol,
+                                  int sNy, int Ny,
+                                  float xi, float yi, float zi)
 {
-    int x0=(int)floor(xi), x1=x0+1;
-    int y0=(int)floor(yi), y1=y0+1;
-    int z0=(int)floor(zi), z1=z0+1;
-    float dx=xi-x0, dy=yi-y0, dz=zi-z0;
+    int x0 = (int)xi, y0 = (int)yi, z0 = (int)zi;
+    float dx = xi - (float)x0, dy = yi - (float)y0, dz = zi - (float)z0;
+    float nx = 1.f - dx, ny_ = 1.f - dy, nz_ = 1.f - dz;
+    int base = x0 * sNy + y0 * Ny + z0;
 
-#define VGET(x,y,z) (((x)>=0&&(x)<Nxz&&(y)>=0&&(y)<Nxz&&(z)>=0&&(z)<Ny) \
-                     ? vol[(x)*Nxz*Ny+(y)*Ny+(z)] : 0.f)
-    float c000=VGET(x0,y0,z0), c100=VGET(x1,y0,z0);
-    float c010=VGET(x0,y1,z0), c110=VGET(x1,y1,z0);
-    float c001=VGET(x0,y0,z1), c101=VGET(x1,y0,z1);
-    float c011=VGET(x0,y1,z1), c111=VGET(x1,y1,z1);
-#undef VGET
-
-    return c000*(1-dx)*(1-dy)*(1-dz) + c100*dx*(1-dy)*(1-dz)
-         + c010*(1-dx)*dy*(1-dz)     + c110*dx*dy*(1-dz)
-         + c001*(1-dx)*(1-dy)*dz     + c101*dx*(1-dy)*dz
-         + c011*(1-dx)*dy*dz         + c111*dx*dy*dz;
+    return (vol[base]          * nx + vol[base + sNy]          * dx) * ny_ * nz_
+         + (vol[base + Ny]     * nx + vol[base + sNy + Ny]     * dx) * dy  * nz_
+         + (vol[base + 1]      * nx + vol[base + sNy + 1]      * dx) * ny_ * dz
+         + (vol[base + Ny + 1] * nx + vol[base + sNy + Ny + 1] * dx) * dy  * dz;
 }
 
 /* OSEM: ip_start/ip_count select a contiguous angle
@@ -125,6 +117,7 @@ __kernel void fp_buffer(
     float dox = rd[0] * dt, doy = rd[1] * dt, doz = rd[2] * dt;
 
     float val = 0.f;
+    int sNy = Nxz * Ny;
     for (int s = s_start; s < s_end; s++) {
         float xi = wx * inv_sv_xz + shift_xz;
         float yi = wy * inv_sv_y  + shift_y;
@@ -133,7 +126,7 @@ __kernel void fp_buffer(
         if (xi >= 0.f && xi < (float)(Nxz - 1) &&
             yi >= 0.f && yi < (float)(Ny  - 1) &&
             zi >= 0.f && zi < (float)(Nxz - 1)) {
-            val += trilinear_buf(volume, Nxz, Ny, xi, yi, zi);
+            val += trilinear_buf(volume, sNy, Ny, xi, yi, zi);
         }
         wx += dox; wy += doy; wz += doz;
     }
