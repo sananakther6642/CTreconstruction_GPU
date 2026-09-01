@@ -1019,6 +1019,24 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,14, sizeof(int), &use_aabb);
     clSetKernelArg(k,15, sizeof(int), &ip_start);
     clSetKernelArg(k,16, sizeof(int), &ip_count);
+    /* FP_TEX_EXACT=1: keep the 3D texture cache but replace the sampler's
+     * fixed-function blend with an IEEE float32 one -- eight
+     * CLK_FILTER_NEAREST fetches plus a manual trilinear (see
+     * kernels/fp_image.cl's trilinear_tex).
+     *
+     * The forward projection is where the sampler's interpolation error
+     * actually matters: fp produces the ratio driving every MLEM update, so
+     * its error re-enters the loop each epoch, while bp's averages out over
+     * 75 angles. Measured on GTX 680, 100 epochs, MSE vs CPU:
+     *   256^3  1.128e-07 -> 2.524e-09 (45x), 14.65s -> 21.34s
+     *   512^3  1.232e-09 -> 5.528e-10 (2.2x)
+     * Off by default; unset leaves the hardware-filtered path untouched. */
+    int tex_exact = 0;
+    {
+        const char *te = getenv("FP_TEX_EXACT");
+        if (te) tex_exact = atoi(te) != 0;
+    }
+    clSetKernelArg(k,17, sizeof(int), &tex_exact);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)ip_count};
     /* {8,32,1} measured ~5% faster than the previous {16,16,1} at 512^3 on
