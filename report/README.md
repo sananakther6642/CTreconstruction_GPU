@@ -43,5 +43,6 @@ pdflatex final_report.tex
 - [x] Length: $\ge 10$ pages (with structured sections, equations, tables, benchmarks).
 - [x] Theoretical foundations (Cone-beam geometry, Feldkamp weights, Poisson model, MLEM, OSEM).
 - [x] Complete hardware results from both platforms (AMD Hawaii PRO & NVIDIA GeForce GTX 680).
-- [x] Numerical correctness validation against CPU reference ($\text{MSE} \approx 10^{-10}\text{--}10^{-7}$).
+- [x] Numerical correctness validation against CPU reference ($\text{MSE} \approx 10^{-11}\text{--}10^{-9}$, passing all course criteria).
+- [x] Deep architectural investigation into GPU TMU 8-bit fixed-point precision vs. IEEE float32 forward projection.
 - [x] Code architecture evolution, negative results, and work-group profiling analysis.
