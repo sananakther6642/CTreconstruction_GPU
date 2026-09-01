@@ -963,6 +963,22 @@ static void run_diag_repeat_slab(CLState *cl, const CBpara *p,
     clSetKernelArg(k,11, sizeof(float),  &SDD);
     clSetKernelArg(k,12, sizeof(float),  &vs);
     clSetKernelArg(k,13, sizeof(float),  &px);
+    /* Args 14-16 (use_aabb, ip_start, ip_count) were never set here --
+     * fp_buffer's real signature (see run_fp_buffer above) has 17 args,
+     * not 14. Left unset, they caused CL_INVALID_KERNEL_ARGS (-52) at
+     * enqueue -- the bug blocking this diagnostic on pool15-01. use_aabb
+     * off (matches run_fp_buffer's default, see that function's AABB
+     * comment); ip_start/ip_count cover the single fixed
+     * angle_offset/slab_size range this diagnostic launches in one shot
+     * (no angle-slab chunking here, unlike run_fp_buffer). */
+    int diag_use_aabb = 0;
+    {
+        const char *aabb_env = getenv("FP_IMAGE_AABB");
+        if (aabb_env) diag_use_aabb = atoi(aabb_env);
+    }
+    clSetKernelArg(k,14, sizeof(int),    &diag_use_aabb);
+    clSetKernelArg(k,15, sizeof(int),    &angle_offset);
+    clSetKernelArg(k,16, sizeof(int),    &slab_size);
 
     /* Was {4,64,1} -- the GTX 680's old default -- while production
      * run_fp_buffer has used {2,16,2} since the Hawaii/GTX680 re-sweep

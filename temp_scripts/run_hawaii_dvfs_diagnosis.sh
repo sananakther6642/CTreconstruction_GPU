@@ -70,7 +70,16 @@ echo ""
 DATA512=/lgrp/edu-2026-1-gpulab/proj_512_75.hdf5
 EPOCHS=30
 OUT=dvfs_diag
-mkdir -p "$OUT/logs" "$OUT/samplers"
+# .hdf5 reconstruction outputs are NOT wanted in $OUT: $OUT gets
+# checkpointed (git add -f) to a results branch, and -f overrides the
+# repo's .gitignore *.hdf5 rule, so any .hdf5 written under $OUT gets
+# force-added -- these are 512MB each at 512^3, well past GitHub's 100MB
+# limit, and the whole checkpoint push failed on exactly this the first
+# time this script ran. --out is mandatory (main.c requires it even for
+# --diag, which never reads it) but nothing requires the target live
+# under $OUT -- send it to a separate untracked scratch dir instead.
+SCRATCH_OUT=dvfs_diag_scratch_hdf5
+mkdir -p "$OUT/logs" "$OUT/samplers" "$SCRATCH_OUT"
 
 # ── Independent sysfs sampler: polls clocks/temp + who's on the GPU at a
 # finer grain (200ms) than the in-kernel probe (which only fires on slabs
@@ -159,7 +168,7 @@ echo "=== Arm A: instrumented gpu-buf baseline, 512^3, $EPOCHS epochs ==="
 echo "    (H1 verdict: do slow slabs show a low mclk DPM state?)"
 start_sampler "$OUT/samplers/armA_sampler.csv"
 FP_BUFFER_CLOCK_PROBE=1 build/ct_recon --data "$DATA512" \
-  --out "$OUT/armA_gpu-buf_512.hdf5" --mode gpu-buf --epochs $EPOCHS \
+  --out "$SCRATCH_OUT/armA_gpu-buf_512.hdf5" --mode gpu-buf --epochs $EPOCHS \
   --samples 512 --kernels kernels 2>&1 | tee "$OUT/logs/armA_gpu-buf_512.log"
 stop_sampler
 checkpoint "armA"
@@ -181,7 +190,7 @@ echo "    that separates 'GPU downclocked' from 'GPU busy with someone else's wo
 echo "    since contention (H2) would slow both modes together.)"
 start_sampler "$OUT/samplers/armC_sampler.csv"
 build/ct_recon --data "$DATA512" \
-  --out "$OUT/armC_gpu-img_512.hdf5" --mode gpu-img --epochs $EPOCHS \
+  --out "$SCRATCH_OUT/armC_gpu-img_512.hdf5" --mode gpu-img --epochs $EPOCHS \
   --samples 512 --kernels kernels 2>&1 | tee "$OUT/logs/armC_gpu-img_512.log"
 stop_sampler
 checkpoint "armC"
@@ -193,7 +202,7 @@ echo "=== Arm D: fixed repeat-slab (post-lws-fix), clock probe on ==="
 echo "    (re-establishes step-and-hold vs self-recovering burst at the"
 echo "    PRODUCTION lws={2,16,2}, not the old {4,64,1} mismatch)"
 FP_BUFFER_CLOCK_PROBE=1 build/ct_recon --data "$DATA512" \
-  --out "$OUT/armD_unused.hdf5" --mode gpu-buf --kernels kernels \
+  --out "$SCRATCH_OUT/armD_unused.hdf5" --mode gpu-buf --kernels kernels \
   --diag repeat-slab:0:8:60 2>&1 | tee "$OUT/logs/armD_repeat-slab.log"
 checkpoint "armD"
 
