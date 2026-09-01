@@ -1,24 +1,36 @@
 #!/bin/bash
 # Fills the remaining gaps on pool15-01 (AMD Hawaii PRO). The existing
 # CLI 100-epoch set (pool15-results branch, 2026-08-26 checkpoints)
-# predates a batch of optimization commits landed 2026-09-01 --
-# specifically: 09cacc4 (AABB default flipped off for gpu-buf), 6ea88c7
-# (P1b -- gates d_ratio/d_ratio_prep allocation on GPU_MODE_BUFFER, i.e.
-# gpu-buf-specific), and 7884899/638a265/02965e7/7da1c17 (FP_TILE default
-# changes -- fp_cpu.c only, so CPU MODE specifically, not GPU). Checked
-# via `git log --format=%ad` against the 2026-08-26T13:5X:XXZ checkpoint
-# timestamps -- all of the above post-date them. gpu-img/gpu-opt are
-# untouched by any of this and remain valid as-is; only cpu and gpu-buf
-# are stale.
+# predates a batch of optimization commits landed 2026-09-01. Checked
+# every kernel/mode's changes via `git log --format=%ad` against the
+# 2026-08-26T13:5X:XXZ checkpoint timestamps:
+#   - cpu:     stale (FP_TILE default changes, 7884899/638a265/02965e7/
+#              7da1c17, fp_cpu.c only)
+#   - gpu-buf: stale (09cacc4 AABB-off default, 6ea88c7 P1b buffer
+#              gating, both gpu-buf-specific; separately, today's
+#              FP_BUFFER_SKIP_SLAB_FINISH mclk-DVFS mitigation applies
+#              here too)
+#   - gpu-img: stale -- G3 (57892d1, fuses bp_image+vol_update_img,
+#              kernels/bp_image.cl) and OSEM step 2 (a6ba586, restricts
+#              divide_preprocess_img to the subset) both landed and
+#              stuck 2026-09-01. (Two OTHER gpu-img/gpu-opt attempts that
+#              day, P1a and G2, were each reverted within minutes --
+#              05a0b99/8491e62 and 5358cd3/9aceea8 -- net zero change
+#              from those two, so they don't add staleness on their own.)
+#   - gpu-opt: NOT stale -- the only two commits touching it (P1a, G2,
+#              above) both reverted cleanly; no net change survives.
 #
-#   0. CLI, cpu AND gpu-buf, both resolutions, 100 epochs, against
-#      CURRENT code (includes today's separate mclk-DVFS mitigation,
-#      FP_BUFFER_SKIP_SLAB_FINISH, for the gpu-buf runs -- see README
-#      "gpu-buf run-to-run variance"). gpu-img/gpu-opt NOT re-run here
-#      (still valid, untouched by any of the above).
+#   0. CLI, cpu + gpu-buf + gpu-img, both resolutions, 100 epochs,
+#      against CURRENT code (includes today's separate mclk-DVFS
+#      mitigation, FP_BUFFER_SKIP_SLAB_FINISH, for the gpu-buf runs --
+#      see README "gpu-buf run-to-run variance"). gpu-opt NOT re-run
+#      here (genuinely still valid, see above).
 #   1. pybind, 256^3, all modes, 100 epochs -- Hawaii never had this
 #      (kale does, see run_kale_full_100ep.sh, same structure, mirrored
-#      here for the other machine).
+#      here for the other machine). kale's own gpu-img numbers in
+#      log_div.txt were captured same-day AFTER both surviving gpu-img
+#      commits (15:50-17:14 CEST vs the 00:51/01:42 commit times) --
+#      kale's gpu-img is current, only Hawaii's was stale.
 #   2. pybind, 512^3, all modes, 100 epochs -- same gap.
 #
 # Two hardware targets are being compared in this investigation (kale =
@@ -53,7 +65,7 @@
 # NAMING: ct_hawaiifull_ prefix throughout, mirrors kale's ct_kalefull_
 # collision-safety rationale.
 #
-# Launch inside tmux (this is a long run -- 4 CLI configs (2 of them cpu
+# Launch inside tmux (this is a long run -- 6 CLI configs (2 of them cpu
 # at ~55-60 min each, per the existing cpu-512 estimate) + 8 pybind
 # configs, several of them 512^3):
 #   tmux new -s hawaiifull
@@ -86,11 +98,11 @@ fi
 AVAIL_KB=$(df -Pk . | tail -1 | awk '{print $4}')
 AVAIL_GB=$((AVAIL_KB / 1024 / 1024))
 echo "disk available here: ${AVAIL_GB}GB"
-if [ "$AVAIL_GB" -lt 5 ]; then
-  # 4 CLI .hdf5 (2x256^3 ~65MB + 2x512^3 ~513MB) + 8 pybind .hdf5
-  # (4x256^3 ~65MB + 4x512^3 ~513MB) = ~3.5GB of output alone, before
-  # logs and the CLI build -- 5GB free is the minimum with any margin.
-  echo "ERROR: less than 5GB free -- this run's outputs alone are ~3.5GB,"
+if [ "$AVAIL_GB" -lt 6 ]; then
+  # 6 CLI .hdf5 (3x256^3 ~65MB + 3x512^3 ~513MB) + 8 pybind .hdf5
+  # (4x256^3 ~65MB + 4x512^3 ~513MB) = ~4.1GB of output alone, before
+  # logs and the CLI build -- 6GB free is the minimum with any margin.
+  echo "ERROR: less than 6GB free -- this run's outputs alone are ~4.1GB,"
   echo "  likely to fail partway through."
   echo "  Run ./temp_scripts/cleanup_before_run.sh first, or free space manually."
   exit 1
@@ -109,9 +121,10 @@ ls -la build/ct_recon
 # (pybind_backend/backend.py) -- no separate pre-build step needed, same
 # as run_kale_full_100ep.sh.
 
-# ── Part 0: CLI, cpu + gpu-buf (the two stale modes), both resolutions ──
-# gpu-img/gpu-opt are untouched by anything since the 2026-08-26
-# checkpoints and are NOT re-run -- still current.
+# ── Part 0: CLI, cpu + gpu-buf + gpu-img (the three stale modes) ───────
+# gpu-opt is genuinely untouched since the 2026-08-26 checkpoints (the
+# only two commits that touched it both reverted cleanly) and is NOT
+# re-run -- still current.
 echo ""
 echo "=== $(date) : [0/2] CLI 256^3 cpu, ${EPOCHS} epochs (post-FP_TILE-retune) ==="
 build/ct_recon --data "$DATA256" \
@@ -140,6 +153,20 @@ FP_BUFFER_SKIP_SLAB_FINISH="$SKIP_FINISH" build/ct_recon --data "$DATA512" \
   --out "$OUTDIR/cli_output_gpu_buf_512_mitigated.hdf5" \
   --mode gpu-buf --epochs "$EPOCHS" --samples 512 --kernels kernels \
   2>&1 | tee "$OUTDIR/cli_gpu_buf_512_mitigated.log"
+
+echo ""
+echo "=== $(date) : [0/2] CLI 256^3 gpu-img, ${EPOCHS} epochs (post-G3-fusion/OSEM-step-2) ==="
+build/ct_recon --data "$DATA256" \
+  --out "$OUTDIR/cli_output_gpu_img_256_retest.hdf5" \
+  --mode gpu-img --epochs "$EPOCHS" --kernels kernels \
+  2>&1 | tee "$OUTDIR/cli_gpu_img_256_retest.log"
+
+echo ""
+echo "=== $(date) : [0/2] CLI 512^3 gpu-img, ${EPOCHS} epochs (post-G3-fusion/OSEM-step-2) ==="
+build/ct_recon --data "$DATA512" \
+  --out "$OUTDIR/cli_output_gpu_img_512_retest.hdf5" \
+  --mode gpu-img --epochs "$EPOCHS" --samples 512 --kernels kernels \
+  2>&1 | tee "$OUTDIR/cli_gpu_img_512_retest.log"
 
 echo "$(date)" > ct_hawaiifull_cli_stale_modes_done.marker
 
