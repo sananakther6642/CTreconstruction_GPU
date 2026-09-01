@@ -92,7 +92,7 @@ __kernel void bp_opt(
     for (int ip = ip_start; ip < ip_start + ip_count; ip++) {
         float2 cs = lcs[ip];
         float U = SOD + ypr*cs.y + xpr*cs.x;
-        float inv_U = native_recip(U);
+        float inv_U = 1.f / U;
         float uf = -(SDD*(ypr*cs.x - xpr*cs.y)*inv_U)*inv_px + half_W;
         float vf = (zpr*SDD*inv_U)*inv_px + half_H;
         int u0 = (int)floor(uf), v0 = (int)floor(vf);

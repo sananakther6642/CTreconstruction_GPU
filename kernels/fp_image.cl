@@ -100,7 +100,7 @@ __kernel void fp_image(
     for (int k=0;k<3;k++)
         rd[k] = R[k*3+0]*dirs[0] + R[k*3+1]*dirs[1] + R[k*3+2]*dirs[2];
 
-    float rd_norm  = native_sqrt(rd[0]*rd[0] + rd[1]*rd[1] + rd[2]*rd[2]);
+    float rd_norm  = sqrt(rd[0]*rd[0] + rd[1]*rd[1] + rd[2]*rd[2]);
     float step_val = dt * rd_norm;
 
     float inv_sv_xz = (float)Nxz / sVoxel_xz;

@@ -55,7 +55,7 @@ __kernel void bp_image(
         float ca = cs.x, sa = cs.y;
 
         float U  = SOD + ypr*sa + xpr*ca;
-        float inv_U = native_recip(U);
+        float inv_U = 1.f / U;
         float t  = ypr*ca - xpr*sa;
         float ai = SDD * t * inv_U;
         float bi = zpr * SDD * inv_U;
