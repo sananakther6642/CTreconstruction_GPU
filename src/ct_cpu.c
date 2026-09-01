@@ -338,12 +338,23 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
  * config, it's untested-on-this-hardware. Measured on kale today: fp
  * is 24.7s/epoch at 512^3 vs the sweep's 13.58s, a ~2x gap consistent
  * with fp_buffer's own Hawaii-tuned lws ({4,64,1}) measuring 1.58-3.4x
- * SLOWER on the GTX 680 than this machine's actual optimum. FP_TILE_MAX
- * raised 64->256 to let FP_TILE_ENV test past the old ceiling; each of
- * the 11 per-tile arrays below costs 4 bytes/slot/thread, so 256 is
- * 11.3 KB of L1 footprint per thread vs 64's 2.8 KB -- read the curve,
- * don't assume bigger wins. */
-#define FP_TILE_MAX 256
+ * SLOWER on the GTX 680 than this machine's actual optimum.
+ *
+ * FP_TILE_MAX raised twice: 64->256 first, then 256->1280 after the
+ * kale sweep showed FP_TILE=256 still improving fp (26.15s, down from
+ * 32's 27.24s) with no sign of a plateau -- 256 was an artificial
+ * ceiling from the constant, not a real optimum. 1280 is chosen as the
+ * first round number above H=1184 (the 512^3 detector height at
+ * SAMPLES512), since tile_n is naturally capped at H by the tiling
+ * loop (iv0 < H) regardless of FP_TILE_MAX, so nothing above H can
+ * ever produce a larger real tile_n -- raising the constant past H
+ * would just let further out-of-range FP_TILE_ENV values continue to
+ * silently no-op instead of testing anything new. Each of the 11
+ * per-tile arrays below costs 4 bytes/slot/thread, so 1280 is 56.3 KB
+ * of L1 footprint per thread vs 256's 11.3 KB -- likely to exceed a
+ * typical 32 KB L1d well before reaching H, so read the curve rather
+ * than assuming it keeps improving all the way to 1184. */
+#define FP_TILE_MAX 1280
     int FP_TILE = 32;
     {
         const char *tile_env = getenv("FP_TILE_ENV");
