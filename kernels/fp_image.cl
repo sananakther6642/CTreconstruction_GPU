@@ -42,7 +42,7 @@ __kernel void float_to_half(__global const float *src, __global half *dst, int n
 
 __constant sampler_t vol_samp =
     CLK_NORMALIZED_COORDS_FALSE |
-    CLK_ADDRESS_CLAMP_TO_EDGE   |
+    CLK_ADDRESS_CLAMP           |
     CLK_FILTER_LINEAR;
 
 /*
