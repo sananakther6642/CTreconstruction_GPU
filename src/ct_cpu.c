@@ -1,4 +1,5 @@
 #include "ct_cpu.h"
+#include "utils.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -557,6 +558,16 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
     bp_cpu(ones_p, bp_ones, p);
     free(ones_raw); free(ones_p);
 
+    /* FOV mask (see utils.h). Off by default -- fov_mask_rel_from_env()
+     * returns 0 unless FOV_MASK_REL is set, in which case this reduces to
+     * the legacy 1e-10f guard and behaviour is unchanged. */
+    float fov_rel   = fov_mask_rel_from_env();
+    int   fov_mask_on = (fov_rel > 0.f) ? 1 : 0;
+    float ones_thr  = fov_mask_threshold(bp_ones, vol_size, fov_rel);
+    if (fov_rel > 0.f)
+        printf("  FOV mask: rel=%.3g -> bp_ones threshold %.6g\n",
+               fov_rel, ones_thr);
+
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
 
@@ -584,8 +595,15 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
         #pragma omp parallel for schedule(static)
         for (size_t i = 0; i < vol_size; i++) {
             float denom = bp_ones[i];
-            if (denom > 1e-10f)
-                volume[i] *= bp_ratio[i] / denom;
+            /* Below threshold => outside the reliably-sampled region.
+             * Zero, don't freeze: the volume starts at 1.0 (main.c), so
+             * freezing would leave a bright rim instead of a clean edge.
+             * With masking off, ones_thr == 1e-10f and the `: 0.f` arm is
+             * reached only where bp_ones is effectively zero, where the
+             * old `: v` would have preserved a meaningless 1.0 anyway. */
+            volume[i] = (denom > ones_thr)
+                          ? volume[i] * bp_ratio[i] / denom
+                          : (fov_mask_on ? 0.f : volume[i]);
         }
         double t_ep_total = get_time_sec() - t_ep;
         printf("  epoch %3d/%d  total=%.2fs  fp=%.2fs  bp=%.2fs\n",

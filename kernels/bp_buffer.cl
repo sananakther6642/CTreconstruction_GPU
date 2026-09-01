@@ -258,11 +258,18 @@ __kernel void proj_divide(
 }
 
 /* ── Update volume: v0 *= bp_ratio / bp_ones (float4 vectorized) ─────── */
+/* ones_thresh: bp_ones cutoff for the FOV mask (see src/utils.h). Voxels
+ * below it are outside the reliably-sampled region and are zeroed, NOT
+ * frozen -- the volume starts at 1.0 (main.c), so freezing would leave a
+ * bright rim. Host passes 1e-10f when masking is off, reproducing the
+ * previous guard exactly. */
 __kernel void vol_update(
     __global       float *volume,
     __global const float *bp_ratio,
     __global const float *bp_ones,
-    int n
+    int n,
+    float ones_thresh,
+    int   mask_on      /* 1 = zero below threshold, 0 = legacy freeze */
 )
 {
     int i4 = get_global_id(0);
@@ -272,16 +279,17 @@ __kernel void vol_update(
         float4 br = vload4(i4, bp_ratio);
         float4 bo = vload4(i4, bp_ones);
         float4 out;
-        out.x = (bo.x > 1e-10f) ? v.x * br.x / bo.x : v.x;
-        out.y = (bo.y > 1e-10f) ? v.y * br.y / bo.y : v.y;
-        out.z = (bo.z > 1e-10f) ? v.z * br.z / bo.z : v.z;
-        out.w = (bo.w > 1e-10f) ? v.w * br.w / bo.w : v.w;
+        float4 fb = mask_on ? (float4)(0.f,0.f,0.f,0.f) : v;
+        out.x = (bo.x > ones_thresh) ? v.x * br.x / bo.x : fb.x;
+        out.y = (bo.y > ones_thresh) ? v.y * br.y / bo.y : fb.y;
+        out.z = (bo.z > ones_thresh) ? v.z * br.z / bo.z : fb.z;
+        out.w = (bo.w > ones_thresh) ? v.w * br.w / bo.w : fb.w;
         vstore4(out, i4, volume);
     } else {
         for (int j = base; j < n; j++) {
             float denom = bp_ones[j];
-            if (denom > 1e-10f)
-                volume[j] *= bp_ratio[j] / denom;
+            volume[j] = (denom > ones_thresh) ? volume[j] * bp_ratio[j] / denom
+                                              : (mask_on ? 0.f : volume[j]);
         }
     }
 }
@@ -313,7 +321,9 @@ __kernel void vol_update_img(
     __write_only image3d_t vol_img,
     int Nxz,
     int Ny,
-    int n
+    int n,
+    float ones_thresh,
+    int   mask_on      /* 1 = zero below threshold, 0 = legacy freeze */
 )
 {
     int i4 = get_global_id(0);
@@ -323,10 +333,11 @@ __kernel void vol_update_img(
         float4 br = vload4(i4, bp_ratio);
         float4 bo = vload4(i4, bp_ones);
         float4 out;
-        out.x = (bo.x > 1e-10f) ? v.x * br.x / bo.x : v.x;
-        out.y = (bo.y > 1e-10f) ? v.y * br.y / bo.y : v.y;
-        out.z = (bo.z > 1e-10f) ? v.z * br.z / bo.z : v.z;
-        out.w = (bo.w > 1e-10f) ? v.w * br.w / bo.w : v.w;
+        float4 fb = mask_on ? (float4)(0.f,0.f,0.f,0.f) : v;
+        out.x = (bo.x > ones_thresh) ? v.x * br.x / bo.x : fb.x;
+        out.y = (bo.y > ones_thresh) ? v.y * br.y / bo.y : fb.y;
+        out.z = (bo.z > ones_thresh) ? v.z * br.z / bo.z : fb.z;
+        out.w = (bo.w > ones_thresh) ? v.w * br.w / bo.w : fb.w;
         vstore4(out, i4, volume);
 
         int x = base / (Nxz * Ny);
@@ -340,11 +351,9 @@ __kernel void vol_update_img(
     } else {
         for (int j = base; j < n; j++) {
             float denom = bp_ones[j];
-            float val = volume[j];
-            if (denom > 1e-10f) {
-                val = volume[j] * bp_ratio[j] / denom;
-                volume[j] = val;
-            }
+            float val = (denom > ones_thresh) ? volume[j] * bp_ratio[j] / denom
+                                              : (mask_on ? 0.f : volume[j]);
+            volume[j] = val;
             int x = j / (Nxz * Ny);
             int rem = j % (Nxz * Ny);
             int y = rem / Ny;

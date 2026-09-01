@@ -1162,6 +1162,29 @@ static void run_diag_repeat_slab(CLState *cl, const CBpara *p,
     clReleaseMemObject(d_proj_scratch);
 }
 
+
+/* ── FOV mask threshold on a device bp_ones buffer ──────────────────────
+ * Reads bp_ones back once to find its max, then defers to the shared
+ * fov_mask_threshold() in utils.c so the CPU and GPU paths derive the
+ * cutoff by identical rule. The readback only happens when masking is
+ * actually enabled -- with FOV_MASK_REL unset this returns the legacy
+ * 1e-10f guard immediately and costs nothing. */
+static float gpu_fov_threshold(CLState *cl, cl_mem d_bp_ones, size_t vol_n,
+                                float rel, const char *label)
+{
+    if (!(rel > 0.f)) return 1e-10f;
+    float *host = (float *)malloc(vol_n * sizeof(float));
+    if (!host) return 1e-10f;
+    cl_int err = clEnqueueReadBuffer(cl->queue, d_bp_ones, CL_TRUE, 0,
+                                      vol_n * sizeof(float), host, 0, NULL, NULL);
+    CL_CHECK(err, "bp_ones readback (FOV mask)");
+    float thr = fov_mask_threshold(host, vol_n, rel);
+    free(host);
+    printf("  FOV mask%s: rel=%.3g -> bp_ones threshold %.6g\n",
+           label ? label : "", rel, thr);
+    return thr;
+}
+
 /* ── Internal: run backprojection (image mode) ──────────────────────────── */
 /* OSEM: ip_start/ip_count select a contiguous angle
  * subrange for bp's internal angle loop. */
@@ -1441,6 +1464,11 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         clReleaseMemObject(d_ones_prep);
         printf("  bp(ones) computed.\n");
     }
+    float fov_rel   = fov_mask_rel_from_env();
+    int   fov_mask_on = (fov_rel > 0.f) ? 1 : 0;
+    float ones_thr  = gpu_fov_threshold(cl, d_bp_ones, vol_bytes / sizeof(float), fov_rel, "");
+    {
+    }
 
     /* ── Image objects for image mode ── */
     cl_mem vol_img        = NULL;
@@ -1598,11 +1626,14 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             int ip_start0 = 0;
             clSetKernelArg(k,14, sizeof(int),    &ip_start0);
             clSetKernelArg(k,15, sizeof(int),    &np);
+            clSetKernelArg(k,16, sizeof(float),  &ones_thr);
+            clSetKernelArg(k,17, sizeof(int),    &fov_mask_on);
             /* HYBRID_PRECISION build only: these two trailing args exist
-             * solely in that build (see kernels/bp_image.cl). */
+             * solely in that build (see kernels/bp_image.cl). Indices are
+             * 18/19 -- ones_thresh and mask_on sit at 16/17. */
             if (cl->hybrid_precision) {
-                clSetKernelArg(k,16,sizeof(float),&cl->hybrid_radius_frac);
-                clSetKernelArg(k,17,sizeof(float),&cl->hybrid_grad_thresh);
+                clSetKernelArg(k,18,sizeof(float),&cl->hybrid_radius_frac);
+                clSetKernelArg(k,19,sizeof(float),&cl->hybrid_grad_thresh);
             }
 
             size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
@@ -1653,6 +1684,8 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
             clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones);
             clSetKernelArg(k,3,sizeof(int),   &vol_n);
+            clSetKernelArg(k,4,sizeof(float), &ones_thr);
+            clSetKernelArg(k,5,sizeof(int),   &fov_mask_on);
             size_t gws=((size_t)vol_n + 3) / 4;
             err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
             CL_CHECK(err,"vol_update");
@@ -1865,6 +1898,21 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     float SOD=(float)p->SOD, SDD=(float)p->SDD;
     float vs=(float)p->voxelSize, px=(float)p->pixelSize;
 
+    /* FOV mask threshold, PER SUBSET: each subset's bp_ones is built from
+     * only its own angles, so their maxima differ and one shared cutoff
+     * would mask different fractions of each. Off by default (see
+     * src/utils.h); with FOV_MASK_REL unset every entry is the legacy
+     * 1e-10f and no readback happens. */
+    float fov_rel = fov_mask_rel_from_env();
+    int   fov_mask_on = (fov_rel > 0.f) ? 1 : 0;
+    float *ones_thr_s = (float *)malloc((size_t)S * sizeof(float));
+    for (int s = 0; s < S; s++) {
+        char lbl[32];
+        snprintf(lbl, sizeof(lbl), " (subset %d/%d)", s + 1, S);
+        ones_thr_s[s] = gpu_fov_threshold(cl, d_bp_ones[s], (size_t)vol_n,
+                                           fov_rel, (S > 1) ? lbl : "");
+    }
+
     /* Persistent image2d_array for ratio */
     cl_image_format half_fmt = {CL_R, CL_HALF_FLOAT};
     cl_image_desc rdesc={0};
@@ -2046,6 +2094,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                 clSetKernelArg(k,4,sizeof(int),&Nxz);
                 clSetKernelArg(k,5,sizeof(int),&Ny);
                 clSetKernelArg(k,6,sizeof(int),&vol_n);
+                clSetKernelArg(k,7,sizeof(float),&ones_thr_s[s]);
+                clSetKernelArg(k,8,sizeof(int),&fov_mask_on);
                 size_t gws=((size_t)vol_n + 3) / 4;
                 err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
                 CL_CHECK(err,"update_img opt");
@@ -2055,6 +2105,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                 clSetKernelArg(k,1,sizeof(cl_mem),&d_bp_ratio);
                 clSetKernelArg(k,2,sizeof(cl_mem),&d_bp_ones[s]);
                 clSetKernelArg(k,3,sizeof(int),&vol_n);
+                clSetKernelArg(k,4,sizeof(float),&ones_thr_s[s]);
+                clSetKernelArg(k,5,sizeof(int),&fov_mask_on);
                 size_t gws=((size_t)vol_n + 3) / 4;
                 err=clEnqueueNDRangeKernel(cl->queue,k,1,NULL,&gws,NULL,0,NULL,NULL);
                 CL_CHECK(err,"update opt");
@@ -2091,6 +2143,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     clReleaseMemObject(d_bp_ratio);
     for (int s = 0; s < S; s++) clReleaseMemObject(d_bp_ones[s]);
     free(d_bp_ones);
+    free(ones_thr_s);
     free(subset_start);
     free(subset_count);
     clReleaseMemObject(cl->d_R_mats);

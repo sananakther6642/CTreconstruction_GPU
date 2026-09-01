@@ -213,7 +213,9 @@ __kernel void bp_image_update(
     float voxelSize,
     float pixelSize,
     int   ip_start,
-    int   ip_count
+    int   ip_count,
+    float ones_thresh,  /* FOV mask cutoff -- see src/utils.h */
+    int   mask_on       /* 1 = zero below threshold, 0 = legacy freeze */
 #ifdef HYBRID_PRECISION
     /* radius_frac: fraction of Nxz/2 beyond which the manual path is
      * considered at all -- 62%/100% of >100xRMS outliers sit beyond
@@ -291,7 +293,10 @@ __kernel void bp_image_update(
 
     float denom = bp_ones[idx];
     float v     = volume[idx];
-    float out_v = (denom > 1e-10f) ? v * sum / denom : v;
+    /* FOV mask: zero below threshold, don't freeze -- see bp_buffer.cl's
+     * vol_update note and src/utils.h. */
+    float out_v = (denom > ones_thresh) ? v * sum / denom
+                                        : (mask_on ? 0.f : v);
     volume[idx] = out_v;
 
     /* vol_img layout: width=Ny(z), height=Nxz(y), depth=Nxz(x) -- same

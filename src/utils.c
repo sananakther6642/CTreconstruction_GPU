@@ -232,3 +232,29 @@ void log_convergence(const char *path, int epoch, double epoch_time_s,
             epoch + 1, epoch_time_s, loglik, residual, rel_change);
     fclose(f);
 }
+
+/* ── FOV mask threshold ─────────────────────────────────────────────────
+ * See utils.h for why this exists. Kept here, shared by src/ct_cpu.c and
+ * src/ct_gpu.c, specifically so the CPU reference and every GPU mode
+ * derive the identical cutoff from the identical rule -- a mask that
+ * differed between them would manufacture exactly the kind of CPU/GPU
+ * disagreement this is meant to remove. */
+float fov_mask_rel_from_env(void)
+{
+    const char *e = getenv("FOV_MASK_REL");
+    if (!e) return 0.f;
+    float v = (float)atof(e);
+    if (!(v > 0.f) || v >= 1.f) return 0.f;   /* also catches NaN */
+    return v;
+}
+
+float fov_mask_threshold(const float *bp_ones, size_t n, float rel)
+{
+    if (!(rel > 0.f) || !bp_ones || n == 0) return 1e-10f;  /* legacy guard */
+    float mx = 0.f;
+    for (size_t i = 0; i < n; i++) if (bp_ones[i] > mx) mx = bp_ones[i];
+    float thr = rel * mx;
+    /* Never go below the legacy guard: it still has to stop division by a
+     * literal zero even when rel is tiny. */
+    return (thr > 1e-10f) ? thr : 1e-10f;
+}

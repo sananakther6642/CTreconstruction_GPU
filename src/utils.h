@@ -33,6 +33,30 @@ int save_hdf5_proj(const char *path, const CBpara *para, const float *proj);
 /* Timing utility (seconds) */
 double get_time_sec(void);
 
+/* ── FOV mask threshold (see utils.c for the full rationale) ────────────
+ * MLEM's update is v *= bp_ratio/bp_ones, historically guarded only by
+ * bp_ones > 1e-10f. bp_ones is the sensitivity map: at FOV-edge voxels it
+ * is genuinely near zero, so that division multiplies by up to ~1e10 and
+ * amplifies any tiny CPU/GPU difference every epoch. Measured at 256^3:
+ * MSE(gpu-img, gpu-buf) grows 8.4e-10 -> 1.6e-7 between 10 and 50 epochs
+ * (190x for 5x the iterations), driven by a handful of edge voxels, while
+ * bypassing the hardware sampler entirely moved it only 6%.
+ *
+ * Returns the absolute cutoff to use for a given bp_ones array: voxels
+ * below it are outside the reliably-sampled region and must be MASKED TO
+ * ZERO rather than left frozen (the volume is initialised to 1.0 in
+ * main.c, so freezing would leave a bright rim, not a clean edge).
+ *
+ * Relative to max(bp_ones), not absolute, so the same setting transfers
+ * across resolutions and angle counts. rel <= 0 disables masking and
+ * returns the legacy 1e-10f, preserving the old behaviour exactly. */
+float fov_mask_threshold(const float *bp_ones, size_t n, float rel);
+
+/* Reads FOV_MASK_REL from the environment (0 = off, the default). Both the
+ * CPU and GPU paths call this so a single env var drives both and they can
+ * never silently disagree. */
+float fov_mask_rel_from_env(void);
+
 /* Append one convergence row to path (CSV, header written on first call
  * per path via "w" vs "a" — caller passes epoch==0 to truncate/header).
  * p0, b: measured / current-estimate projections, both [proj_n].
