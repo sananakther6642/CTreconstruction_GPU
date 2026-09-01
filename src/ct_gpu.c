@@ -716,85 +716,115 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
      * get_global_id(2) lands on the correct absolute angle index. */
     const size_t ANG_SLAB = 8;
     int slab_idx = 0;
-    /* FP_BUFFER_SLAB_PAUSE_US: experimental mitigation for the confirmed
-     * GPU-BOUND variance above — inserts a host-side sleep between slab
-     * launches, in case brief idle windows let the GPU recover from a
-     * throttled clock/power state before the next launch. Off by default
-     * (0). Likely limited benefit if this is real thermal throttling
-     * (recovery is usually seconds-to-minutes, not the microsecond-scale
-     * gaps this can realistically add without hurting throughput more
-     * than the throttling itself costs) — worth testing anyway since it's
-     * cheap and the alternative is no mitigation at all. */
+    /* FP_BUFFER_SLAB_PAUSE_US: experimental mitigation attempt, from before
+     * the mechanism below was understood -- inserts a host-side sleep
+     * between slab launches. Superseded by FP_BUFFER_SKIP_SLAB_FINISH
+     * (below), which is the mitigation that actually measured a real win.
+     * Left in, off by default (0), for further testing. */
     long slab_pause_us = 0;
     {
         const char *pause_env = getenv("FP_BUFFER_SLAB_PAUSE_US");
         if (pause_env) slab_pause_us = atol(pause_env);
     }
-    /* Watchdog diagnostic: the per-slab clFinish below is a watchdog, not just
-     * a sync point -- it's what lets each slab be individually timed for
-     * the SLOW/HOST-SIDE-GAP diagnostic printout (used throughout this
-     * project's variance investigation, see --diag repeat-slab and the
-     * README's gpu-buf variance section). Skipping it (enqueue all slabs,
-     * sync once at the end) saves the plan's estimated 2-5% on gpu-buf,
-     * but silently disables that diagnostic. Off by default so the
-     * diagnostic path stays the default; opt in only when the variance
-     * mechanism is already understood and not being actively debugged. */
+    /* FP_BUFFER_SKIP_SLAB_FINISH: RECOMMENDED for real runs (see the DVFS
+     * root-cause comment below) -- batches all slab enqueues with one
+     * clFinish at the end instead of syncing after every slab. Measured
+     * ~29% faster on average on AMD Hawaii PRO (20.60s/epoch vs
+     * 29.14s/epoch unmitigated, 30-epoch runs) and reduced both the
+     * frequency and peak severity of the mclk-DVFS bursts described
+     * below, though it does not eliminate them -- some slabs still
+     * degrade even fully packed. Off by default only because it disables
+     * the per-slab SLOW/HOST-SIDE-GAP diagnostic print (each slab's own
+     * clFinish is what makes that timing possible) -- opt in for
+     * production runs, leave off only when actively re-diagnosing this
+     * variance. */
     int skip_slab_finish = 0;
     {
         const char *skip_env = getenv("FP_BUFFER_SKIP_SLAB_FINISH");
         if (skip_env && atoi(skip_env) != 0) skip_slab_finish = 1;
     }
-    /* Variance investigation (see README "gpu-buf run-to-run variance"):
-     * ruled out other-user contention and per-angle geometry, couldn't
-     * check dmesg (no root). GPU-side event profiling
+    /* ── gpu-buf variance root cause (re-diagnosed 2026-09-01) ──────────
+     * See README "gpu-buf run-to-run variance" for the full history. This
+     * replaces an earlier theory (kept below, superseded) that pinned it
+     * on driver-side memory-placement demotion of the 537MB d_vol buffer.
+     *
+     * CONFIRMED MECHANISM: Hawaii's memory-clock DVFS periodically drops
+     * mclk from 1500 MHz to 150 MHz (10x) during sustained fp_buffer
+     * execution. Direct evidence via FP_BUFFER_CLOCK_PROBE=1
+     * (sample_gpu_clocks, above): every slow slab across a 30-epoch,
+     * ~35-event run sampled mclk=150MHz; every fast baseline sampled
+     * mclk=1500MHz. Zero overlap. sclk and temperature both held flat
+     * throughout (1010MHz core clock never moved, 49-58C) -- rules out
+     * core-clock throttling and thermal throttling as the trigger; only
+     * mclk moves. gpu-img/gpu-opt stay flat in the same sessions gpu-buf
+     * degrades, consistent with fp_buffer's uncoalesced buffer access
+     * being bandwidth-bound (hit hard by a 10x memory-bandwidth cut)
+     * while gpu-img/gpu-opt read through the texture cache (largely
+     * insensitive to mclk state). A --diag repeat-slab run (60 fixed-slab
+     * repeats, at the corrected lws={2,16,2} -- see that function's lws
+     * comment -- with NO reallocation anywhere in the run) showed the
+     * SAME slab oscillate between the fast and slow cost tier repeatedly
+     * and spontaneously; this is what falsifies the earlier "holds until
+     * d_vol is freed and recreated" theory below.
+     *
+     * power_dpm_force_performance_level (the sysfs knob to pin the GPU at
+     * its top DPM state) exists but is not writable without root on this
+     * machine (confirmed: permission denied), so the mechanism can't be
+     * force-disabled at the driver level. FP_BUFFER_SKIP_SLAB_FINISH
+     * (above) is the mitigation that actually helps, by closing the idle
+     * gap between slab launches that may otherwise let the GPU settle
+     * into the low-power state -- real but partial (~29% faster mean,
+     * bursts reduced not eliminated), which also indicates the trigger is
+     * only partly gap-related.
+     *
+     * ── superseded theory (kept for the record) ──────────────────────
+     * Earlier diagnosis: ruled out other-user contention and per-angle
+     * geometry, couldn't check dmesg (no root). GPU-side event profiling
      * (CL_PROFILING_COMMAND_START/END, already enabled on the queue via
      * CL_QUEUE_PROFILING_ENABLE) confirmed slow slabs are GPU-bound
      * (wall==gpu to the ms), and a follow-up diagnostic (--diag
-     * repeat-slab, the variance diagnostic) found the actual mechanism: NOT
-     * thermal throttling (Hawaii's ~3.2x DVFS range can't produce the
-     * observed ~5.8-6x jump, and gpu-img/gpu-opt stay stable in the same
-     * sessions gpu-buf goes slow). Repeating one fixed angle-slab many
-     * times showed a step degradation to ~6x cost that HOLDS, then
-     * recovers instantly when d_vol is freed and recreated -- and then
-     * degrades again after a further, variable number of launches (6-13
-     * in testing). This is consistent with the OpenCL driver periodically
-     * demoting the 537MB d_vol buffer's memory placement under sustained
-     * access (e.g. losing a large-page mapping or migrating out of the
-     * fastest VRAM tier), recoverable by reallocation, recurring on a
-     * roughly time/pressure-based cycle rather than a fixed launch count.
+     * repeat-slab) found what looked like the mechanism: NOT thermal
+     * throttling (Hawaii's ~3.2x CORE-clock DVFS range can't produce the
+     * observed ~5.8-6x jump -- the error in this argument is that it used
+     * core-clock range on a kernel that turned out to be memory-clock
+     * bound, where the DPM range is 8.3x, comfortably covering it), and
+     * gpu-img/gpu-opt stay stable in the same sessions gpu-buf goes slow.
+     * Repeating one fixed angle-slab many times APPEARED to show a step
+     * degradation to ~6x cost that held, then recovered instantly when
+     * d_vol was freed and recreated -- and degraded again after a
+     * further, variable number of launches (6-13 in testing). This was
+     * attributed to the OpenCL driver periodically demoting the 537MB
+     * d_vol buffer's memory placement under sustained access. Two things
+     * this missed: that repeat-slab diagnostic ran at lws={4,64,1} while
+     * production fp_buffer used {2,16,2} (a different work-group shape
+     * than the kernel actually showing the variance -- fixed, see that
+     * function's comment), and a longer, corrected-lws repeat-slab run
+     * showed the same slab recovering spontaneously with NO reallocation
+     * at all, which a one-shot allocation-tied demotion cannot produce.
      *
-     * FP_BUFFER_VOL_REALLOC_EVERY: mitigation attempt -- every N angle-slabs,
-     * read the current d_vol contents back to host, free the buffer, and
-     * recreate it fresh from that same data, on the theory that this resets
-     * whatever driver-side state causes the demotion confirmed via --diag
-     * repeat-slab (see that diagnostic's comment for the root-cause
-     * evidence: NOT thermal throttling, a step-degradation that recovers
-     * instantly on reallocation and recurs after 6-13 further launches).
+     * FP_BUFFER_VOL_REALLOC_EVERY: mitigation attempt under the old
+     * theory -- every N angle-slabs, read the current d_vol contents back
+     * to host, free the buffer, and recreate it fresh from that same
+     * data, on the theory that this resets whatever driver-side state
+     * causes the (apparent) demotion.
      *
-     * DOES NOT RELIABLY BEAT BASELINE -- kept off by default (0) after
-     * real testing contradicted an earlier promising result. A 5-epoch
-     * sweep at N in {3,4,5,6,7,10} showed N=5 as a clear winner (34.91s
-     * vs a 37.7-50.9s baseline-equivalent range, clean of slow-slab
-     * warnings after 2 epochs of warmup) -- but that did not reproduce at
-     * the full 10-epoch/75-angle scale used for the documented baseline.
-     * Four full 10-epoch runs with N=5 gave [105.84, 86.77, 89.04, 85.31]s
-     * (mean 91.74s, stdev 9.52) against the three existing unmitigated
-     * baseline runs [75.37, 101.89, 83.63]s (mean 86.96s, stdev 13.57) --
-     * the mitigated mean is *slower*, not faster (-5.5%), though the
-     * spread narrowed somewhat (weak signal at this sample size, not
-     * treated as confirmed). Most mitigated runs still showed scattered
-     * GPU-BOUND warnings despite reallocating every 5 launches, meaning
-     * it does not reliably land inside the degradation-avoidance window
-     * at this scale, and each reallocation itself costs real time
-     * (~0.2-0.4s observed, readback+upload of 537MB) that appears to
-     * roughly cancel whatever it saves.
+     * DID NOT RELIABLY BEAT BASELINE even under the old theory -- kept
+     * off by default (0). A 5-epoch sweep at N in {3,4,5,6,7,10} showed
+     * N=5 as a clear winner (34.91s vs a 37.7-50.9s baseline-equivalent
+     * range, clean of slow-slab warnings after 2 epochs of warmup) -- but
+     * that did not reproduce at the full 10-epoch/75-angle scale used for
+     * the documented baseline. Four full 10-epoch runs with N=5 gave
+     * [105.84, 86.77, 89.04, 85.31]s (mean 91.74s, stdev 9.52) against the
+     * three existing unmitigated baseline runs [75.37, 101.89, 83.63]s
+     * (mean 86.96s, stdev 13.57) -- the mitigated mean is *slower*, not
+     * faster (-5.5%). Makes sense in hindsight: it was intervening on a
+     * mechanism (buffer placement) that was never the actual cause, so
+     * each reallocation (~0.2-0.4s, readback+upload of 537MB) was pure
+     * overhead with no corresponding benefit.
      *
-     * Root-cause diagnosis (buffer-tied, driver-side, not thermal) stands
-     * on its own evidence from --diag repeat-slab; this specific
-     * mitigation strategy does not fix it in practice at real MLEM scale.
-     * Left in as an opt-in env var for further tuning (e.g. a different
-     * trigger heuristic, or per-buffer-size scaling) rather than removed,
-     * since the underlying mechanism and hook point are still correct. */
+     * Left in as an opt-in env var since the hook point (swap d_vol mid-
+     * run) could still be useful for other purposes, but it is not a
+     * variance mitigation -- use FP_BUFFER_SKIP_SLAB_FINISH for that. */
     int realloc_every = 0;
     {
         const char *re_env = getenv("FP_BUFFER_VOL_REALLOC_EVERY");
@@ -891,34 +921,44 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
 /*
  * ── Diagnostic: repeat one fp_buffer angle-slab N times ─────────────────
  *
- * The README's "thermal throttling" explanation
- * for gpu-buf's run-to-run variance is disputed (6.6x discrete jump is
- * beyond Hawaii's ~3.2x DVFS range, and gpu-img/gpu-opt stay stable in the
- * same sessions gpu-buf goes slow -- device-wide throttling can't be
- * mode-selective). This isolates ONE fixed angle-slab and launches it N
- * times back-to-back, timing each with GPU-side event profiling:
+ * Used to isolate the gpu-buf variance root cause -- now confirmed as
+ * Hawaii memory-clock (mclk) DVFS (see run_fp_buffer's root-cause comment
+ * above and README "gpu-buf run-to-run variance" for the full evidence).
+ * Combined with FP_BUFFER_CLOCK_PROBE=1, a 60-repeat run at the corrected
+ * lws={2,16,2} (see run_fp_buffer's lws comment -- this diagnostic
+ * previously ran at a mismatched {4,64,1}, now fixed) showed the SAME
+ * fixed slab oscillate between the fast and slow cost tier repeatedly and
+ * spontaneously across the run, with realloc_at unused (0) throughout --
+ * i.e. no d_vol reallocation ever happened, yet speed recovered on its
+ * own multiple times. That result falsified an earlier theory (see the
+ * superseded section in run_fp_buffer's comment) that this was a one-shot
+ * d_vol buffer-placement demotion recoverable only by reallocation.
  *
- *   - Throttling predicts MONOTONE degradation (die heating under load).
- *   - TLB/page-residency predicts BIMODAL switching between two cost levels.
+ * This isolates ONE fixed angle-slab and launches it N times back-to-back,
+ * timing each with GPU-side event profiling -- still useful for
+ * characterizing the oscillation pattern itself (frequency, duty cycle)
+ * even with the mechanism now identified:
+ *
+ *   - Throttling predicts MONOTONE degradation (die heating under load) --
+ *     ruled out; instead see spontaneous fast<->slow oscillation.
+ *   - TLB/page-residency predicts BIMODAL switching between two cost
+ *     levels -- consistent with what's observed (two clear cost tiers,
+ *     tracking mclk's two DPM states directly).
  *   - Memory-channel camping predicts UNIFORMLY slow, every time (fully
- *     deterministic for that angle set).
+ *     deterministic for that angle set) -- ruled out by fast reps.
  *
  * angle_offset lets the same test be re-run with a different angle range
- * in the same slab-index slot (A3: does slowness follow slab INDEX or
- * ANGLE VALUE?) without changing which position in the launch sequence it
- * occupies.
+ * in the same slab-index slot (does slowness follow slab INDEX or ANGLE
+ * VALUE? -- moot now that the trigger is confirmed to be the GPU's own
+ * clock state rather than anything angle- or slab-specific, but the knob
+ * is left in for further characterization).
  *
  * realloc_at (0 = never): after this many repeats have completed, free
  * d_vol and create a fresh buffer from the same host data, then continue.
- * Both repeat-slab runs so far show a one-time step degradation (~5.8-6x)
- * that then holds permanently for the rest of the run, angle-independent
- * -- not thermal (no monotone ramp), not channel camping (starts fast),
- * not classic TLB bimodal flapping (single step, not repeated switching).
- * That points at a one-shot driver-side event tied to the allocation
- * itself (e.g. page migration/remapping under sustained pressure). If
- * speed recovers after realloc, this confirms it and gives a workaround
- * (periodic reallocation); if it doesn't, the cause is external to the
- * buffer (global GPU/driver state).
+ * No longer expected to matter for the variance itself (mclk state is
+ * independent of d_vol's lifetime) -- left in as a diagnostic knob, not a
+ * mitigation; see FP_BUFFER_SKIP_SLAB_FINISH in run_fp_buffer for the
+ * mitigation that actually helps.
  */
 static void run_diag_repeat_slab(CLState *cl, const CBpara *p,
                                   const float *volume,
