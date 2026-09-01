@@ -329,8 +329,21 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
  * and 32 costs less stack/cache footprint per tile than 48/64. 32 is now
  * the default (was 8, a ~19% win: 16.84s->13.58s fp/epoch at 512^3).
  * Arrays sized to FP_TILE_MAX so FP_TILE_ENV can still override for
- * further testing without touching declarations. */
-#define FP_TILE_MAX 64
+ * further testing without touching declarations.
+ *
+ * RE-SWEEP PENDING (512^3 speedup plan): that sweep ran on pool15/AMD
+ * Hawaii PRO (commit 5a0b5d1, 2026-08-21), predating the GTX 680/kale
+ * switch -- SAMPLES512=512 and the AABB clip (W>512, added 86b4d7d,
+ * 2026-08-17) were both already active then, so this is not a stale
+ * config, it's untested-on-this-hardware. Measured on kale today: fp
+ * is 24.7s/epoch at 512^3 vs the sweep's 13.58s, a ~2x gap consistent
+ * with fp_buffer's own Hawaii-tuned lws ({4,64,1}) measuring 1.58-3.4x
+ * SLOWER on the GTX 680 than this machine's actual optimum. FP_TILE_MAX
+ * raised 64->256 to let FP_TILE_ENV test past the old ceiling; each of
+ * the 11 per-tile arrays below costs 4 bytes/slot/thread, so 256 is
+ * 11.3 KB of L1 footprint per thread vs 64's 2.8 KB -- read the curve,
+ * don't assume bigger wins. */
+#define FP_TILE_MAX 256
     int FP_TILE = 32;
     {
         const char *tile_env = getenv("FP_TILE_ENV");
