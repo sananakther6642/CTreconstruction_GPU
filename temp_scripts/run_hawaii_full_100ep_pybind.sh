@@ -1,14 +1,21 @@
 #!/bin/bash
-# Fills the remaining gaps on pool15-01 (AMD Hawaii PRO) as of today's
-# mclk-DVFS mitigation work (FP_BUFFER_SKIP_SLAB_FINISH, see README
-# "gpu-buf run-to-run variance"):
+# Fills the remaining gaps on pool15-01 (AMD Hawaii PRO). The existing
+# CLI 100-epoch set (pool15-results branch, 2026-08-26 checkpoints)
+# predates a batch of optimization commits landed 2026-09-01 --
+# specifically: 09cacc4 (AABB default flipped off for gpu-buf), 6ea88c7
+# (P1b -- gates d_ratio/d_ratio_prep allocation on GPU_MODE_BUFFER, i.e.
+# gpu-buf-specific), and 7884899/638a265/02965e7/7da1c17 (FP_TILE default
+# changes -- fp_cpu.c only, so CPU MODE specifically, not GPU). Checked
+# via `git log --format=%ad` against the 2026-08-26T13:5X:XXZ checkpoint
+# timestamps -- all of the above post-date them. gpu-img/gpu-opt are
+# untouched by any of this and remain valid as-is; only cpu and gpu-buf
+# are stale.
 #
-#   0. CLI, gpu-buf ONLY, both resolutions, 100 epochs, WITH today's
-#      mitigation on. The existing CLI 100-epoch set on the
-#      pool15-results branch (2026-08-26 checkpoints) predates this
-#      session's work -- its gpu-buf numbers reflect the unmitigated
-#      baseline, not current code. cpu/gpu-img/gpu-opt are untouched by
-#      today's changes and are NOT re-run (still valid as-is).
+#   0. CLI, cpu AND gpu-buf, both resolutions, 100 epochs, against
+#      CURRENT code (includes today's separate mclk-DVFS mitigation,
+#      FP_BUFFER_SKIP_SLAB_FINISH, for the gpu-buf runs -- see README
+#      "gpu-buf run-to-run variance"). gpu-img/gpu-opt NOT re-run here
+#      (still valid, untouched by any of the above).
 #   1. pybind, 256^3, all modes, 100 epochs -- Hawaii never had this
 #      (kale does, see run_kale_full_100ep.sh, same structure, mirrored
 #      here for the other machine).
@@ -46,7 +53,8 @@
 # NAMING: ct_hawaiifull_ prefix throughout, mirrors kale's ct_kalefull_
 # collision-safety rationale.
 #
-# Launch inside tmux (this is a long run -- 2 CLI configs + 8 pybind
+# Launch inside tmux (this is a long run -- 4 CLI configs (2 of them cpu
+# at ~55-60 min each, per the existing cpu-512 estimate) + 8 pybind
 # configs, several of them 512^3):
 #   tmux new -s hawaiifull
 #   cd ~/CTreconstruction_GPU_pool15
@@ -78,11 +86,11 @@ fi
 AVAIL_KB=$(df -Pk . | tail -1 | awk '{print $4}')
 AVAIL_GB=$((AVAIL_KB / 1024 / 1024))
 echo "disk available here: ${AVAIL_GB}GB"
-if [ "$AVAIL_GB" -lt 4 ]; then
-  # 2 CLI .hdf5 (256^3 ~65MB + 512^3 ~513MB) + 8 pybind .hdf5 (4x256^3
-  # ~65MB + 4x512^3 ~513MB) = ~2.9GB of output alone, before logs and the
-  # CLI build -- 4GB free is the minimum with any margin.
-  echo "ERROR: less than 4GB free -- this run's outputs alone are ~2.9GB,"
+if [ "$AVAIL_GB" -lt 5 ]; then
+  # 4 CLI .hdf5 (2x256^3 ~65MB + 2x512^3 ~513MB) + 8 pybind .hdf5
+  # (4x256^3 ~65MB + 4x512^3 ~513MB) = ~3.5GB of output alone, before
+  # logs and the CLI build -- 5GB free is the minimum with any margin.
+  echo "ERROR: less than 5GB free -- this run's outputs alone are ~3.5GB,"
   echo "  likely to fail partway through."
   echo "  Run ./temp_scripts/cleanup_before_run.sh first, or free space manually."
   exit 1
@@ -100,10 +108,24 @@ ls -la build/ct_recon
 # (pybind_backend/backend.py) -- no separate pre-build step needed, same
 # as run_kale_full_100ep.sh.
 
-# ── Part 0: CLI, gpu-buf ONLY, both resolutions, WITH today's mitigation ─
-# cpu/gpu-img/gpu-opt are untouched by FP_BUFFER_SKIP_SLAB_FINISH and are
-# NOT re-run -- the existing pool15-results 100-epoch numbers for those
-# modes are still current.
+# ── Part 0: CLI, cpu + gpu-buf (the two stale modes), both resolutions ──
+# gpu-img/gpu-opt are untouched by anything since the 2026-08-26
+# checkpoints and are NOT re-run -- still current.
+echo ""
+echo "=== $(date) : [0/2] CLI 256^3 cpu, ${EPOCHS} epochs (post-FP_TILE-retune) ==="
+build/ct_recon --data "$DATA256" \
+  --out "$OUTDIR/cli_output_cpu_256_retest.hdf5" \
+  --mode cpu --epochs "$EPOCHS" --kernels kernels \
+  2>&1 | tee "$OUTDIR/cli_cpu_256_retest.log"
+
+echo ""
+echo "=== $(date) : [0/2] CLI 512^3 cpu, ${EPOCHS} epochs (post-FP_TILE-retune; expect ~55-60 min) ==="
+OMP_NUM_THREADS=$(nproc) OMP_PROC_BIND=close OMP_PLACES=cores \
+  build/ct_recon --data "$DATA512" \
+  --out "$OUTDIR/cli_output_cpu_512_retest.hdf5" \
+  --mode cpu --epochs "$EPOCHS" --samples 512 --kernels kernels \
+  2>&1 | tee "$OUTDIR/cli_cpu_512_retest.log"
+
 echo ""
 echo "=== $(date) : [0/2] CLI 256^3 gpu-buf, ${EPOCHS} epochs (mitigated) ==="
 FP_BUFFER_SKIP_SLAB_FINISH="$SKIP_FINISH" build/ct_recon --data "$DATA256" \
@@ -118,7 +140,7 @@ FP_BUFFER_SKIP_SLAB_FINISH="$SKIP_FINISH" build/ct_recon --data "$DATA512" \
   --mode gpu-buf --epochs "$EPOCHS" --samples 512 --kernels kernels \
   2>&1 | tee "$OUTDIR/cli_gpu_buf_512_mitigated.log"
 
-echo "$(date)" > ct_hawaiifull_cli_gpubuf_done.marker
+echo "$(date)" > ct_hawaiifull_cli_stale_modes_done.marker
 
 rm -rf ~/.cache/torch_extensions/ct_recon-*
 
