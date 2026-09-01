@@ -558,6 +558,27 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
     bp_cpu(ones_p, bp_ones, p);
     free(ones_raw); free(ones_p);
 
+    /* BP_ONES_DUMP=<path>: write the sensitivity map and exit. Diagnostic
+     * for the FOV-mask question -- the sweep found rel=1e-4/1e-3 produced
+     * bit-identical output, meaning no voxel sits that far below the peak,
+     * which contradicts the near-zero-denominator theory. This dumps the
+     * real distribution (read it with python/diag_bp_ones.py) so that is
+     * settled on evidence rather than another sweep arm. CPU path only:
+     * bp_ones is identical in principle across modes, and this is the one
+     * place it already lives in a plain host array. */
+    {
+        const char *dump = getenv("BP_ONES_DUMP");
+        if (dump) {
+            if (save_hdf5(dump, p, bp_ones) == 0)
+                printf("  bp_ones written to %s (BP_ONES_DUMP set) -- exiting\n", dump);
+            else
+                fprintf(stderr, "  BP_ONES_DUMP: failed to write %s\n", dump);
+            free(b); free(ratio); free(ratio_bp); free(bp_ratio); free(bp_ones);
+            if (v_prev) free(v_prev);
+            return;
+        }
+    }
+
     /* FOV mask (see utils.h). Off by default -- fov_mask_rel_from_env()
      * returns 0 unless FOV_MASK_REL is set, in which case this reduces to
      * the legacy 1e-10f guard and behaviour is unchanged. */

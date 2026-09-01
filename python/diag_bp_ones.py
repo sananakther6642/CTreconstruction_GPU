@@ -1,90 +1,53 @@
 #!/usr/bin/env python3
-"""
-Diagnostic for the 26-voxel outlier spike found in
-output_python_reconstruction.hdf5 (Topic_2_CTreconstruction.py, 256^3,
-20 epochs) -- MSE-vs-Topic2 was 2.06e-02 with these voxels in, 3.2e-04
-excluding them, so they dominate the reported number. All 26 sit at
-z=1 or z=254 (one slice in from the physical edge, not the edge itself)
-or a small interior cluster.
+"""What does bp_ones actually look like, and is the FOV-edge amplification
+theory even possible?
 
-Hypothesis: Topic_2_CTreconstruction.py's MLEM update divides by
-bp_ones with no zero-guard (line ~253: `ratio = bp_f(result) / bp_ones`,
-unlike the nearby np.divide(..., where=(b != 0)) which does guard).
-If bp_ones is near-zero at those voxels, this diverges under the
-multiplicative update over 20 epochs.
+The FOV-mask sweep found rel=1e-4, 1e-3 (and possibly 1e-2) bit-identical
+to rel=0 -- i.e. NO voxel has bp_ones below that fraction of the peak. That
+contradicts the theory that near-zero bp_ones amplifies CPU/GPU differences
+at FOV-edge voxels. This dumps the real distribution so the theory can be
+confirmed or discarded on evidence instead of another sweep arm.
 
-This script computes bp_ones only (one bp_func call, not the full
-MLEM loop) and reports its value at the 26 known outlier voxel
-indices plus overall min/histogram, to confirm or rule out the
-near-zero theory directly rather than guessing from the final output.
+Prints, for the sensitivity map:
+  - percentiles of bp_ones/max, so the true dynamic range is visible
+  - bp_ones at the specific worst-diff voxel the validator keeps naming
+  - how much amplification 1/bp_ones actually delivers there
 
-Run on kale (needs skimage + the real dataset path).
+Run where the .hdf5 outputs live, after a --dump-bp-ones run (see below).
 """
 import sys
 import numpy as np
-import h5py
 
-sys.path.insert(0, ".")
-from Topic_2_CTreconstruction import bp_func
+try:
+    import h5py
+except ImportError:
+    sys.exit("h5py not found: pip install h5py")
 
-OUTLIER_VOXELS = [
-    (0, 25, 1), (0, 26, 254), (0, 57, 1), (0, 218, 1), (0, 252, 202),
-    (39, 255, 1), (68, 255, 254), (72, 0, 254), (77, 0, 1), (84, 255, 1),
-    (90, 52, 6), (98, 119, 2), (147, 255, 254), (173, 26, 11),
-    (243, 60, 9), (243, 60, 10), (243, 60, 11), (243, 61, 6), (243, 61, 7),
-    (243, 255, 1), (246, 67, 12), (249, 185, 19),
-    (255, 5, 254), (255, 6, 254), (255, 71, 1), (255, 192, 1),
-]
+if len(sys.argv) < 2:
+    sys.exit("usage: diag_bp_ones.py <bp_ones.hdf5> [ix iy iz]")
 
-path_data = "/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5"
+with h5py.File(sys.argv[1], "r") as f:
+    key = "Volume" if "Volume" in f else list(f.keys())[0]
+    bo = f[key][:].astype(np.float64)
 
-with h5py.File(path_data, "r") as f:
-    voxelSize = f["voxelSize"][()]
-    Volumen_num_xz = int(f["Volumen_num_xz"][()])
-    Volumen_num_y = int(f["Volumen_num_y"][()])
-    SDD = f["SDD"][()]
-    SOD = f["SOD"][()]
-    pixelSize = f["pixelSize"][()]
-    num_projs = int(f["num_projs"][()])
-    detector_width = int(f["detector_width"][()])
-    detector_height = int(f["detector_height"][()])
-    angles = f["Angle"][()]
-    projection_0 = f["Projection"][:, :, :]
+mx = bo.max()
+print(f"shape={bo.shape}  max={mx:.6g}  min={bo.min():.6g}  mean={bo.mean():.6g}")
+print(f"zeros: {int((bo == 0).sum())}   below 1e-10: {int((bo < 1e-10).sum())}")
 
-cb_para = {
-    "angles": angles,
-    "pixelSize": pixelSize,
-    "voxelSize": voxelSize,
-    "Volumen_num_xz": Volumen_num_xz,
-    "Volumen_num_y": Volumen_num_y,
-    "SDD": SDD,
-    "SOD": SOD,
-    "detector_width": detector_width,
-    "detector_height": detector_height,
-}
+print("\nbp_ones / max(bp_ones) percentiles:")
+for q in [0, 0.001, 0.01, 0.1, 1, 5, 25, 50, 100]:
+    v = np.percentile(bo, q) / mx
+    print(f"  p{q:<7} {v:.6e}")
 
-print("Computing bp_ones (single bp_func call on ones)...")
-bp_ones = bp_func(np.ones_like(projection_0), cb_para)
+print("\nfraction of voxels below a given rel threshold "
+      "(what FOV_MASK_REL would actually mask):")
+for rel in [1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1]:
+    frac = float((bo < rel * mx).mean())
+    print(f"  rel={rel:<7g} masks {frac*100:.4f}% of voxels")
 
-print(f"\nbp_ones shape: {bp_ones.shape}")
-print(f"bp_ones global min/max/mean: {bp_ones.min()} / {bp_ones.max()} / {bp_ones.mean()}")
-print(f"bp_ones count == 0: {(bp_ones == 0).sum()}")
-print(f"bp_ones count < 1e-6: {(bp_ones < 1e-6).sum()}")
-print(f"bp_ones count < 1e-3: {(bp_ones < 1e-3).sum()}")
-
-print("\n=== bp_ones value at each known outlier voxel ===")
-for idx in OUTLIER_VOXELS:
-    val = bp_ones[idx]
-    print(f"  {idx}: bp_ones={val:.6e}")
-
-print("\n=== bp_ones at a random sample of NON-outlier voxels, for comparison ===")
-rng = np.random.default_rng(0)
-for _ in range(10):
-    idx = tuple(rng.integers(0, [256, 256, 256]))
-    if idx in OUTLIER_VOXELS:
-        continue
-    print(f"  {idx}: bp_ones={bp_ones[idx]:.6e}")
-
-print("\n=== z-slice min(bp_ones) profile near z=0..5 and z=250..255 ===")
-for z in list(range(0, 6)) + list(range(250, 256)):
-    print(f"  z={z}: min={bp_ones[:,:,z].min():.6e}  mean={bp_ones[:,:,z].mean():.6e}")
+# The validator repeatedly names (49,212,33) as gpu-img's worst voxel.
+ix, iy, iz = (int(a) for a in (sys.argv[2:5] or (49, 212, 33)))
+v = bo[ix, iy, iz]
+print(f"\nworst-diff voxel ({ix},{iy},{iz}): bp_ones={v:.6g}  "
+      f"= {v/mx:.6e} of max")
+print(f"  amplification 1/bp_ones = {1.0/v:.6g}" if v > 0 else "  bp_ones is ZERO")
