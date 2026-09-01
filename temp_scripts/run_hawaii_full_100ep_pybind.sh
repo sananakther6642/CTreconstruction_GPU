@@ -99,6 +99,7 @@ echo "FP_BUFFER_SKIP_SLAB_FINISH=$SKIP_FINISH for gpu-buf runs below."
 echo "=== pre-flight done ==="
 echo ""
 
+rm -f ct_hawaiifull_*.marker ct_hawaiifull_DONE
 mkdir -p "$OUTDIR"
 
 echo "=== $(date) : building CLI (build/ct_recon) ==="
