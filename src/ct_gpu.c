@@ -47,6 +47,89 @@ static void diag_print_kernel_info(cl_kernel k, const char *name, cl_device_id d
            (unsigned long long)local_mem, (unsigned long long)private_mem);
 }
 
+/* ── gpu-buf DVFS diagnosis: sample GPU clock state via sysfs ────────────
+ * Tests the mclk-DVFS hypothesis for the gpu-buf slab slowdown (see the
+ * README "gpu-buf run-to-run variance" section and the root-cause comment
+ * on run_fp_buffer below): fp_buffer is bandwidth-bound, and Hawaii's
+ * memory clock has an 8.3x DPM range (1250->150 MHz), unlike the ~3.2x
+ * core-clock range the earlier "not thermal" argument used. If slow slabs
+ * consistently sample a low mclk DPM state and fast slabs sample the top
+ * state, that confirms DVFS rather than the previously-assumed d_vol
+ * buffer-placement demotion.
+ *
+ * Reads /sys/class/drm/cardN/device/pp_dpm_sclk, pp_dpm_mclk, and
+ * hwmon/hwmonM/temp1_input -- all readable without root on the AMD driver.
+ * Linux-only
+ * (no equivalent on the macOS dev machine); the caller must be behind
+ * FP_BUFFER_CLOCK_PROBE=1 so this costs nothing by default. card_idx picks
+ * which /sys/class/drm/card<N> to read (default 0; override via
+ * FP_BUFFER_CLOCK_PROBE_CARD for multi-GPU machines).
+ *
+ * Output is deliberately compact -- one line, appended to the existing
+ * slow-slab printf -- e.g. "sclk=947M* mclk=150M* temp=71.2C" where '*'
+ * marks the DPM table's currently-active entry. */
+#ifdef __linux__
+static void sample_gpu_clocks(char *out, size_t n)
+{
+    out[0] = '\0';
+    int card_idx = 0;
+    {
+        const char *card_env = getenv("FP_BUFFER_CLOCK_PROBE_CARD");
+        if (card_env) card_idx = atoi(card_env);
+    }
+
+    char active_sclk[32] = "?", active_mclk[32] = "?";
+    char path[256];
+
+    snprintf(path, sizeof(path), "/sys/class/drm/card%d/device/pp_dpm_sclk", card_idx);
+    FILE *f = fopen(path, "r");
+    if (f) {
+        char line[128];
+        while (fgets(line, sizeof(line), f)) {
+            if (strchr(line, '*')) {
+                char freq[32] = "?";
+                sscanf(line, "%*d: %31s", freq);
+                snprintf(active_sclk, sizeof(active_sclk), "%s", freq);
+                break;
+            }
+        }
+        fclose(f);
+    }
+
+    snprintf(path, sizeof(path), "/sys/class/drm/card%d/device/pp_dpm_mclk", card_idx);
+    f = fopen(path, "r");
+    if (f) {
+        char line[128];
+        while (fgets(line, sizeof(line), f)) {
+            if (strchr(line, '*')) {
+                char freq[32] = "?";
+                sscanf(line, "%*d: %31s", freq);
+                snprintf(active_mclk, sizeof(active_mclk), "%s", freq);
+                break;
+            }
+        }
+        fclose(f);
+    }
+
+    double temp_c = -1.0;
+    for (int hw = 0; hw < 4 && temp_c < 0.0; hw++) {
+        snprintf(path, sizeof(path),
+                 "/sys/class/drm/card%d/device/hwmon/hwmon%d/temp1_input", card_idx, hw);
+        f = fopen(path, "r");
+        if (f) {
+            long milli_c = 0;
+            if (fscanf(f, "%ld", &milli_c) == 1) temp_c = milli_c / 1000.0;
+            fclose(f);
+        }
+    }
+
+    if (temp_c >= 0.0)
+        snprintf(out, n, "sclk=%s mclk=%s temp=%.1fC", active_sclk, active_mclk, temp_c);
+    else
+        snprintf(out, n, "sclk=%s mclk=%s temp=?", active_sclk, active_mclk);
+}
+#endif
+
 /* ── Load a text file into a malloc'd buffer ────────────────────────────── */
 static char *load_source(const char *path)
 {
@@ -721,6 +804,21 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     size_t vol_bytes = (size_t)Nxz * Nxz * Ny * sizeof(float);
     float *vol_scratch = (realloc_every > 0) ? (float *)malloc(vol_bytes) : NULL;
 
+    /* FP_BUFFER_CLOCK_PROBE: DVFS diagnosis (see sample_gpu_clocks above).
+     * Off by default -- zero cost when unset. Linux-only. */
+    int clock_probe = 0;
+#ifdef __linux__
+    {
+        const char *probe_env = getenv("FP_BUFFER_CLOCK_PROBE");
+        if (probe_env) clock_probe = atoi(probe_env);
+    }
+    if (clock_probe && slab_idx == 0) {
+        char clocks[128];
+        sample_gpu_clocks(clocks, sizeof(clocks));
+        printf("    [fp_buffer clock-probe] baseline %s\n", clocks);
+    }
+#endif
+
     for (size_t p0 = 0; p0 < gws_full[2]; p0 += ANG_SLAB) {
         if (realloc_every > 0 && total_slab_launches > 0 &&
             total_slab_launches % realloc_every == 0) {
@@ -761,14 +859,19 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
                                                         sizeof(t_start), &t_start, NULL);
                 cl_int perr2 = clGetEventProfilingInfo(evt, CL_PROFILING_COMMAND_END,
                                                         sizeof(t_end), &t_end, NULL);
+                char clocks[128] = "";
+#ifdef __linux__
+                if (clock_probe) sample_gpu_clocks(clocks, sizeof(clocks));
+#endif
                 if (perr1 == CL_SUCCESS && perr2 == CL_SUCCESS) {
                     double gpu_dt = (double)(t_end - t_start) * 1e-9;
-                    printf("    [fp_buffer slab %d, p0=%zu] wall=%.3fs gpu=%.3fs %s (SLOW)\n",
+                    printf("    [fp_buffer slab %d, p0=%zu] wall=%.3fs gpu=%.3fs %s (SLOW)%s%s\n",
                            slab_idx, p0, dt, gpu_dt,
-                           (dt - gpu_dt > 0.5) ? "HOST-SIDE-GAP" : "GPU-BOUND");
+                           (dt - gpu_dt > 0.5) ? "HOST-SIDE-GAP" : "GPU-BOUND",
+                           clocks[0] ? " " : "", clocks);
                 } else {
-                    printf("    [fp_buffer slab %d, p0=%zu] %.3f s (SLOW, profiling query failed)\n",
-                           slab_idx, p0, dt);
+                    printf("    [fp_buffer slab %d, p0=%zu] %.3f s (SLOW, profiling query failed)%s%s\n",
+                           slab_idx, p0, dt, clocks[0] ? " " : "", clocks);
                 }
             }
             clReleaseEvent(evt);
@@ -861,10 +964,17 @@ static void run_diag_repeat_slab(CLState *cl, const CBpara *p,
     clSetKernelArg(k,12, sizeof(float),  &vs);
     clSetKernelArg(k,13, sizeof(float),  &px);
 
-    size_t lws[3] = {4, 64, 1};
+    /* Was {4,64,1} -- the GTX 680's old default -- while production
+     * run_fp_buffer has used {2,16,2} since the Hawaii/GTX680 re-sweep
+     * (see that function's comment). Every repeat-slab result taken before
+     * this fix (including the d_vol-demotion root-cause finding) was
+     * measured under a DIFFERENT work-group shape than the kernel that
+     * actually shows the variance, so those numbers are not comparable to
+     * production timings. Fixed to match run_fp_buffer's default. */
+    size_t lws[3] = {2, 16, 2};
     const char *lws_env = getenv("FP_BUFFER_LWS");
     if (lws_env) {
-        unsigned long a=4, b=64, c=1;
+        unsigned long a=2, b=16, c=2;
         if (sscanf(lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
             lws[0]=a; lws[1]=b; lws[2]=c;
         }
@@ -879,6 +989,7 @@ static void run_diag_repeat_slab(CLState *cl, const CBpara *p,
     size_t offset[3] = {0, 0, (size_t)angle_offset};
     size_t gws[3]     = {gws_full[0], gws_full[1], (size_t)slab_size};
 
+    double t_diag_start = get_time_sec();
     for (int rep = 0; rep < n_repeats; rep++) {
         if (realloc_at > 0 && rep == realloc_at) {
             clReleaseMemObject(d_vol);
@@ -903,7 +1014,11 @@ static void run_diag_repeat_slab(CLState *cl, const CBpara *p,
             clGetEventProfilingInfo(evt, CL_PROFILING_COMMAND_END,   sizeof(t_end),   &t_end,   NULL) == CL_SUCCESS) {
             gpu_dt = (double)(t_end - t_start) * 1e-9;
         }
-        printf("  rep %3d/%d  wall=%.4fs  gpu=%.4fs\n", rep+1, n_repeats, dt, gpu_dt);
+        /* t_since_start: seconds since this diag began, so bursts can be
+         * correlated by time against an external clock/temp sampler
+         * (e.g. run_hawaii_dvfs_diagnosis.sh) polling sysfs independently. */
+        printf("  rep %3d/%d  t=%.3fs  wall=%.4fs  gpu=%.4fs\n",
+               rep+1, n_repeats, get_time_sec() - t_diag_start, dt, gpu_dt);
         clReleaseEvent(evt);
     }
 
