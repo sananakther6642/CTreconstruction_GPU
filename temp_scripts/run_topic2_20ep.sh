@@ -11,14 +11,18 @@
 # The actual reference output goes wherever Topic_2_CTreconstruction.py
 # itself writes it (unchanged from the script's own behavior).
 #
-# Waits for run_100ep_final.sh's CPU run to finish first (its sentinel,
-# ct100_cpu_done.marker) before starting -- that script's CPU pass
-# finishes early (before its GPU modes), so this doesn't wait for the
-# GPU runs, only the CPU pass, to avoid the two contending for host CPU
-# cycles. Survives an SSH drop -- launch with:
+# Waits for a marker file before starting -- which one is chosen via
+# MARKER, settable as an env var at launch time (default:
+# ct512_DONE, the 512^3 100-epoch run's safe-completion sentinel,
+# written after gpu-opt S=2 but BEFORE the untested/may-fail S=3
+# attempt -- deliberately not waiting on ct512_ALL_DONE, since there's
+# no reason to hold Topic_2 hostage to an experiment expected to fail).
+# For the original 256^3-run-then-Topic_2 ordering, launch with
+# MARKER=ct100_cpu_done.marker instead. Survives an SSH drop -- launch
+# with (matching whichever run this should wait behind):
 #
 #   cd ~/CTreconstruction_GPU
-#   nohup bash temp_scripts/run_topic2_20ep.sh > ct_topic2_run.log 2>&1 &
+#   nohup env MARKER=ct512_DONE bash temp_scripts/run_topic2_20ep.sh > ct_topic2_run.log 2>&1 &
 #   disown
 #
 # Then check progress any time with:
@@ -26,12 +30,12 @@
 set -e
 cd "$(dirname "$0")/.."
 
-MARKER=ct100_cpu_done.marker
-echo "=== $(date) : waiting for $MARKER (run_100ep_final.sh's CPU pass) ==="
+MARKER="${MARKER:-ct512_DONE}"
+echo "=== $(date) : waiting for $MARKER ==="
 while [ ! -f "$MARKER" ]; do
     sleep 30
 done
-echo "=== $(date) : $MARKER found (written $(cat "$MARKER")), starting Topic_2 ==="
+echo "=== $(date) : $MARKER found (written $(cat "$MARKER" | head -1)), starting Topic_2 ==="
 
 echo ""
 echo "=== $(date) : Topic_2_CTreconstruction.py, 20 epochs, sample_ratio=1 ==="
