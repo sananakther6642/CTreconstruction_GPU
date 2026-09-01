@@ -56,7 +56,33 @@ Intel i7-5820K (12 threads) · AMD Hawaii PRO (2560 shaders, 2.56 TFLOPS).
 Intel Xeon E5-2620 0 (24 threads) · NVIDIA GeForce GTX 680 (Kepler, no
 `cl_khr_fp16` — `--half` unavailable).
 
-MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07` (`gpu-img`/`gpu-opt`).
+### Precision/speed tiers at 256³ (GTX 680, 100 epochs)
+
+`gpu-img`/`gpu-opt`'s default `1.128e-07` is the only reported figure that
+misses a 1e-08 accuracy bar. Two opt-in paths clear it, both by removing the
+hardware sampler's interpolation from the FORWARD projection:
+
+| Path | MSE vs CPU | 100-epoch time | Notes |
+|---|---|---|---|
+| `gpu-img` / `gpu-opt` default | `1.128e-07` | 14.65 / 14.20 s | fastest; hardware-filtered |
+| `gpu-img FP_TEX_EXACT=1` | `2.524e-09` | **21.34 s** | keeps texture cache, IEEE blend |
+| `gpu-opt --fp-buf` | `2.524e-09` | 26.82 s | fp via buffer path; superseded by the above |
+| `gpu-buf` | `1.148e-10` | 39.05 s | manual float32 everywhere; bit-level reference |
+
+`gpu-opt` reaches the same `2.524e-09` under `FP_TEX_EXACT=1` (both modes
+share `fp_image`); its time under that flag was not separately measured, but
+should track `gpu-img`'s since the change is confined to the shared kernel.
+
+`FP_TEX_EXACT=1` strictly dominates `--fp-buf` — identical MSE to four digits,
+5.5 s faster. Both reach `2.524e-09`, a 45× improvement, at 1.46× and 1.83×
+the baseline time respectively. Defaults are unchanged; neither path costs
+anything unless enabled.
+
+The two are not bit-identical to each other (8955 vs 8958 outlier voxels) —
+texture storage round-trips through the image format while `fp_buffer` reads
+raw floats — but they agree numerically.
+
+MSE vs CPU (defaults): 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07` (`gpu-img`/`gpu-opt`).
 512³ `9.534e-11` (`gpu-buf`) / `1.232e-09` (`gpu-img`/`gpu-opt`). No NaN/inf.
 RMS as % of signal range: 256³ 0.0194%, 512³ 0.0026% (`gpu-img`/`gpu-opt`).
 Improves at higher resolution, not worse. `gpu-buf`'s MSE-vs-CPU margin
