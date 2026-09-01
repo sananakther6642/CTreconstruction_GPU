@@ -941,20 +941,12 @@ static void run_bp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,12, sizeof(int),    &ip_start);
     clSetKernelArg(k,13, sizeof(int),    &ip_count);
 
-    /* P1a (perf-512): gws/lws transposed to match bp_image.cl's iz=dim0
-     * axis swap (mirrors G1's fix to bp_buffer/run_bp_buffer). BP_LWS
-     * default also transposed 4,4,16 -> 16,4,4 -- this now matches
-     * run_bp_buffer's own default exactly, so BP_LWS means the same
-     * physical axis assignment across all three bp kernels for the
-     * first time (previously bp_buffer was post-swap and
-     * bp_image/bp_opt were pre-swap, so the same BP_LWS value meant
-     * different things to each). */
-    size_t gws[3] = {(size_t)Ny, (size_t)Nxz, (size_t)Nxz};
-    size_t lws[3] = {16, 4, 4};  /* see BP_LWS note in run_bp_buffer above */
+    size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
+    size_t lws[3] = {4, 4, 16};  /* see BP_LWS note in run_bp_buffer above */
     {
         const char *bp_lws_env = getenv("BP_LWS");
         if (bp_lws_env) {
-            unsigned long a=16, b=4, c=4;
+            unsigned long a=4, b=4, c=16;
             if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
                 lws[0]=a; lws[1]=b; lws[2]=c;
             }
@@ -1333,14 +1325,12 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             clSetKernelArg(k,14, sizeof(int),    &ip_start0);
             clSetKernelArg(k,15, sizeof(int),    &np);
 
-            /* P1a: transposed to match bp_image_update's iz=dim0 axis
-             * swap (same fix as bp_image itself, kernels/bp_image.cl). */
-            size_t gws[3] = {(size_t)Ny, (size_t)Nxz, (size_t)Nxz};
-            size_t lws[3] = {16, 4, 4};  /* same shape as run_bp_image */
+            size_t gws[3] = {(size_t)Nxz, (size_t)Nxz, (size_t)Ny};
+            size_t lws[3] = {4, 4, 16};  /* same shape as run_bp_image */
             {
                 const char *bp_lws_env = getenv("BP_LWS");
                 if (bp_lws_env) {
-                    unsigned long a=16, b=4, c=4;
+                    unsigned long a=4, b=4, c=16;
                     if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
                         lws[0]=a; lws[1]=b; lws[2]=c;
                     }
@@ -1564,15 +1554,12 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             clSetKernelArg(k,12,sizeof(float),&px);
             clSetKernelArg(k,13,sizeof(int),&subset_start[s]);
             clSetKernelArg(k,14,sizeof(int),&subset_count[s]);
-            /* P1a: gws/lws transposed to match bp_opt's iz=dim0 axis
-             * swap (bp_buffer_opt.cl) -- same rationale and default as
-             * run_bp_image above. */
-            size_t gws[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
-            size_t lws[3]={16,4,4};  /* see BP_LWS note in run_bp_buffer above */
+            size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
+            size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
             {
                 const char *bp_lws_env = getenv("BP_LWS");
                 if (bp_lws_env) {
-                    unsigned long a=16, b=4, c=4;
+                    unsigned long a=4, b=4, c=16;
                     if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
                         lws[0]=a; lws[1]=b; lws[2]=c;
                     }
@@ -1736,14 +1723,12 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                 clSetKernelArg(k,12,sizeof(float),&px);
                 clSetKernelArg(k,13,sizeof(int),&ip_start);
                 clSetKernelArg(k,14,sizeof(int),&ip_count);
-                /* P1a: same gws/lws transpose as the ones-precompute
-                 * bp_opt launch above. */
-                size_t gws[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
-                size_t lws[3]={16,4,4};  /* see BP_LWS note in run_bp_buffer above */
+                size_t gws[3]={(size_t)Nxz,(size_t)Nxz,(size_t)Ny};
+                size_t lws[3]={4,4,16};  /* see BP_LWS note in run_bp_buffer above */
                 {
                     const char *bp_lws_env = getenv("BP_LWS");
                     if (bp_lws_env) {
-                        unsigned long a=16, b=4, c=4;
+                        unsigned long a=4, b=4, c=16;
                         if (sscanf(bp_lws_env, "%lu,%lu,%lu", &a, &b, &c) == 3) {
                             lws[0]=a; lws[1]=b; lws[2]=c;
                         }

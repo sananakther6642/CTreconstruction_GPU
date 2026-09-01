@@ -50,14 +50,9 @@ __kernel void bp_opt(
         lcs[i] = angle_cs[i];
     barrier(CLK_LOCAL_MEM_FENCE);
 
-    /* P1a (perf-512): iz on dim 0, ix on dim 2 -- mirrors G1's fix to
-     * bp_buffer.cl and the identical fix just applied to bp_image.cl.
-     * lid/lsize above are computed generically from get_local_id/size
-     * across all three dims, so the cooperative angle-cache load is
-     * unaffected by which physical dim carries which logical axis. */
-    int iz = get_global_id(0);
+    int ix = get_global_id(0);
     int iy = get_global_id(1);
-    int ix = get_global_id(2);
+    int iz = get_global_id(2);
 
     if (ix >= Nxz || iy >= Nxz || iz >= Ny) return;
 

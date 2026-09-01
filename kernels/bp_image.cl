@@ -35,19 +35,9 @@ __kernel void bp_image(
     int   ip_count
 )
 {
-    /* P1a (perf-512): iz on dim 0 (fastest-varying local id), ix on dim
-     * 2 (slowest) -- mirrors G1's fix to bp_buffer.cl (256^3 session
-     * work, 2.2x on gpu-buf). vf, driven by iz, is the read_imagef
-     * texel coordinate that matters for locality within a warp; uf,
-     * driven by ix/iy, changes far more per lane at the old dim-0
-     * assignment. Caveat this fix carries that G1 didn't: this kernel
-     * reads via the hardware texture sampler (image2d_array_t), not raw
-     * global loads, so the texture cache may already absorb some of the
-     * pattern that hurt bp_buffer's manual gathers -- measure before
-     * assuming this delivers G1's full magnitude. */
-    int iz = get_global_id(0);
+    int ix = get_global_id(0);
     int iy = get_global_id(1);
-    int ix = get_global_id(2);
+    int iz = get_global_id(2);
 
     if (ix >= Nxz || iy >= Nxz || iz >= Ny) return;
 
@@ -144,11 +134,9 @@ __kernel void bp_image_update(
     int   ip_count
 )
 {
-    /* P1a axis swap (see bp_image's identical comment above) applies
-     * here too -- same read_imagef pattern, same fix. */
-    int iz = get_global_id(0);
+    int ix = get_global_id(0);
     int iy = get_global_id(1);
-    int ix = get_global_id(2);
+    int iz = get_global_id(2);
 
     if (ix >= Nxz || iy >= Nxz || iz >= Ny) return;
 
