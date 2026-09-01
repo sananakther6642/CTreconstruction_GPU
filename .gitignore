@@ -33,3 +33,5 @@ submission_outputs/
 
 # Session logs (local only, never pushed)
 sessions/
+.venv/
+diag_hdf5/
