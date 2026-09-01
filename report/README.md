@@ -19,13 +19,29 @@ This directory contains the complete final course report for **Topic 1-2: CT Vol
   - Full 100-epoch multi-platform benchmark tables (AMD Hawaii PRO & NVIDIA GeForce GTX 680) and float32 validation results.
 
 ## Compilation Instructions
-To compile `final_report.tex` to PDF locally using `pdflatex`:
+
+### Command-Line (Local or Lab Server)
+Run the root Makefile target:
 ```bash
+make report
+```
+Or manually run `pdflatex`:
+```bash
+cd report
 pdflatex final_report.tex
 pdflatex final_report.tex
 ```
 
 ### Overleaf Compilation
-1. Upload `final_report.tex` to Overleaf.
-2. Select the **pdfLaTeX** compiler (default).
-3. Click **Recompile**.
+1. Create a new Blank Project in Overleaf.
+2. Upload `final_report.tex` into the project root.
+3. Select the standard **pdfLaTeX** compiler.
+4. Click **Recompile**.
+   *(The document is 100% self-contained with no external image/bibtex dependencies and generates the complete $\ge 10$-page report PDF).*
+
+## Final Submission Checklist
+- [x] Length: $\ge 10$ pages (with structured sections, equations, tables, benchmarks).
+- [x] Theoretical foundations (Cone-beam geometry, Feldkamp weights, Poisson model, MLEM, OSEM).
+- [x] Complete hardware results from both platforms (AMD Hawaii PRO & NVIDIA GeForce GTX 680).
+- [x] Numerical correctness validation against CPU reference ($\text{MSE} \approx 10^{-10}\text{--}10^{-7}$).
+- [x] Code architecture evolution, negative results, and work-group profiling analysis.
