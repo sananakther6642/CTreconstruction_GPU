@@ -3,19 +3,24 @@
 # features branch. Designed to survive an SSH drop -- launch with:
 #
 #   cd ~/CTreconstruction_GPU
-#   nohup bash temp_scripts/run_100ep_final.sh > run_100ep_final.log 2>&1 &
+#   nohup bash temp_scripts/run_100ep_final.sh > ct100_run.log 2>&1 &
 #   disown
 #
 # Then check progress any time with:
-#   tail -f run_100ep_final.log
+#   tail -f ct100_run.log
 #
-# A sentinel file (run_100ep_final.DONE) is written on successful
-# completion -- run_topic2_20ep.sh polls for it. cpu_done.marker is
-# written right after the cpu run specifically, so that script can start
-# even before gpu-buf/img/opt finish (it only needs CPU to be done, per
-# the "wait for CPU then run Topic_2" ask -- Topic_2 is CPU-bound Python
-# and would otherwise contend with the GPU runs' host-side work anyway,
-# but the two are independent, so no need to wait for the whole script).
+# NAMING: every file this script creates or touches at the repo root is
+# prefixed ct100_ (ct100_run.log, ct100_cpu_done.marker, ct100_DONE) so
+# it can never collide with anything else on a shared machine, and so
+# the cleanup step below can safely wipe "everything this script owns"
+# with one glob instead of an easy-to-miss explicit filename list.
+# Actual reconstruction output stays inside the timestamped $OUTDIR,
+# per-run, never overwritten.
+#
+# run_topic2_20ep.sh polls for ct100_cpu_done.marker, written right
+# after the CPU pass (before gpu-buf/img/opt start) -- it only needs
+# CPU done, not the whole script, per the "wait for CPU then run
+# Topic_2" ask.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -24,20 +29,17 @@ EPOCHS=100
 OUTDIR=results_100ep_$(date +%Y%m%d_%H%M%S)
 
 echo "=== $(date) : cleanup before run ==="
-# Stale markers/sentinels from an earlier run would make run_topic2_20ep.sh
-# (or a re-run of this script) think a step already finished when it
-# didn't -- clear them first, every time.
-rm -f cpu_done.marker run_100ep_final.DONE run_topic2_20ep.DONE
-# Stale root-level output_*.hdf5 from earlier ad-hoc testing this
-# session (make run-cpu/run-gpu-* write here by default) -- not this
-# script's own outputs (those go in $OUTDIR, timestamped, never
-# overwritten), but leaving old ones around risks someone eyeballing
-# the wrong file. Also drop old run_100ep_final*.log /
-# run_topic2_20ep*.log from any previous attempt.
+# Everything this script (and run_topic2_20ep.sh) owns, by prefix --
+# stale markers/sentinels from an earlier run would make a re-run, or
+# run_topic2_20ep.sh, think a step already finished when it didn't.
+rm -f ct100_*.marker ct100_*.DONE ct100_run.log ct_topic2_*.log ct_topic2_*.DONE
+# Stale root-level output_*.hdf5 from earlier ad-hoc make run-cpu/
+# run-gpu-* testing this session -- not this script's own outputs
+# (those go in $OUTDIR, timestamped, never overwritten), but leaving
+# old ones at the root risks someone reading the wrong file.
 rm -f output_cpu.hdf5 output_gpu_buf.hdf5 output_gpu_img.hdf5 \
       output_gpu_opt.hdf5 output_gpu_opt_512.hdf5 output_cpu_512.hdf5 \
       output_gpu_buf_512.hdf5 output_gpu_img_512.hdf5
-rm -f run_100ep_final.log run_topic2_20ep.log topic2_20ep.log
 # Build artifacts -- 'make clean && make' below rebuilds these, but
 # clear first so a partial/interrupted previous build can't linger.
 rm -rf build
@@ -54,8 +56,7 @@ OMP_NUM_THREADS=$(nproc) OMP_PROC_BIND=close OMP_PLACES=cores \
   build/ct_recon --data "$DATA" --out "$OUTDIR/output_cpu.hdf5" \
     --mode cpu --epochs "$EPOCHS" --kernels kernels \
     2>&1 | tee "$OUTDIR/cpu.log"
-touch cpu_done.marker
-echo "$(date)" > cpu_done.marker
+echo "$(date)" > ct100_cpu_done.marker
 
 echo ""
 echo "=== $(date) : gpu-buf mode, ${EPOCHS} epochs ==="
@@ -88,5 +89,5 @@ VALIDATE_DIR="$OUTDIR" python3 python/validate.py 2>&1 | tee "$OUTDIR/validate.l
 
 echo ""
 echo "=== $(date) : all done. Results in $OUTDIR/ ==="
-echo "$(date)" > run_100ep_final.DONE
-echo "$OUTDIR" >> run_100ep_final.DONE
+echo "$(date)" > ct100_DONE
+echo "$OUTDIR" >> ct100_DONE
