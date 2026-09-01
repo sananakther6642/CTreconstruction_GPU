@@ -143,24 +143,33 @@ __kernel void fp_image(
         s_end   = min(n_samples,(int)((tmax - near_t) / dt) + 1);
     }
 
-    float wx = T[0] + rd[0] * (near_t + s_start * dt);
-    float wy = T[1] + rd[1] * (near_t + s_start * dt);
-    float wz = T[2] + rd[2] * (near_t + s_start * dt);
-    float dox = rd[0] * dt, doy = rd[1] * dt, doz = rd[2] * dt;
+    float t0 = near_t + (float)s_start * dt;
+    float wx0 = T[0] + rd[0] * t0;
+    float wy0 = T[1] + rd[1] * t0;
+    float wz0 = T[2] + rd[2] * t0;
+
+    float xi = wx0 * inv_sv_xz + shift_xz;
+    float yi = wy0 * inv_sv_y  + shift_y;
+    float zi = wz0 * inv_sv_xz + shift_xz;
+
+    float dxi = (rd[0] * dt) * inv_sv_xz;
+    float dyi = (rd[1] * dt) * inv_sv_y;
+    float dzi = (rd[2] * dt) * inv_sv_xz;
+
+    float max_xz = (float)(Nxz - 1);
+    float max_y  = (float)(Ny  - 1);
 
     float val = 0.f;
     for (int s = s_start; s < s_end; s++) {
-        float xi = wx * inv_sv_xz + shift_xz;
-        float yi = wy * inv_sv_y  + shift_y;
-        float zi = wz * inv_sv_xz + shift_xz;
-
-        if (xi >= 0.f && xi < (float)(Nxz - 1) &&
-            yi >= 0.f && yi < (float)(Ny  - 1) &&
-            zi >= 0.f && zi < (float)(Nxz - 1)) {
+        if (xi >= 0.f && xi < max_xz &&
+            yi >= 0.f && yi < max_y  &&
+            zi >= 0.f && zi < max_xz) {
             float4 coord = (float4)(zi + 0.5f, yi + 0.5f, xi + 0.5f, 0.f);
             val += read_imagef(volume_img, vol_samp, coord).x;
         }
-        wx += dox; wy += doy; wz += doz;
+        xi += dxi;
+        yi += dyi;
+        zi += dzi;
     }
     val *= step_val;
 

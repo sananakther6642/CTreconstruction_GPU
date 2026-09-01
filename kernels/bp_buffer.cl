@@ -217,6 +217,45 @@ __kernel void cone_weight_hw(
     proj[ip * H * W + ih * W + iw] *= w;
 }
 
+/* ── Fused divide + preprocess (cone weight + flip + transpose + /voxelSize) ─
+ * Reads p0 [np, H, W] and b [np, H, W] directly, computes ratio and cone weight,
+ * and writes col-major dst_prep [np, W, H] in a single memory pass.
+ */
+__kernel void proj_divide_preprocess(
+    __global const float *p0,
+    __global const float *b,
+    __global       float *dst_prep,
+    int   W,
+    int   H,
+    int   num_projs,
+    float voxelSize,
+    float SDD,
+    float pixelSize
+)
+{
+    int iw = get_global_id(0);
+    int ih = get_global_id(1);
+    int ip = get_global_id(2);
+    if (iw >= W || ih >= H || ip >= num_projs) return;
+
+    /* Source pixel in row-major [ip][H - 1 - ih][iw] */
+    int src_ih = H - 1 - ih;
+    int src_idx = ip * H * W + src_ih * W + iw;
+
+    float p_val = p0[src_idx];
+    float b_val = b[src_idx];
+    float ratio = (b_val > 1e-3f) ? (p_val / b_val) : 0.f;
+
+    /* Cone weight at pixel (iw, ih) */
+    float u = (-(float)(iw - (W - 1) * 0.5f)) * pixelSize;
+    float v = (  (float)(ih - (H - 1) * 0.5f)) * pixelSize;
+    float cw = SDD * native_rsqrt(SDD * SDD + u * u + v * v);
+
+    /* Scale and write to col-major dst_prep [ip][iw][ih] */
+    float val = ratio * cw * native_recip(voxelSize);
+    dst_prep[ip * W * H + iw * H + ih] = val;
+}
+
 /* ── Divide projections element-wise: ratio = p0 / b (float4 vectorized) ─ */
 __kernel void proj_divide(
     __global const float *p0,
@@ -243,7 +282,7 @@ __kernel void proj_divide(
     }
 }
 
-/* ── Update volume: v0 *= bp_ratio / bp_ones (float4 vectorized) ─────── */
+/* ── Update volume: v0 *= bp_ratio / bp_ones (float8 vectorized) ─────── */
 __kernel void vol_update(
     __global       float *volume,
     __global const float *bp_ratio,
@@ -251,18 +290,22 @@ __kernel void vol_update(
     int n
 )
 {
-    int i4 = get_global_id(0);
-    int base = i4 * 4;
-    if (base + 3 < n) {
-        float4 v  = vload4(i4, volume);
-        float4 br = vload4(i4, bp_ratio);
-        float4 bo = vload4(i4, bp_ones);
-        float4 out;
-        out.x = (bo.x > 1e-10f) ? v.x * br.x / bo.x : v.x;
-        out.y = (bo.y > 1e-10f) ? v.y * br.y / bo.y : v.y;
-        out.z = (bo.z > 1e-10f) ? v.z * br.z / bo.z : v.z;
-        out.w = (bo.w > 1e-10f) ? v.w * br.w / bo.w : v.w;
-        vstore4(out, i4, volume);
+    int i8 = get_global_id(0);
+    int base = i8 * 8;
+    if (base + 7 < n) {
+        float8 v  = vload8(i8, volume);
+        float8 br = vload8(i8, bp_ratio);
+        float8 bo = vload8(i8, bp_ones);
+        float8 out;
+        out.s0 = (bo.s0 > 1e-10f) ? v.s0 * br.s0 / bo.s0 : v.s0;
+        out.s1 = (bo.s1 > 1e-10f) ? v.s1 * br.s1 / bo.s1 : v.s1;
+        out.s2 = (bo.s2 > 1e-10f) ? v.s2 * br.s2 / bo.s2 : v.s2;
+        out.s3 = (bo.s3 > 1e-10f) ? v.s3 * br.s3 / bo.s3 : v.s3;
+        out.s4 = (bo.s4 > 1e-10f) ? v.s4 * br.s4 / bo.s4 : v.s4;
+        out.s5 = (bo.s5 > 1e-10f) ? v.s5 * br.s5 / bo.s5 : v.s5;
+        out.s6 = (bo.s6 > 1e-10f) ? v.s6 * br.s6 / bo.s6 : v.s6;
+        out.s7 = (bo.s7 > 1e-10f) ? v.s7 * br.s7 / bo.s7 : v.s7;
+        vstore8(out, i8, volume);
     } else {
         for (int j = base; j < n; j++) {
             float denom = bp_ones[j];

@@ -6,10 +6,11 @@ ifeq ($(UNAME), Darwin)
     LDFLAGS = -lm -lhdf5 -framework OpenCL
 else
     # Ubuntu/Debian installs HDF5 as hdf5_serial; fall back to hdf5 if not found
-    HDF5_LIB := $(shell ldconfig -p 2>/dev/null | grep -q libhdf5_serial && echo hdf5_serial || echo hdf5)
+    HDF5_LIB := $(shell test -f /usr/lib/x86_64-linux-gnu/libhdf5_serial.so -o -d /usr/lib/x86_64-linux-gnu/hdf5/serial && echo hdf5_serial || (ldconfig -p 2>/dev/null | grep -q libhdf5_serial && echo hdf5_serial || echo hdf5))
     HDF5_INC := $(shell test -d /usr/include/hdf5/serial && echo /usr/include/hdf5/serial || echo /usr/include)
+    HDF5_LIBDIR := $(shell test -d /usr/lib/x86_64-linux-gnu/hdf5/serial && echo -L/usr/lib/x86_64-linux-gnu/hdf5/serial || echo "")
     CFLAGS  += -I$(HDF5_INC)
-    LDFLAGS  = -lm -l$(HDF5_LIB) -lOpenCL
+    LDFLAGS  = -lm $(HDF5_LIBDIR) -l$(HDF5_LIB) -lOpenCL
 endif
 
 SRC_DIR    = src

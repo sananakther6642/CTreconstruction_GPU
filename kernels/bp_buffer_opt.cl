@@ -68,6 +68,8 @@ __kernel void bp_opt(
     float inv_px = 1.f / pixelSize;
     float half_W = (W - 1) * 0.5f;
     float half_H = (H - 1) * 0.5f;
+    float sdd_inv_px = SDD * inv_px;
+    float zpr_sdd_inv_px = zpr * sdd_inv_px;
 
     /* Whole-cell zero rule matching the Python reference (see bp_buffer.cl):
      * CLK_ADDRESS_CLAMP zero-pads individual texels, which differs from
@@ -93,12 +95,17 @@ __kernel void bp_opt(
         float2 cs = lcs[ip];
         float U = SOD + ypr*cs.y + xpr*cs.x;
         float inv_U = native_recip(U);
-        float uf = -(SDD*(ypr*cs.x - xpr*cs.y)*inv_U)*inv_px + half_W;
-        float vf = (zpr*SDD*inv_U)*inv_px + half_H;
-        int u0 = (int)floor(uf), v0 = (int)floor(vf);
-        if (u0 < 0 || u0+1 >= W || v0 < 0 || v0+1 >= H) continue;
-        float4 val = read_imagef(proj_images, samp, (float4)(vf+.5f, uf+.5f, (float)ip, 0.f));
-        sum += val.x * sod2 * inv_U * inv_U;
+        float term = (ypr*cs.x - xpr*cs.y) * sdd_inv_px;
+        float uf = half_W - term * inv_U;
+        int u0 = (int)floor(uf);
+        if ((unsigned)u0 >= (unsigned)(W - 1)) continue;
+
+        float vf = half_H + zpr_sdd_inv_px * inv_U;
+        int v0 = (int)floor(vf);
+        if ((unsigned)v0 >= (unsigned)(H - 1)) continue;
+
+        float4 val = read_imagef(proj_images, samp, (float4)(vf + 0.5f, uf + 0.5f, (float)ip, 0.f));
+        sum += val.x * sod2 * (inv_U * inv_U);
     }
 
     sum *= M_PI_F / (float)num_projs;
