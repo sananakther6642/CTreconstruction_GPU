@@ -3,33 +3,14 @@
 Cone-beam CT reconstruction using iterative MLEM. CPU (OpenMP) and GPU
 (OpenCL) implementations, 256³ and 512³ datasets.
 
-**Correctness summary:** all three GPU modes (`gpu-buf`, `gpu-img`,
-`gpu-opt`) agree with the CPU reference at the float32 noise floor
-(MSE 1e-7 to 1e-10 vs CPU, both datasets, both hardware machines --
-see Performance and Validation below). MSE against the course-provided
-Python reference (`Topic_2_CTreconstruction.py`) was initially higher
-(`2.061e-02`/`6.371e-03` depending on hardware) due to a confirmed,
-investigated numerical-stability bug in that script's unclamped MLEM
-update -- a handful of voxels (26 on one machine, 24 on the other, both
-under 0.0002% of the volume) diverged over its 20 iterations, not a
-correctness issue in any C/GPU/CPU code in this project. Reported to
-the course staff, who approved fixing it. A per-epoch ratio clamp was
-tried first and does not work (the observed ~1.3 ratio is already
-inside any reasonable clamp range, so it never triggers and the
-compounding continues regardless -- verified with a standalone
-simulation before running anything for real). The actual fix clamps
-`v0` itself to `[0, 5]` after each update, added to both
-`Topic_2_CTreconstruction.py` and its 512^3 variant (documented in each
-file directly) -- bounding the reconstructed value directly stops
-runaway growth regardless of how many epochs compound, and 5.0 is well
-above the ~1.7-1.9 range normal converged voxels reach, so it should
-not affect correct voxels. **Re-verified with a real 20-epoch run on
-AMD Hawaii PRO (2026-08-28): MSE vs Python Ref dropped from `6.371e-03`
-to `3.014e-04` (~21x better), zero outlier voxels remain (all four
-modes agree identically, `python_ref` max is exactly `5.0000`, the
-clamp bound), confirming the fix works as intended.** See the
-Validation section for the original (unfixed) numbers, the
-investigation, and the fixed-run details.
+**Correctness summary:**
+- All 3 GPU modes (`gpu-buf`, `gpu-img`, `gpu-opt`) agree with CPU ref at float32 noise floor (MSE 1e-7 to 1e-10 vs CPU, both datasets, both machines — see Performance/Validation below).
+- MSE vs course Python ref (`Topic_2_CTreconstruction.py`) initially higher (`2.061e-02`/`6.371e-03` depending on hardware) — confirmed numerical-stability bug in that script's unclamped MLEM update. 26 voxels on one machine, 24 on other (<0.0002% of volume) diverged over 20 iterations. Not a bug in this project's C/GPU/CPU code.
+- Reported to course staff, approved to fix.
+- Per-epoch ratio clamp tried first, doesn't work — observed ~1.3 ratio already inside any reasonable clamp range, never triggers, compounding continues (verified via standalone simulation, not run for real).
+- Actual fix: clamp `v0` to `[0, 5]` after each update, added to `Topic_2_CTreconstruction.py` and its 512³ variant (documented in each file). 5.0 is well above ~1.7-1.9 normal converged range, doesn't affect correct voxels.
+- **Re-verified, real 20-epoch run, AMD Hawaii PRO (2026-08-28):** MSE vs Python Ref `6.371e-03` → `3.014e-04` (~21x better). Zero outlier voxels remain, all 4 modes agree identically, `python_ref` max exactly `5.0000` (the clamp bound). Fix confirmed working.
+- See Validation section for original (unfixed) numbers, investigation, fixed-run details.
 
 ## Performance
 
@@ -38,7 +19,7 @@ investigation, and the fixed-run details.
 | Mode | 256³ time/epoch | 512³ time/epoch | Speedup vs CPU |
 |---|---|---|---|
 | `cpu` | 2.60 s | 22.9-23.3 s | 1× |
-| `gpu-buf` | 0.44 s | 4.87-10.19 s (run-to-run variance, AMD-specific) | 5.9× / 2.2-4.8× |
+| `gpu-buf` | 0.44 s | 4.87-10.19 s (run-to-run variance — Hawaii memory-clock DVFS, see below) | 5.9× / 2.2-4.8× |
 | `gpu-img` | 0.095 s | 0.870-0.876 s | 27.4× / 26.6× |
 | `gpu-opt` | 0.093 s | 0.873-0.879 s | 28.0× / 26.5× |
 
@@ -56,70 +37,23 @@ Intel i7-5820K (12 threads) · AMD Hawaii PRO (2560 shaders, 2.56 TFLOPS).
 Intel Xeon E5-2620 0 (24 threads) · NVIDIA GeForce GTX 680 (Kepler, no
 `cl_khr_fp16` — `--half` unavailable).
 
-MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07` (`gpu-img`/`gpu-opt`).
-512³ `9.534e-11` (`gpu-buf`) / `1.232e-09` (`gpu-img`/`gpu-opt`). No NaN/inf.
-RMS as % of signal range: 256³ 0.0194%, 512³ 0.0026% (`gpu-img`/`gpu-opt`).
-Improves at higher resolution, not worse. `gpu-buf`'s MSE-vs-CPU margin
-over `gpu-img`/`gpu-opt` is scale-dependent, not a fixed ratio: ~980x
-tighter at 256³ (`1.148e-10` vs `1.128e-07`) but only ~13x tighter at
-512³ (`9.534e-11` vs `1.232e-09`) — `gpu-img`/`gpu-opt`'s absolute error
-shrinks much faster with resolution than `gpu-buf`'s does.
-(256³ re-confirmed 2026-08-26 on the NVIDIA GeForce GTX 680, fresh
-100-epoch run, same worst voxels/order of magnitude as the original
-measurement.)
-
-`gpu-img`/`gpu-opt` are not bit-exact vs CPU/`gpu-buf` — checked why with
-`diag_maxgap.py` rather than assumed. **Not** the earlier-suspected `1/U²`
-geometric singularity (measured: min|U| at the worst voxel is 82-91% of
-SOD at both scales, 1.2-1.5x amplification, nothing). It's a one-voxel
-spatial displacement of sharp features from the hardware `CLK_FILTER_LINEAR`
-sampler (all `+0.5f` half-texel offsets audited and correct — not a
-coordinate bug). Mass is conserved across the displaced voxel pair. Affects
-21/16.7M voxels at 256³, 138/134M at 512³ (>100×RMS), concentrated at the
-FOV edge (100% beyond 0.8×FOV radius at 512³). `gpu-buf` (manual float32
-trilinear, no hardware sampler) has none of this — use it when bit-level
-fidelity to the CPU reference matters more than speed.
-
-OSEM `--subsets 5`, 256³, 100 epochs: 57.17s total.
-
-`gpu-buf` variance on AMD Hawaii PRO (75-102s for the same config) does not
-reproduce on the NVIDIA GeForce GTX 680 (flat to the ms). Root cause:
-AMD-driver memory-placement demotion of the volume buffer, not thermal
-throttling. Thermal throttling ruled out three ways: the slowdown is a
-single step change that holds (not the gradual ramp thermal throttling
-would produce), its magnitude (6.6x) exceeds Hawaii's DVFS ceiling
-(~3.2x), and `gpu-img`/`gpu-opt` stay stable in the same sessions where
-`gpu-buf` goes slow (a device-wide thermal effect would hit all three).
-Confirmed instead as a `d_vol`-allocation-specific effect: freeing and
-recreating the 537MB buffer mid-run instantly recovers the fast timing,
-then it degrades again on its own after a further 6-13 launches --
-consistent with the driver periodically demoting that allocation's
-memory placement under sustained access, not a hardware/thermal cause.
-
-A mitigation (`FP_BUFFER_VOL_REALLOC_EVERY`, periodic buffer reallocation
-to force it back into fast memory) was tried and did **not** hold up:
-looked like a win at small scale but averaged *slower* (91.74s vs 86.96s)
-over four full 10-epoch runs — off by default (see `src/ct_gpu.c` for the
-real numbers).
+- MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07` (`gpu-img`/`gpu-opt`). 512³ `9.534e-11` (`gpu-buf`) / `1.232e-09` (`gpu-img`/`gpu-opt`). No NaN/inf.
+- RMS as % of signal range: 256³ 0.0194%, 512³ 0.0026% (`gpu-img`/`gpu-opt`) — improves at higher resolution.
+- `gpu-buf`'s MSE-vs-CPU margin over `gpu-img`/`gpu-opt` is scale-dependent: ~980x tighter at 256³, ~13x tighter at 512³.
+- (256³ re-confirmed 2026-08-26 on GTX 680, fresh 100-epoch run, same result.)
+- `gpu-img`/`gpu-opt` not bit-exact vs CPU/`gpu-buf` — root cause checked with `diag_maxgap.py`, not the earlier-suspected `1/U²` singularity (ruled out: min|U| at worst voxel 82-91% of SOD, 1.2-1.5x amplification, nothing). It's a one-voxel spatial displacement from the hardware `CLK_FILTER_LINEAR` sampler (half-texel offsets audited, correct). Mass conserved across displaced voxel pair. Affects 21/16.7M voxels at 256³, 138/134M at 512³ (>100×RMS), concentrated at FOV edge (100% beyond 0.8×FOV radius at 512³).
+- `gpu-buf` (manual float32 trilinear) has none of this — use it when bit-level CPU fidelity matters more than speed.
+- OSEM `--subsets 5`, 256³, 100 epochs: 57.17s total.
+- `gpu-buf` variance on AMD Hawaii PRO (75-102s, same config) does not reproduce on GTX 680 (flat to the ms, confirmed independently on kale's own GTX 680 too). **Root cause (re-diagnosed 2026-09-01, superseding the buffer-demotion theory below): Hawaii's memory-clock DVFS periodically drops `mclk` from 1500 MHz to 150 MHz (10x) during sustained `fp_buffer` execution.** Confirmed directly: a clock-probe instrumented run (`FP_BUFFER_CLOCK_PROBE=1`, `src/ct_gpu.c`) showed every slow slab sampling `mclk=150Mhz` and every fast baseline sampling `mclk=1500Mhz`, zero overlap across 30 epochs and ~35 slow-slab events, with `sclk` and temperature both staying flat throughout (rules out core-clock throttling and thermal throttling as the trigger). `gpu-img`/`gpu-opt` stayed perfectly flat in the same sessions gpu-buf degraded — expected, since they read through the texture cache and are far less sensitive to `mclk` state, while `fp_buffer`'s uncoalesced buffer access is bandwidth-bound. A repeat-slab run (60 fixed-slab repeats, no reallocation at any point) showed the same slab oscillating between the fast and slow cost tier *on its own*, multiple times, unprompted by any buffer free/recreate — this is what falsifies the earlier "step degradation that holds until `d_vol` is freed and recreated" theory below. `power_dpm_force_performance_level` (the sysfs knob to pin the GPU at its top DPM state) is present but not writable without root on this machine, so the mechanism can't be force-disabled at the driver level. **Mitigation:** `FP_BUFFER_SKIP_SLAB_FINISH=1` (removes the idle gap between angle-slab launches) measured ~29% faster on average over a 30-epoch run (20.60s/epoch vs 29.14s/epoch unmitigated) and reduced both the frequency and peak severity of bursts, but did not eliminate them — some slabs still degrade even fully packed. Recommended for real runs; leave unset only when actively re-diagnosing (it also disables the per-slab SLOW/HOST-SIDE-GAP diagnostic print). Prefer `gpu-img`/`gpu-opt` over `gpu-buf` on this hardware when speed matters more than `gpu-buf`'s tighter CPU-parity margin.
+- (Earlier, now-superseded theory, kept for the record: AMD-driver memory-placement demotion of the volume buffer — "confirmed" by an apparent recovery on `d_vol` free/recreate. That correlation held under a repeat-slab diagnostic that turned out to be running at the wrong work-group shape (`{4,64,1}` instead of production's `{2,16,2}`, fixed in `src/ct_gpu.c`), and the "holds until realloc" claim didn't survive a longer run showing spontaneous recovery with no reallocation at all.)
+- Mitigation tried (`FP_BUFFER_VOL_REALLOC_EVERY`, periodic `d_vol` reallocation): did not hold up even under the old theory — averaged *slower* (91.74s vs 86.96s) over 4 full 10-epoch runs. Makes sense in hindsight: it was intervening on a mechanism (buffer placement) that was never the actual cause. Off by default (numbers in `src/ct_gpu.c`).
 
 ## Validation (AMD Hawaii PRO, 100 epochs, both datasets, all four modes)
 
-Earlier full-scale validation run, on the original AMD hardware — MSE
-values here differ from the NVIDIA GeForce GTX 680 numbers in Performance
-above, not a regression. The gap is real and larger than expected for
-`gpu-buf` specifically: at 256³, AMD's `gpu-buf` MSE (`6.436e-10`) is
-~5.6x worse than GTX 680's (`1.148e-10`), even though `gpu-buf` never
-touches a hardware texture sampler (manual float32 interpolation only)
--- so "texture-sampler rounding" can't be the explanation for that part
-of the gap. `-cl-fast-relaxed-math` (always on, `src/ct_gpu.c`) is a
-plausible cause -- the OpenCL spec leaves its exact numerical behavior
-vendor-defined, and a prior investigation confirmed it does NOT explain
-`gpu-img`/`gpu-opt`'s *within-GPU* precision floor on a single machine
-(rebuilt with the flag stripped, byte-identical output -- see
-`experimentation/hybrid-precision/kernels/bp_image.cl`), but that test
-never compared the same build across AMD vs NVIDIA, which is the actual
-open question here. Not yet resolved -- would need a real AMD-hardware
-rebuild with the flag stripped to test directly.
+- Earlier full-scale validation run, on original AMD hardware — MSE values differ from GTX 680 numbers in Performance above, not a regression.
+- Gap real, larger than expected for `gpu-buf` specifically: at 256³, AMD's `gpu-buf` MSE (`6.436e-10`) ~5.6x worse than GTX 680's (`1.148e-10`), despite `gpu-buf` never touching a hardware texture sampler — so "texture-sampler rounding" isn't the explanation.
+- `-cl-fast-relaxed-math` (always on, `src/ct_gpu.c`) plausible cause — OpenCL spec leaves exact behavior vendor-defined. A prior investigation confirmed it does NOT explain `gpu-img`/`gpu-opt`'s within-GPU precision floor on a single machine (flag stripped, byte-identical output), but that test never compared the same build across AMD vs NVIDIA — the actual open question here.
+- Not yet resolved — needs real AMD-hardware rebuild with flag stripped.
 
 ### 256³
 ```
@@ -131,12 +65,11 @@ gpu-img     0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=6.371e-03  ma
 gpu-opt     0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=6.371e-03  max=1.1490
 ```
 
-Same outlier-voxel phenomenon as GTX 680's run (see the GTX 680
-Validation section below): 24 outlier voxels dominate this MSE vs the
-Python reference (`Topic_2_CTreconstruction.py`) figure (0.00030
-excluding them vs 0.00637 including them), not a disagreement in any
-C/GPU mode -- confirmed the same finding independently
-on this machine's own Python-reference output.
+Same outlier-voxel phenomenon as GTX 680's run (see GTX 680 Validation
+below): 24 outlier voxels dominate this MSE vs Python ref
+(`Topic_2_CTreconstruction.py`) figure (0.00030 excluding them vs
+0.00637 including them), not a C/GPU mode disagreement — confirmed
+independently on this machine's own Python-reference output.
 
 **Re-run with the `v0`-clamp fix (2026-08-28), same 100-epoch CPU/GPU
 outputs, real 20-epoch Python reference run:**
@@ -148,15 +81,8 @@ gpu-buf     0.0000   1.7307   0.0067    0    0  MSE=6.436e-10  MSE=3.014e-04  ma
 gpu-img     0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=3.016e-04  max=1.1490
 gpu-opt     0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=3.016e-04  max=1.1490
 ```
-MSE vs Python Ref drops from `6.371e-03` (unfixed) to `3.014e-04`
-(~21x better), `python_ref` max is exactly `5.0000` (the clamp bound,
-confirming it's actually engaging), and the number now matches almost
-exactly the ~0.00030 estimate from excluding the 24 outlier voxels
-above -- the fix closes the gap by removing the outliers themselves
-rather than by masking them. MSE vs CPU (the real correctness signal
-for each C/GPU implementation) is unchanged, as expected -- the fix
-only touches the Python reference script, not any of this project's
-own code.
+- MSE vs Python Ref: `6.371e-03` (unfixed) → `3.014e-04` (~21x better). `python_ref` max exactly `5.0000` (clamp bound, confirms engaging). Matches the ~0.00030 estimate from excluding the 24 outlier voxels — fix removes outliers, doesn't mask them.
+- MSE vs CPU unchanged, as expected — fix only touches the Python reference script.
 
 ### 512³
 ```
@@ -169,19 +95,9 @@ gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
 
 ## Validation (NVIDIA GeForce GTX 680, 100 epochs, both datasets, all four modes)
 
-MSE vs CPU matches the Performance section's numbers exactly (same
-`validate.py` output). MSE vs Python Ref (`validate.py`'s label for the
-course-provided Python reference, `Topic_2_CTreconstruction.py`) is now
-available at 256^3 (`Epochs=20` run completed) -- see the note below the
-256^3 table for why that number is dominated by 26 outlier voxels in the
-Python reference's own output, not a disagreement in any C/GPU mode.
-512^3 is not possible with the Python reference: a 512^3 variant
-(`Topic_2_CTreconstruction_512.py`) exists and was attempted on both
-machines (2026-08-27), and both ran out of memory before completing.
-AMD Hawaii PRO's 15GB RAM is a confirmed hard limit for this workload
-(matches an earlier 2026-08-21 finding). The NVIDIA GTX 680 machine has
-much more RAM but still ran out partway through. Not attempted again
-since -- see the Run section for the script itself.
+- MSE vs CPU matches Performance section exactly (same `validate.py` output).
+- MSE vs Python Ref available at 256³ (`Epochs=20` run completed) — dominated by 26 outlier voxels in the Python reference's own output, not a C/GPU mode disagreement (see note below 256³ table).
+- 512³ not possible with Python reference: `Topic_2_CTreconstruction_512.py` variant attempted on both machines (2026-08-27), both ran out of memory. AMD Hawaii PRO's 15GB RAM confirmed hard limit (matches 2026-08-21 finding). GTX 680 has more RAM but still ran out partway. Not attempted again — see Run section for the script.
 
 ### 256³
 ```
@@ -193,27 +109,13 @@ gpu-img     0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=2.061e-02  ma
 gpu-opt     0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=2.061e-02  max=0.8966
 ```
 
-**MSE vs the Python reference (`Topic_2_CTreconstruction.py`) is
-dominated by 26 outlier voxels in that script's own output (0.00016% of
-the volume), not a disagreement in any C/GPU mode** -- all four modes
-show the identical 2.061e-02, meaning it's the Python reference's output
-that's the outlier here, not any implementation. Excluding just those 26
-voxels drops MSE to ~3.2e-04. Investigated directly
-(`python/diag_bp_ones.py`), not assumed: the MLEM normalizer `bp_ones`
-is completely normal at every one of these voxels (364-443, same range
-as everywhere else in the volume) -- ruling out a division-by-near-zero.
-The real mechanism is geometric compounding: each outlier voxel's
-per-epoch multiplicative ratio is consistently ~1.29-1.37 (backed out
-from `521.6699^(1/20)` and `174.32614^(1/20)` matching the observed
-final values starting from v0=1), so 20 unclamped MLEM iterations
-compound a small persistent per-epoch drift into a large final value.
-This is a real numerical-stability gap in the unmodified reference
-script at a handful of ill-conditioned voxels (likely sparse/near-tangent
-ray coverage there), not a bug in any of this project's C/GPU/CPU
-implementations -- reproduced independently on AMD Hawaii PRO's own
-Python-reference run too (24 outlier voxels, heavily
-overlapping indices, same z=1/z=254-concentrated pattern, same order of
-magnitude).
+**MSE vs Python reference (`Topic_2_CTreconstruction.py`) dominated by 26
+outlier voxels in that script's own output (0.00016% of volume), not a
+C/GPU mode disagreement:**
+- All 4 modes show identical `2.061e-02` — the Python reference output is the outlier, not any implementation. Excluding those 26 voxels drops MSE to ~3.2e-04.
+- Investigated via `python/diag_bp_ones.py`: MLEM normalizer `bp_ones` normal at every outlier voxel (364-443, same range as elsewhere) — rules out division-by-near-zero.
+- Real mechanism: geometric compounding. Each outlier voxel's per-epoch multiplicative ratio ~1.29-1.37 (backed out from `521.6699^(1/20)` and `174.32614^(1/20)` matching observed finals from v0=1) — 20 unclamped iterations compound small drift into large final value.
+- Numerical-stability gap in unmodified reference script at ill-conditioned voxels (likely sparse/near-tangent ray coverage), not a bug in this project's code — reproduced independently on AMD Hawaii PRO's own Python-reference run (24 outlier voxels, overlapping indices, same z=1/z=254-concentrated pattern, same order of magnitude).
 
 ### 512³
 
@@ -296,32 +198,26 @@ python/
   diag_voxel.py                — one-off debugging script, kept for reference
   diag_maxgap.py               — per-operator error attribution for the gpu-img/gpu-opt max-gap finding
   plot_results.py              — report figures (OSEM/MLEM convergence, slice comparisons)
-  Topic_2_CTreconstruction.py — the reference script (fp_func/bp_func);
-                                 the "Reference code (python)" grading
-                                 refers to. Two real bugs fixed early on
-                                 (out_path placeholder, volume z-axis size)
-                                 so it actually runs and saves. A third fix
-                                 -- clamping v0 to [0, 5] after each
-                                 update -- was added after finding and
-                                 reporting a real numerical-stability gap
-                                 at a handful of voxels (course staff
-                                 approved fixing it; see the
-                                 26-outlier-voxel finding in the Validation
-                                 section for the original, unfixed
-                                 numbers). A per-epoch ratio clamp was
-                                 tried first and does not work (verified
-                                 with a simulation, not run for real) --
-                                 see the comment in this file for why.
-                                 fp_func/bp_func themselves remain
-                                 untouched.
+  Topic_2_CTreconstruction.py — reference script (fp_func/bp_func), the
+                                 "Reference code (python)" grading refers
+                                 to. 2 real bugs fixed early (out_path
+                                 placeholder, volume z-axis size) so it
+                                 runs/saves. 3rd fix: clamp v0 to [0, 5]
+                                 after each update (numerical-stability
+                                 gap at a handful of voxels, course staff
+                                 approved — see 26-outlier-voxel finding
+                                 in Validation section). Per-epoch ratio
+                                 clamp tried first, doesn't work (verified
+                                 via simulation, not run for real — see
+                                 in-file comment). fp_func/bp_func
+                                 themselves untouched.
   Topic_2_CTreconstruction_512.py — 512^3 variant, path_data/out_path
-                                 changed, same v0 clamp applied as the
-                                 256^3 script; attempted on both machines,
-                                 ran out of memory before completing on
-                                 either -- see Validation section.
-  diag_bp_ones.py               — investigates the 26-outlier-voxel finding
-                                 above (checks whether bp_ones is near-zero
-                                 at those voxels; it isn't).
+                                 changed, same v0 clamp as 256^3 script;
+                                 attempted both machines, ran out of
+                                 memory on both — see Validation section.
+  diag_bp_ones.py               — investigates 26-outlier-voxel finding
+                                 (checks bp_ones near-zero at those
+                                 voxels; it isn't).
 ```
 
 ## Build
@@ -363,26 +259,13 @@ python3 python/validate_ops.py bp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf
 make run-python
 ```
 
-Pure-Python fp/bp (scipy `RegularGridInterpolator` rebuilt per-angle, no
-vectorization/GPU) measured ~4690s/epoch at 256^3 on the NVIDIA GeForce GTX 680 at the script's
-default `sample_ratio=2`. `sample_ratio` reduced to 1 (call-site only, in
-`fp_func(cb_para, vol, sample_ratio=1)`; `fp_func`/`bp_func` internals
-untouched) — this also matches the C/GPU modes' default sample count at
-256^3 (`n_samples = Nxz = 256`, see `src/main.c`), which `sample_ratio=2`'s
-512 samples/ray did not. Measured ~3679s/epoch at sample_ratio=1 (only
-~21% faster, not the ~50% a naive samples-per-ray scaling would suggest —
-most of fp_func's cost is fixed per-pixel Python/interpreter overhead
-across its 1.3M-pixel loop, not proportional to ray length; bp_func's cost
-is unaffected by sample_ratio at all). Full 100 epochs at this rate would be
-~4.3 days; fewer epochs than 100 is an accepted tradeoff for this
-script — results converge less but that's expected, not a defect —
-so `Epochs` set to 20 (~20hrs) instead. Run on the NVIDIA GeForce GTX
-680 under `tmux -s topic2` to run unattended, completed 2026-08-27.
+- Pure-Python fp/bp (scipy `RegularGridInterpolator` rebuilt per-angle, no vectorization/GPU): ~4690s/epoch at 256³ on GTX 680, script default `sample_ratio=2`.
+- `sample_ratio` reduced to 1 (call-site only, `fp_func(cb_para, vol, sample_ratio=1)`; internals untouched) — matches C/GPU modes' default sample count at 256³ (`n_samples = Nxz = 256`, `src/main.c`), which `sample_ratio=2`'s 512 samples/ray didn't.
+- Measured ~3679s/epoch at sample_ratio=1 — only ~21% faster, not ~50% naive scaling would suggest: most of fp_func's cost is fixed per-pixel Python/interpreter overhead (1.3M-pixel loop), not proportional to ray length; bp_func unaffected by sample_ratio at all.
+- Full 100 epochs at this rate ≈ 4.3 days; `Epochs` set to 20 (~20hrs) instead — fewer epochs = less convergence, expected tradeoff, not a defect.
+- Run on GTX 680 under `tmux -s topic2` unattended, completed 2026-08-27.
 
-Full MSE-vs-CPU and MSE-vs-Python-reference numbers (real `Epochs=20`
-run, completed 2026-08-27) are in the "Validation (NVIDIA GeForce GTX
-680...)" section above, including the 26-outlier-voxel finding that
-explains the 2.061e-02 figure.
+- Full MSE-vs-CPU/Python-reference numbers (real `Epochs=20` run, completed 2026-08-27): "Validation (NVIDIA GeForce GTX 680...)" section above, incl. 26-outlier-voxel finding explaining 2.061e-02.
 
 ## Algorithm
 
@@ -442,11 +325,9 @@ rel_change; off by default):
 | 30s | −480,652 (plateaued) | −479,701 | −479,653 | −479,042 | **−478,651** |
 | 36s | −480,652 (plateaued) | −479,610 | −479,580 | −478,964 | **−478,571** |
 
-S=1 plateaus by ~20s (100-epoch ceiling). Every OSEM config keeps
-improving through 36s, never plateaus. S=15 leads at 10s, S=25 is a
-close second there (sub-iteration overhead still amortizing) but
-overtakes and wins clearly from 15s on. Report the time-matched curve,
-not a single "best S."
+- S=1 plateaus by ~20s (100-epoch ceiling). Every OSEM config keeps improving through 36s, never plateaus.
+- S=15 leads at 10s, S=25 close second (sub-iteration overhead still amortizing) but overtakes and wins clearly from 15s on.
+- Report time-matched curve, not a single "best S."
 
 ## Optimizations
 

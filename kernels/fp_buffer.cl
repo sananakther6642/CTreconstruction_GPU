@@ -52,6 +52,17 @@ __kernel void fp_buffer(
     float SDD,
     float voxelSize,
     float pixelSize,
+    int   use_aabb,  /* 1 = clip ray to volume AABB; 0 = full n_samples.
+                       * See fp_image.cl's identical arg -- previously
+                       * this was hardcoded "if (W > 512)" here, which
+                       * meant FP_IMAGE_AABB (ct_gpu.c) could not control
+                       * gpu-buf at all; the 512^3 benefit of AABB on
+                       * this path had never actually been measured,
+                       * only assumed by inheriting fp_image's gate
+                       * threshold. Host still defaults this the same
+                       * way (W > 512) -- see run_fp_buffer -- so default
+                       * behavior is unchanged; only the ability to
+                       * override it is new. */
     int   ip_start,
     int   ip_count
 )
@@ -90,7 +101,7 @@ __kernel void fp_buffer(
 
     /* AABB slab test: tighten sample range for large detectors */
     int s_start = 0, s_end = n_samples;
-    if (W > 512) {
+    if (use_aabb) {
         float hxz = 0.5f * Nxz * voxelSize;
         float hy  = 0.5f * Ny  * voxelSize;
         float ox0 = T[0], oy0 = T[1], oz0 = T[2];
