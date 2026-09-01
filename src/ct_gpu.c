@@ -1561,7 +1561,12 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
              * the loop and is kept current by vol_update_img at the end of
              * every sub-iteration (Phase B4). fp still covers the full
              * angle range -- see function-level comment above. */
-            run_fp_image(cl, p, vol_img, d_proj_b, 0, np);
+            const char *test_fp = getenv("TEST_FP");
+            if (test_fp && !strcmp(test_fp, "buf")) {
+                run_fp_buffer(cl, p, &d_vol, d_proj_b, 0, np);
+            } else {
+                run_fp_image(cl, p, vol_img, d_proj_b, 0, np);
+            }
 
             if (conv_log && s == 0)
                 clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
