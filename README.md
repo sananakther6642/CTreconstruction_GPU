@@ -38,6 +38,60 @@ Intel Xeon E5-2620 0 (24 threads) · NVIDIA GeForce GTX 680 (Kepler, no
 `cl_khr_fp16` — `--half` unavailable).
 
 - MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07` (`gpu-img`/`gpu-opt`). 512³ `9.534e-11` (`gpu-buf`) / `1.232e-09` (`gpu-img`/`gpu-opt`). No NaN/inf.
+
+### `FP_TEX_EXACT`: exact forward-projection interpolation
+
+`gpu-img`/`gpu-opt` sample the volume through the hardware texture unit,
+which bundles two separable things: a 3D-tiled cache (the source of their
+speed) and a fixed-function interpolation stage whose blend weights carry
+less than float32 precision (the source of their MSE gap vs CPU). Setting
+`FP_TEX_EXACT=1` keeps the cache and replaces only the blend — eight
+`CLK_FILTER_NEAREST` fetches plus a manual float32 trilinear, in the forward
+projection.
+
+Forward projection specifically: fp produces the ratio that drives every MLEM
+update, so its error re-enters the loop each epoch, while bp's averages out
+across 75 angles. An earlier attempt at the same correction in
+backprojection moved MSE only 6% while costing 55% runtime.
+
+**MSE vs CPU, 100 epochs:**
+
+| | NVIDIA GTX 680 | | AMD Hawaii PRO | |
+|---|---|---|---|---|
+| | default | `FP_TEX_EXACT=1` | default | `FP_TEX_EXACT=1` |
+| 256³ `gpu-img`/`gpu-opt` | `1.128e-07` | `2.524e-09` | `1.949e-07` | *pending* |
+| 512³ `gpu-img`/`gpu-opt` | `1.232e-09` | `5.528e-10` | `6.849e-10` | *pending* |
+| 256³ `gpu-buf` | `1.148e-10` | n/a | `6.436e-10` | n/a |
+| 512³ `gpu-buf` | `9.534e-11` | n/a | `5.310e-10` | n/a |
+
+`gpu-buf` has no `fp_image`, so the flag does not apply to it. The Hawaii
+`FP_TEX_EXACT` columns are pending `temp_scripts/run_hawaii_precision_100ep.sh`;
+the kernel is shared between both machines but has so far only been run on
+NVIDIA. Hawaii's baselines are looser than the GTX 680's across the board —
+a pre-existing AMD-vs-NVIDIA difference documented in the Validation section,
+independent of this change.
+
+**Runtime cost (GTX 680, 256³, 100 epochs):**
+
+| path | MSE vs CPU | `gpu-img` | `gpu-opt` |
+|---|---|---|---|
+| default | `1.128e-07` | 14.65 s | 14.20 s |
+| `FP_TEX_EXACT=1` | `2.524e-09` | 21.34 s | 20.48 s |
+| `gpu-buf` | `1.148e-10` | — | 39.05 s |
+
+A 45× MSE reduction for 1.44-1.46× runtime. Defaults are unchanged; the flag
+costs nothing unless set. At 512³ the improvement is 2.2× rather than 45×,
+since 512³ starts much closer to the float32 noise floor — finer voxels shrink
+the sampler's absolute interpolation error.
+
+CLI and `pybind_backend` produce bit-identical output at both resolutions on
+Hawaii (verified 2026-09-01, all four modes), as expected since the binding
+JIT-compiles the same `src/ct_gpu.c`.
+
+OSEM on Hawaii, MSE vs CPU: `1.062e-04` (S=5, 256³), `4.050e-05` (S=2, 512³).
+OSEM converges through a different update path — S partial updates per epoch
+rather than one full update — so a larger divergence from plain MLEM is
+inherent to the method rather than a precision defect.
 - RMS as % of signal range: 256³ 0.0194%, 512³ 0.0026% (`gpu-img`/`gpu-opt`) — improves at higher resolution.
 - `gpu-buf`'s MSE-vs-CPU margin over `gpu-img`/`gpu-opt` is scale-dependent: ~980x tighter at 256³, ~13x tighter at 512³.
 - (256³ re-confirmed 2026-08-26 on GTX 680, fresh 100-epoch run, same result.)
