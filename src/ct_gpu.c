@@ -713,8 +713,39 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
      * as run_bp_buffer; fp_buffer's trilinear_buf is also uncoalesced.
      * p0 ranges over the SUBSET's local offsets [0, gws_full[2]); the
      * actual launch offset below is ip_start+p0 so the kernel's own
-     * get_global_id(2) lands on the correct absolute angle index. */
-    const size_t ANG_SLAB = 8;
+     * get_global_id(2) lands on the correct absolute angle index.
+     *
+     * FP_BUFFER_ANG_SLAB: opt-in override, part of the mclk-DVFS
+     * mitigation testing (see FP_BUFFER_SKIP_SLAB_FINISH below) --
+     * fewer, larger slabs means fewer sync points and fewer idle gaps
+     * for the GPU to settle into a low mclk state between. CAUTION: this
+     * directly trades away watchdog headroom. At 512^3 under the
+     * degraded (150MHz) DVFS state, one already-observed slab cost
+     * ~11.3s wall (see the DVFS root-cause comment below) against a
+     * driver timeout of ~10s (the same limit run_bp_buffer's chunking
+     * comment cites) -- ANG_SLAB=8 is already close to that ceiling
+     * WHILE degraded. Raising it multiplies a single launch's worst-case
+     * wall time by the same factor, and does so precisely during the
+     * degraded state this is meant to help with -- a burst hitting a
+     * larger slab risks a real watchdog reset (GPU-wide, not just a slow
+     * epoch) rather than just a slow one. Default (8) unchanged; only
+     * raise this on hardware/timeout combinations known to tolerate it,
+     * and treat any value tested here as unverified until run long
+     * enough to hit a slow-tier slab and confirm no reset occurs. */
+    size_t ANG_SLAB = 8;
+    {
+        const char *ang_slab_env = getenv("FP_BUFFER_ANG_SLAB");
+        if (ang_slab_env) {
+            long v = atol(ang_slab_env);
+            if (v > 0) ANG_SLAB = (size_t)v;
+        }
+    }
+    if (ANG_SLAB != 8) {
+        fprintf(stderr, "    [fp_buffer] WARNING: FP_BUFFER_ANG_SLAB=%zu overrides the "
+                        "default (8) -- untested against the ~10s driver watchdog under "
+                        "the degraded (150MHz) DVFS state; see this variable's comment.\n",
+                ANG_SLAB);
+    }
     int slab_idx = 0;
     /* FP_BUFFER_SLAB_PAUSE_US: experimental mitigation attempt, from before
      * the mechanism below was understood -- inserts a host-side sleep
