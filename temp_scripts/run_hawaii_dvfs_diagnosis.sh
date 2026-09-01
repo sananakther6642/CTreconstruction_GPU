@@ -110,7 +110,17 @@ checkpoint() {
   repo_root=$(git rev-parse --show-toplevel)
   (
     set +e
-    if [ ! -d "$WORKTREE_DIR" ]; then
+    # Resolve the worktree's actual path from git's own registry rather than
+    # trusting a relative -d test (which silently missed an already-checked-out
+    # worktree whenever this script's CWD differed from the first run that
+    # created it, causing `git worktree add` to fail with "already checked
+    # out at <path>" -- confirmed on pool15-01's first dvfs-diag run).
+    existing_path=$(git worktree list --porcelain 2>/dev/null \
+      | awk -v branch="refs/heads/pool15-dvfs-diagnosis" \
+        '/^worktree /{wt=$2} /^branch /{if ($2==branch) print wt}')
+    if [ -n "$existing_path" ] && [ -d "$existing_path" ]; then
+      WORKTREE_DIR="$existing_path"
+    elif [ ! -d "$WORKTREE_DIR" ]; then
       if git show-ref --verify --quiet refs/heads/pool15-dvfs-diagnosis; then
         git worktree add "$WORKTREE_DIR" pool15-dvfs-diagnosis
       elif git ls-remote --exit-code --heads origin pool15-dvfs-diagnosis >/dev/null 2>&1; then
@@ -120,6 +130,7 @@ checkpoint() {
         git worktree add -B pool15-dvfs-diagnosis "$WORKTREE_DIR"
       fi
     fi
+    mkdir -p "$WORKTREE_DIR/$OUT"
     rsync -a --delete "$repo_root/$OUT/" "$WORKTREE_DIR/$OUT/"
     cd "$WORKTREE_DIR" || exit 1
     git add -f "$OUT" 2>/dev/null
@@ -137,6 +148,11 @@ hostname | tee -a "$OUT/hardware.txt"
 clinfo 2>/dev/null | grep -i "device name" | head -1 | tee -a "$OUT/hardware.txt"
 cat "$SCLK_PATH" 2>/dev/null | tee -a "$OUT/hardware.txt"
 cat "$MCLK_PATH" 2>/dev/null | tee -a "$OUT/hardware.txt"
+
+# --only-d: skip straight to Arm D. Use this to rerun just the repeat-slab
+# diagnostic after arms A-C already succeeded (e.g. the --data/--out arg was
+# missing on a prior Arm D attempt) without redoing the 30-epoch A/C runs.
+if [ "${1:-}" != "--only-d" ]; then
 
 echo ""
 echo "=== Arm A: instrumented gpu-buf baseline, 512^3, $EPOCHS epochs ==="
@@ -170,12 +186,14 @@ build/ct_recon --data "$DATA512" \
 stop_sampler
 checkpoint "armC"
 
+fi # --only-d
+
 echo ""
 echo "=== Arm D: fixed repeat-slab (post-lws-fix), clock probe on ==="
 echo "    (re-establishes step-and-hold vs self-recovering burst at the"
 echo "    PRODUCTION lws={2,16,2}, not the old {4,64,1} mismatch)"
 FP_BUFFER_CLOCK_PROBE=1 build/ct_recon --data "$DATA512" \
-  --mode gpu-buf --kernels kernels \
+  --out "$OUT/armD_unused.hdf5" --mode gpu-buf --kernels kernels \
   --diag repeat-slab:0:8:60 2>&1 | tee "$OUT/logs/armD_repeat-slab.log"
 checkpoint "armD"
 
