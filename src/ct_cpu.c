@@ -364,13 +364,21 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
  * 32/256/384/1184 (h5py diff, max_abs_diff=0.0 all pairs) -- pure
  * reordering, no arithmetic reassociation, unlike the two prior CPU
  * attempts this session (restrict, loop-split) that both silently
- * broke bit-identity under -ffast-math. Default raised 32->384: best
- * L1-footprint/speed tradeoff (16.9 KB/thread vs 1184's 56.3 KB,
- * statistically tied in speed). Re-verify 256^3 is not regressed
- * before trusting this for both resolutions -- this default is shared
- * across all dataset sizes, the sweep above is 512^3-only. */
+ * broke bit-identity under -ffast-math.
+ *
+ * The default is resolution-dependent -- checked on kale, NOT assumed.
+ * Raising it to 384 unconditionally was tried first and measured a
+ * real ~3% REGRESSION at 256^3 (fp 2.83s -> 2.92s, steady across
+ * epochs, not noise): 384's larger per-tile stack footprint (16.9
+ * KB/thread vs 32's 2.1 KB) is pure overhead at 256^3, where H=512 is
+ * already small enough that 32 was the genuine optimum for THIS
+ * resolution (see the original 32-vs-8 sweep note above, which never
+ * had a reason to reconsider once GPU/other CPU work moved on). 384 is
+ * a 512^3-only win, keyed on Nxz (the CBpara field this function reads
+ * at the top) since that's what's already in scope here and
+ * distinguishes the two datasets this project uses (256 vs 512). */
 #define FP_TILE_MAX 1280
-    int FP_TILE = 384;
+    int FP_TILE = (Nxz >= 512) ? 384 : 32;
     {
         const char *tile_env = getenv("FP_TILE_ENV");
         if (tile_env) {
