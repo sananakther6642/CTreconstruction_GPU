@@ -353,9 +353,24 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
  * per-tile arrays below costs 4 bytes/slot/thread, so 1280 is 56.3 KB
  * of L1 footprint per thread vs 256's 11.3 KB -- likely to exceed a
  * typical 32 KB L1d well before reaching H, so read the curve rather
- * than assuming it keeps improving all the way to 1184. */
+ * than assuming it keeps improving all the way to 1184.
+ *
+ * Full 512^3 sweep result (2-epoch runs, kale/GTX 680, fp only):
+ *   32->27.24s  256->26.16s  320->25.97s  384->25.81s  448->26.29s(*)
+ *   512->26.03s  640->25.84s  768->25.89s  960->25.99s  1184->25.77s
+ * (*448 reads as noise, bracketed by lower neighbors on both sides).
+ * Genuine plateau from ~384 onward, not still climbing -- 384 and 1184
+ * are within 0.5% of each other. Verified bit-identical across
+ * 32/256/384/1184 (h5py diff, max_abs_diff=0.0 all pairs) -- pure
+ * reordering, no arithmetic reassociation, unlike the two prior CPU
+ * attempts this session (restrict, loop-split) that both silently
+ * broke bit-identity under -ffast-math. Default raised 32->384: best
+ * L1-footprint/speed tradeoff (16.9 KB/thread vs 1184's 56.3 KB,
+ * statistically tied in speed). Re-verify 256^3 is not regressed
+ * before trusting this for both resolutions -- this default is shared
+ * across all dataset sizes, the sweep above is 512^3-only. */
 #define FP_TILE_MAX 1280
-    int FP_TILE = 32;
+    int FP_TILE = 384;
     {
         const char *tile_env = getenv("FP_TILE_ENV");
         if (tile_env) {
