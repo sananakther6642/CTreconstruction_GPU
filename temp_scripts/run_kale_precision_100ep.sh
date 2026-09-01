@@ -24,14 +24,35 @@
 # FOV-edge voxels with near-zero normalizers amplify tiny differences every
 # epoch. Arm C measures that directly and costs almost nothing on top.
 #
-# Run inside tmux (~20 min total):
+# Run inside tmux (~20 min total), in a SEPARATE worktree -- never in a
+# checkout that has a Hawaii sweep running, since this script does
+# `make clean` and ct_recon reads kernels/ at runtime:
+#   cd ~/CTreconstruction_GPU_pool15 && git fetch origin
+#   git worktree add ~/ct-precision precision-mse-100ep
 #   tmux new -s precision
-#   cd ~/CTreconstruction_GPU_pool15     # or wherever this repo is checked out
-#   git checkout precision-mse-100ep && git pull
+#   cd ~/ct-precision
 #   bash temp_scripts/run_kale_precision_100ep.sh 2>&1 | tee ct_precision_run.log
+#
+# Disk: ~400MB peak (Arm A's four 256^3 volumes are kept for validation;
+# Arm B symlinks two of them; Arm C deletes each epoch point's volumes once
+# scored). Safe alongside the ~4GB Hawaii sweep on a shared NFS home.
 set -e
 set -o pipefail   # otherwise `cmd | tee log` hides cmd's exit status
 cd "$(dirname "$0")/.."
+
+# Refuse to run inside a checkout that is mid-Hawaii-sweep: this script does
+# `make clean` (deleting the binary that run still calls) and expects its own
+# kernels/ (which ct_recon reads at RUNTIME via --kernels). Use a separate
+# git worktree instead -- see this file's header.
+if [ -f ct_hawaiifull_run.log ] && [ ! -f ct_hawaiifull_DONE ]; then
+  echo "ERROR: ct_hawaiifull_run.log exists without ct_hawaiifull_DONE --"
+  echo "  a Hawaii sweep looks unfinished in this directory. Running here"
+  echo "  would 'make clean' the binary it still needs and swap its kernels/."
+  echo "  Use a separate worktree:"
+  echo "    git worktree add ~/ct-precision precision-mse-100ep"
+  echo "    cd ~/ct-precision && bash temp_scripts/run_kale_precision_100ep.sh"
+  exit 1
+fi
 
 DATA256=/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5
 EPOCHS=100
@@ -72,8 +93,11 @@ python3 python/validate.py --dir "$OUT/baseline" 2>&1 | tee "$OUT/logs/validate_
 # unaffected by HYBRID_PRECISION -- it only touches the image/opt programs).
 echo ""
 echo "=== $(date) : ARM B -- full-coverage manual blend, 100 epochs ==="
-cp "$OUT/baseline/output_cpu.hdf5"     "$OUT/hybrid/" 2>/dev/null || true
-cp "$OUT/baseline/output_gpu_buf.hdf5" "$OUT/hybrid/" 2>/dev/null || true
+# symlink, not copy -- these are 67MB each at 256^3 and validate.py only
+# reads them. HYBRID_PRECISION touches the image/opt programs only, so the
+# cpu and gpu-buf outputs are bit-identical between arms by construction.
+ln -sf "$PWD/$OUT/baseline/output_cpu.hdf5"     "$OUT/hybrid/output_cpu.hdf5"
+ln -sf "$PWD/$OUT/baseline/output_gpu_buf.hdf5" "$OUT/hybrid/output_gpu_buf.hdf5"
 export HYBRID_PRECISION=1 HYBRID_RADIUS_FRAC=0.001 HYBRID_GRAD_THRESH=0
 run "$OUT/hybrid" gpu_img gpu-img $EPOCHS
 run "$OUT/hybrid" gpu_opt gpu-opt $EPOCHS
@@ -95,6 +119,10 @@ for EP in 10 25 50; do
   run "$d" gpu_img gpu-img $EP
   echo "--- validate @ $EP epochs ---"
   python3 python/validate.py --dir "$d" 2>&1 | tee "$OUT/logs/validate_ep$EP.txt"
+  # The MSE is now recorded in the log; the volumes themselves are 67MB
+  # each and nothing downstream reads them. Drop them so this arm's peak
+  # footprint stays flat instead of growing with each epoch point.
+  rm -f "$d"/output_*.hdf5
 done
 
 echo ""
