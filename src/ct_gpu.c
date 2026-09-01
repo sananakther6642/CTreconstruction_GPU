@@ -909,6 +909,17 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,14, sizeof(int), &use_aabb);
     clSetKernelArg(k,15, sizeof(int), &ip_start);
     clSetKernelArg(k,16, sizeof(int), &ip_count);
+    /* FP_TEX_EXACT=1: keep the texture cache, replace the hardware blend
+     * with an IEEE float32 one (see kernels/fp_image.cl's trilinear_tex).
+     * Off by default -- unset reproduces the hardware-filtered path
+     * exactly. Distinct from --fp-buf, which abandons the texture path
+     * altogether and pays 1.8x time for it. */
+    int tex_exact = 0;
+    {
+        const char *te = getenv("FP_TEX_EXACT");
+        if (te) tex_exact = atoi(te) != 0;
+    }
+    clSetKernelArg(k,17, sizeof(int), &tex_exact);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)ip_count};
     /* {8,32,1} measured ~5% faster than the previous {16,16,1} at 512^3 on
