@@ -715,23 +715,38 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
      * actual launch offset below is ip_start+p0 so the kernel's own
      * get_global_id(2) lands on the correct absolute angle index.
      *
-     * FP_BUFFER_ANG_SLAB: opt-in override, part of the mclk-DVFS
-     * mitigation testing (see FP_BUFFER_SKIP_SLAB_FINISH below) --
-     * fewer, larger slabs means fewer sync points and fewer idle gaps
-     * for the GPU to settle into a low mclk state between. CAUTION: this
-     * directly trades away watchdog headroom. At 512^3 under the
-     * degraded (150MHz) DVFS state, one already-observed slab cost
-     * ~11.3s wall (see the DVFS root-cause comment below) against a
-     * driver timeout of ~10s (the same limit run_bp_buffer's chunking
-     * comment cites) -- ANG_SLAB=8 is already close to that ceiling
-     * WHILE degraded. Raising it multiplies a single launch's worst-case
-     * wall time by the same factor, and does so precisely during the
-     * degraded state this is meant to help with -- a burst hitting a
-     * larger slab risks a real watchdog reset (GPU-wide, not just a slow
-     * epoch) rather than just a slow one. Default (8) unchanged; only
-     * raise this on hardware/timeout combinations known to tolerate it,
-     * and treat any value tested here as unverified until run long
-     * enough to hit a slow-tier slab and confirm no reset occurs. */
+     * FP_BUFFER_ANG_SLAB: opt-in override, tested as a second mclk-DVFS
+     * mitigation angle (see FP_BUFFER_SKIP_SLAB_FINISH below) on the
+     * theory that fewer, larger slabs means fewer sync points and fewer
+     * idle gaps for the GPU to settle into a low mclk state between.
+     *
+     * TESTED AND REJECTED -- made things worse, not better. ANG_SLAB=16
+     * (vs default 8) with FP_BUFFER_SKIP_SLAB_FINISH=1 already on,
+     * 30-epoch 512^3 run: 694.79s total (23.16s/epoch mean), max epoch
+     * 63.9s -- vs SKIP_SLAB_FINISH alone's 618.00s (20.60s/epoch mean),
+     * max epoch 36.1s. ~12% SLOWER on average and nearly 2x the peak
+     * epoch cost. No watchdog reset occurred (the risk flagged below did
+     * not materialize at 16), but the result doesn't help: a larger slab
+     * means a burst's cost compounds across more angles before any
+     * chance of mid-slab recovery, which outweighs having fewer sync
+     * points. Default (8) is the right choice -- FP_BUFFER_SKIP_SLAB_FINISH
+     * alone remains the recommended mitigation, this knob does not add to
+     * it. See docs/performance-history.md's DVFS section for the full
+     * comparison.
+     *
+     * CAUTION (why this was risky to test, still applies to any further
+     * testing at higher values): raising ANG_SLAB trades away watchdog
+     * headroom. At 512^3 under the degraded (150MHz) DVFS state, one
+     * already-observed slab cost ~11.3s wall (see the DVFS root-cause
+     * comment below) against a driver timeout of ~10s (the same limit
+     * run_bp_buffer's chunking comment cites) -- ANG_SLAB=8 is already
+     * close to that ceiling WHILE degraded. Raising it multiplies a
+     * single launch's worst-case wall time by the same factor, precisely
+     * during the degraded state this is meant to help with -- a burst
+     * hitting a larger slab risks a real watchdog reset (GPU-wide, not
+     * just a slow epoch), not just a slow one. Treat any value beyond 16
+     * as unverified until run long enough to hit a slow-tier slab and
+     * confirm no reset occurs. */
     size_t ANG_SLAB = 8;
     {
         const char *ang_slab_env = getenv("FP_BUFFER_ANG_SLAB");
