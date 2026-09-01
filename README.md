@@ -82,6 +82,14 @@ The two are not bit-identical to each other (8955 vs 8958 outlier voxels) —
 texture storage round-trips through the image format while `fp_buffer` reads
 raw floats — but they agree numerically.
 
+At 512³ the same flag improves `gpu-img`/`gpu-opt` from `1.232e-09` to
+**`5.528e-10`** (2.2×). The gain is smaller than 256³'s 45× because 512³ was
+already close to the bar — finer voxels make the sampler's interpolation
+error smaller in absolute terms, so there is less to recover. Measured in the
+same run, `gpu-buf` came back at `9.551e-11` against the recorded
+`9.534e-11` (0.2% apart, run-to-run noise); since `FP_TEX_EXACT` does not
+touch `gpu-buf`, that serves as the control confirming the comparison.
+
 MSE vs CPU (defaults): 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07` (`gpu-img`/`gpu-opt`).
 512³ `9.534e-11` (`gpu-buf`) / `1.232e-09` (`gpu-img`/`gpu-opt`). No NaN/inf.
 RMS as % of signal range: 256³ 0.0194%, 512³ 0.0026% (`gpu-img`/`gpu-opt`).

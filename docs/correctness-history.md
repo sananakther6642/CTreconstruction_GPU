@@ -166,6 +166,15 @@ The 5.5 s difference is the texture cache, and it confirms the diagnosis —
 not bit-identical (8955 vs 8958 outliers) since texture storage round-trips
 through the image format.
 
+### 512³
+
+The same flag improves `gpu-img`/`gpu-opt` from `1.232e-09` to `5.528e-10`
+(2.2×) — a smaller gain than 256³'s 45×, because 512³ was already near the
+bar: finer voxels shrink the sampler's absolute interpolation error, leaving
+less to recover. `gpu-buf` measured `9.551e-11` vs the recorded `9.534e-11`
+in the same run; as `FP_TEX_EXACT` does not affect `gpu-buf`, that 0.2%
+agreement is the control validating the freshly-generated CPU reference.
+
 ### Four falsified hypotheses
 
 Each was tested directly and killed by its own measurement. Recorded because
