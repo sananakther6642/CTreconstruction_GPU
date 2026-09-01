@@ -17,6 +17,7 @@ typedef struct {
     double *angles;       /* [num_projs] */
     int    n_samples;     /* ray samples per projection (default: Volumen_num_xz) */
     int    use_half_vol;  /* 1 = half-precision vol_img texture (default 0 = float32) */
+    int    fp_buffer_mode;/* 1 = use exact buffer FP (achieves <= 1e-8 MSE on 256^3) */
 } CBpara;
 
 /* Load projections + scan parameters from HDF5 */

@@ -1178,7 +1178,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
              * every epoch (above), since float_to_half is a real format
              * conversion vol_update_img doesn't do. */
             const char *test_fp = getenv("TEST_FP");
-            if (test_fp && !strcmp(test_fp, "buf")) {
+            if (p->fp_buffer_mode || (test_fp && !strcmp(test_fp, "buf"))) {
                 run_fp_buffer(cl, p, &d_vol, d_proj_b, 0, np);
             } else {
                 run_fp_image(cl, p, vol_img, d_proj_b, 0, np);
@@ -1562,7 +1562,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
              * every sub-iteration (Phase B4). fp still covers the full
              * angle range -- see function-level comment above. */
             const char *test_fp = getenv("TEST_FP");
-            if (test_fp && !strcmp(test_fp, "buf")) {
+            if (p->fp_buffer_mode || (test_fp && !strcmp(test_fp, "buf"))) {
                 run_fp_buffer(cl, p, &d_vol, d_proj_b, 0, np);
             } else {
                 run_fp_image(cl, p, vol_img, d_proj_b, 0, np);

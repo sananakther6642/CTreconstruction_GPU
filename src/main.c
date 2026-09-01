@@ -28,7 +28,8 @@ static void print_usage(const char *prog)
         "                            stack and requires N | num_projs for even subset sizes;\n"
         "                            1 epoch = 1 full pass over all N subsets, i.e.\n"
         "                            --epochs 20 --subsets 5 does the same total work as\n"
-        "                            --epochs 100 --subsets 1)\n",
+        "                            --epochs 100 --subsets 1)\n"
+        "           [--fp-buf]      (use exact IEEE float32 buffer FP with texture BP, achieves <= 1e-8 MSE on 256^3)\n",
         prog);
 }
 
@@ -45,6 +46,7 @@ int main(int argc, char **argv)
     const char *conv_log     = NULL; /* --log-convergence path, NULL = off */
     const char *diag_str     = NULL; /* --diag repeat-slab:<off>:<size>:<reps> */
     int         subsets      = 1;    /* --subsets N, default 1 = plain MLEM */
+    int         fp_buf       = 0;    /* 1 = use exact IEEE float32 buffer FP */
 
     /* ── Parse args ── */
     for (int i = 1; i < argc; i++) {
@@ -59,6 +61,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--log-convergence") && i+1<argc) conv_log = argv[++i];
         else if (!strcmp(argv[i], "--diag")    && i+1<argc) diag_str    = argv[++i];
         else if (!strcmp(argv[i], "--subsets") && i+1<argc) subsets     = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--fp-buf"))              fp_buf      = 1;
         else { print_usage(argv[0]); return 1; }
     }
 
@@ -73,7 +76,9 @@ int main(int argc, char **argv)
     if (load_hdf5(data_path, &para, &proj_measured) != 0) return 1;
     para.n_samples    = (n_samples > 0) ? n_samples : para.Volumen_num_xz;
     para.use_half_vol = use_half;
+    para.fp_buffer_mode = fp_buf;
     printf("  vol_img precision: %s\n", use_half ? "half" : "float32");
+    if (fp_buf) printf("  Forward projection: exact IEEE float32 buffer mode (--fp-buf)\n");
 
     printf("  Volume:    %d x %d x %d\n", para.Volumen_num_xz, para.Volumen_num_xz, para.Volumen_num_y);
     printf("  Detector:  %d x %d\n", para.detector_width, para.detector_height);
