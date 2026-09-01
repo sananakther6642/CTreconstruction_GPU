@@ -1034,7 +1034,8 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         clEnqueueFillBuffer(cl->queue, d_bp_ones, &zero, sizeof(float),
                             0, vol_bytes, 0, NULL, NULL);
 
-        if (cl->mode == GPU_MODE_BUFFER) {
+        const char *test_bp = getenv("TEST_BP");
+        if (cl->mode == GPU_MODE_BUFFER || (test_bp && !strcmp(test_bp, "buf"))) {
             run_bp_buffer(cl, p, d_ones_prep, d_ang_cs, d_bp_ones, 0, np);
         } else {
             cl_image_format fmt = {CL_R, CL_FLOAT};
@@ -1176,7 +1177,12 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
              * the end of every epoch (Phase B4). --half still copies
              * every epoch (above), since float_to_half is a real format
              * conversion vol_update_img doesn't do. */
-            run_fp_image(cl, p, vol_img, d_proj_b, 0, np);
+            const char *test_fp = getenv("TEST_FP");
+            if (test_fp && !strcmp(test_fp, "buf")) {
+                run_fp_buffer(cl, p, d_vol, d_proj_b, 0, np);
+            } else {
+                run_fp_image(cl, p, vol_img, d_proj_b, 0, np);
+            }
         }
 
         if (conv_log)
@@ -1193,7 +1199,8 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
          * intermediate buffer, no buffer->image copy. Buffer mode is
          * unaffected: it still needs proj_divide's plain-buffer output
          * for run_preprocess/run_bp_buffer, which don't use an image. */
-        if (cl->mode == GPU_MODE_BUFFER) {
+        const char *test_bp = getenv("TEST_BP");
+        if (cl->mode == GPU_MODE_BUFFER || (test_bp && !strcmp(test_bp, "buf"))) {
             cl_kernel k = cl->k_divide;
             clSetKernelArg(k,0,sizeof(cl_mem),&d_proj_meas);
             clSetKernelArg(k,1,sizeof(cl_mem),&d_proj_b);
