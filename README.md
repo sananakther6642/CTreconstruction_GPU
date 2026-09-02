@@ -58,6 +58,8 @@ All four return the reconstructed volume as a numpy `float32` array;
 none of them touch HDF5 - read input and write output in Python (see
 `run.py`).
 
+## Run
+
 Reference call site (`run.py`, `--mode` selects any of the four
 functions above, `--subsets` only applies to `gpu-opt`), data at
 `/lgrp/edu-2026-1-gpulab/`:
