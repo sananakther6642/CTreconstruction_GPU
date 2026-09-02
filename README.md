@@ -61,13 +61,12 @@ backprojection moved MSE only 6% while costing 55% runtime.
 |---|---|---|---|---|
 | | default | `FP_TEX_EXACT=1` | default | `FP_TEX_EXACT=1` |
 | 256³ `gpu-img`/`gpu-opt` | `1.128e-07` | `2.524e-09` | `1.949e-07` | `1.651e-09` |
-| 512³ `gpu-img`/`gpu-opt` | `1.232e-09` | `5.528e-10` | `6.849e-10` | *pending* |
+| 512³ `gpu-img`/`gpu-opt` | `1.232e-09` | `5.528e-10` | `6.849e-10` | `4.359e-10` |
 | 256³ `gpu-buf` | `1.148e-10` | n/a | `6.436e-10` | n/a |
 | 512³ `gpu-buf` | `9.534e-11` | n/a | `5.310e-10` | n/a |
 
-`gpu-buf` has no `fp_image`, so the flag does not apply to it. Hawaii's 512³
-`FP_TEX_EXACT` figure is still running
-(`temp_scripts/run_hawaii_precision_100ep.sh`).
+`gpu-buf` has no `fp_image`, so the flag does not apply to it. Every cell is
+measured; nothing is estimated.
 
 **The fix transfers across vendors, and brings the two machines into
 agreement.** Hawaii's 256³ gain is 118× — larger than the GTX 680's 44.7×
@@ -77,6 +76,11 @@ itself evidence the sampler was the dominant machine-specific error source,
 since Hawaii's baselines are otherwise looser than the GTX 680's across the
 board (a pre-existing AMD-vs-NVIDIA difference documented in the Validation
 section).
+
+At 512³ on Hawaii the gain is 1.57× (`6.849e-10` → `4.359e-10`) — and the
+result overtakes `gpu-buf`, which sits at `5.310e-10` there. So on that
+machine the exact-blend texture path is not merely competitive with the
+manual-buffer path, it is more accurate than it, while remaining far faster.
 
 Two corroborating details from the Hawaii 256³ run: `max` moved from `1.8741`
 (8% above the CPU reference's `1.7303`) to `1.7332`, within 0.2%; and the
