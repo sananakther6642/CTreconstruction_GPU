@@ -407,11 +407,14 @@ sudo apt install libhdf5-dev ocl-icd-opencl-dev opencl-headers
 
 ## Run
 
-Data: `/lgrp/edu-2026-1-gpulab/`.
+Data: `/lgrp/edu-2026-1-gpulab/`. `--mode` selects any of the four
+functions listed above; `--subsets` only applies to `gpu-opt`.
 
 ```bash
-python3 run.py --mode gpu-opt --epochs 100
-python3 run.py --mode cpu --epochs 20 --subsets 1
+python3 run.py --mode cpu     --epochs 100
+python3 run.py --mode gpu-buf --epochs 100
+python3 run.py --mode gpu-img --epochs 100
+python3 run.py --mode gpu-opt --epochs 100 --subsets 1
 ```
 
 - Pure-Python fp/bp (scipy `RegularGridInterpolator` rebuilt per-angle,
