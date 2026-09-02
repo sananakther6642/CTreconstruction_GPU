@@ -236,13 +236,14 @@ reproducible. CPU: Intel i7-5820K, 12 threads. GPU: AMD Hawaii PRO,
 
 | Mode | 256³ time/epoch | 256³ total | 512³ time/epoch | 512³ total | Speedup |
 |---|---|---|---|---|---|
-| `cpu` | ≈4.20s | 423.86s | ≈34s | 3415.58s | 1× |
-| `gpu-buf` | 0.855-0.860s | 86.46s | 7.13-7.20s | 722.59s | 4.9× / 4.7× |
-| `gpu-img` | 0.142-0.148s | 14.67s | 1.226-1.256s | 126.74s | 28.9× / 27.0× |
-| `gpu-opt` | **0.138-0.143s** | **14.29s** | **1.226-1.245s** | **125.77s** | **29.7× / 27.2×** |
+| `cpu` | 3.970s | 396.98s | 33.610s | 3360.98s | 1× |
+| `gpu-buf` | 0.394s | 39.40s | 5.141s | 514.08s | 10.1× / 6.5× |
+| `gpu-img` | 0.169s | 16.94s | n/a† | n/a† | 23.4× / n/a† |
+| `gpu-opt` | **0.165s** | **16.50s** | **1.360s** | **136.04s** | **24.1× / 24.7×** |
 
-CPU: Intel Xeon E5-2620 0, 24 threads. GPU: NVIDIA GTX 680 (Kepler, no
-`cl_khr_fp16` - `--half` unavailable).
+†`gpu-img` at 512³ was not measured in this run - the job never started
+(empty log). CPU: Intel Xeon E5-2620 0, 24 threads. GPU: NVIDIA GTX 680
+(Kepler, no `cl_khr_fp16` - `--half` unavailable).
 
 ### Pure-Python reference
 
