@@ -73,14 +73,27 @@ independent of this change.
 
 **Runtime cost (GTX 680, 256³, 100 epochs):**
 
+All four figures below were measured in one sitting from a single `features`
+build, so the ratio between them is meaningful:
+
 | path | MSE vs CPU | `gpu-img` | `gpu-opt` |
 |---|---|---|---|
-| default | `1.128e-07` | 14.65 s | 14.20 s |
-| `FP_TEX_EXACT=1` | `2.524e-09` | 21.34 s | 20.48 s |
+| default | `1.128e-07` | 16.95 s | 16.51 s |
+| `FP_TEX_EXACT=1` | `2.524e-09` | 21.33 s | 20.98 s |
 | `gpu-buf` | `1.148e-10` | — | 39.05 s |
 
-A 45× MSE reduction for 1.44-1.46× runtime. Defaults are unchanged; the flag
-costs nothing unless set. At 512³ the improvement is 2.2× rather than 45×,
+A 45× MSE reduction for **1.26-1.27×** runtime. Defaults are unchanged; the
+flag costs nothing unless set.
+
+Note on the default figures: earlier drafts quoted 14.65 s / 14.20 s from an
+archived 2026-08-29 run. Re-measuring on current `features` gives ~16.5-17.0 s
+for the same default path, reproducibly (four runs within 17.12-17.17 s for
+`gpu-img`). Something between those dates cost the default path ~15%;
+`CLK_ADDRESS_CLAMP` vs `CLAMP_TO_EDGE` and `native_sqrt` vs IEEE `sqrt` were
+each tested directly and neither accounts for it, so the cause is not yet
+identified. This is an open item, not a consequence of `FP_TEX_EXACT` — the
+exact-path timing reproduced to 0.01 s across builds. The ratio quoted above
+uses same-build numbers on both sides and so is unaffected either way. At 512³ the improvement is 2.2× rather than 45×,
 since 512³ starts much closer to the float32 noise floor — finer voxels shrink
 the sampler's absolute interpolation error.
 
