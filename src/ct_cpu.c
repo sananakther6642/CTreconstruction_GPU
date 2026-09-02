@@ -22,6 +22,12 @@
 static void prep_proj_for_bp(const float *src, float *dst,
                               int np, int W, int H, float voxelSize)
 {
+    /* Each ip writes only its own dst slice -- no cross-iteration
+     * dependency, safe to parallelize. dst/src are documented as
+     * required-distinct (callers pass separate buffers), so no aliasing
+     * hazard. Was single-threaded while fp_cpu/bp_cpu around it use all
+     * cores; called every epoch. */
+    #pragma omp parallel for schedule(static)
     for (int ip = 0; ip < np; ip++) {
         const float *s = src + ip * H * W;
         float       *d = dst + ip * W * H;
@@ -40,6 +46,11 @@ void cone_weight_cpu(float *proj, const CBpara *p)
     float SDD = (float)p->SDD;
     float px  = (float)p->pixelSize;
 
+    /* Each ip writes only its own slice -- no dependencies between
+     * iterations, safe to parallelize. Was single-threaded while
+     * fp_cpu/bp_cpu around it use all cores; called twice per epoch
+     * (once for `ones`, once for `ratio`) over up to np*H*W elements. */
+    #pragma omp parallel for schedule(static)
     for (int ip = 0; ip < p->num_projs; ip++) {
         float *slice = proj + ip * H * W;  /* [H][W] row-major per slice */
         for (int ih = 0; ih < H; ih++) {
@@ -259,6 +270,19 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
         if (dr_env && atoi(dr_env) != 0) diag_aabb_range = 1;
     }
 
+    /* Was hardcoded "if (W > 512)" at the AABB clip site below; same
+     * default threshold, now overridable via FP_IMAGE_AABB (shared with
+     * the GPU paths' identical env var, ct_gpu.c) so AABB's actual
+     * 512^3 benefit on CPU specifically can be measured instead of
+     * assumed -- previously this gate could not be turned off without
+     * editing source. Read once per call, matching diag_aabb_range's
+     * pattern above. */
+    int use_aabb = (W > 512) ? 1 : 0;
+    {
+        const char *aabb_env = getenv("FP_IMAGE_AABB");
+        if (aabb_env) use_aabb = atoi(aabb_env);
+    }
+
     /* constants for world→voxel mapping */
     float inv_sv_xz = (float)Nxz / sVoxel_xz;
     float inv_sv_y  = (float)Ny  / sVoxel_y;
@@ -305,9 +329,56 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
  * and 32 costs less stack/cache footprint per tile than 48/64. 32 is now
  * the default (was 8, a ~19% win: 16.84s->13.58s fp/epoch at 512^3).
  * Arrays sized to FP_TILE_MAX so FP_TILE_ENV can still override for
- * further testing without touching declarations. */
-#define FP_TILE_MAX 64
-    int FP_TILE = 32;
+ * further testing without touching declarations.
+ *
+ * RE-SWEEP PENDING (512^3 speedup plan): that sweep ran on pool15/AMD
+ * Hawaii PRO (commit 5a0b5d1, 2026-08-21), predating the GTX 680/kale
+ * switch -- SAMPLES512=512 and the AABB clip (W>512, added 86b4d7d,
+ * 2026-08-17) were both already active then, so this is not a stale
+ * config, it's untested-on-this-hardware. Measured on kale today: fp
+ * is 24.7s/epoch at 512^3 vs the sweep's 13.58s, a ~2x gap consistent
+ * with fp_buffer's own Hawaii-tuned lws ({4,64,1}) measuring 1.58-3.4x
+ * SLOWER on the GTX 680 than this machine's actual optimum.
+ *
+ * FP_TILE_MAX raised twice: 64->256 first, then 256->1280 after the
+ * kale sweep showed FP_TILE=256 still improving fp (26.15s, down from
+ * 32's 27.24s) with no sign of a plateau -- 256 was an artificial
+ * ceiling from the constant, not a real optimum. 1280 is chosen as the
+ * first round number above H=1184 (the 512^3 detector height at
+ * SAMPLES512), since tile_n is naturally capped at H by the tiling
+ * loop (iv0 < H) regardless of FP_TILE_MAX, so nothing above H can
+ * ever produce a larger real tile_n -- raising the constant past H
+ * would just let further out-of-range FP_TILE_ENV values continue to
+ * silently no-op instead of testing anything new. Each of the 11
+ * per-tile arrays below costs 4 bytes/slot/thread, so 1280 is 56.3 KB
+ * of L1 footprint per thread vs 256's 11.3 KB -- likely to exceed a
+ * typical 32 KB L1d well before reaching H, so read the curve rather
+ * than assuming it keeps improving all the way to 1184.
+ *
+ * Full 512^3 sweep result (2-epoch runs, kale/GTX 680, fp only):
+ *   32->27.24s  256->26.16s  320->25.97s  384->25.81s  448->26.29s(*)
+ *   512->26.03s  640->25.84s  768->25.89s  960->25.99s  1184->25.77s
+ * (*448 reads as noise, bracketed by lower neighbors on both sides).
+ * Genuine plateau from ~384 onward, not still climbing -- 384 and 1184
+ * are within 0.5% of each other. Verified bit-identical across
+ * 32/256/384/1184 (h5py diff, max_abs_diff=0.0 all pairs) -- pure
+ * reordering, no arithmetic reassociation, unlike the two prior CPU
+ * attempts this session (restrict, loop-split) that both silently
+ * broke bit-identity under -ffast-math.
+ *
+ * The default is resolution-dependent -- checked on kale, NOT assumed.
+ * Raising it to 384 unconditionally was tried first and measured a
+ * real ~3% REGRESSION at 256^3 (fp 2.83s -> 2.92s, steady across
+ * epochs, not noise): 384's larger per-tile stack footprint (16.9
+ * KB/thread vs 32's 2.1 KB) is pure overhead at 256^3, where H=512 is
+ * already small enough that 32 was the genuine optimum for THIS
+ * resolution (see the original 32-vs-8 sweep note above, which never
+ * had a reason to reconsider once GPU/other CPU work moved on). 384 is
+ * a 512^3-only win, keyed on Nxz (the CBpara field this function reads
+ * at the top) since that's what's already in scope here and
+ * distinguishes the two datasets this project uses (256 vs 512). */
+#define FP_TILE_MAX 1280
+    int FP_TILE = (Nxz >= 512) ? 384 : 32;
     {
         const char *tile_env = getenv("FP_TILE_ENV");
         if (tile_env) {
@@ -347,10 +418,11 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
 
                     /* AABB slab clipping: tighten sample range for large
                      * detectors (many edge rays miss the volume entirely).
-                     * Same gate (W>512) and math as fp_image.cl/fp_buffer.cl
-                     * so CPU does the same work as GPU. */
+                     * Same math as fp_image.cl/fp_buffer.cl so CPU does the
+                     * same work as GPU; use_aabb (read once above, default
+                     * W>512) keeps the default gate but is now overridable. */
                     int s0 = 0, s1 = n_samples;
-                    if (W > 512) {
+                    if (use_aabb) {
                         float hxz = 0.5f * Nxz * vs;
                         float hy  = 0.5f * Ny  * vs;
                         float tmin = near_t, tmax = far_t;
@@ -494,6 +566,10 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
         fp_cpu(volume, b, p);
         double t1 = get_time_sec();
 
+        /* Elementwise, no cross-iteration dependency -- was single-threaded
+         * on the main thread while fp_cpu/bp_cpu around it use all cores.
+         * proj_size is np*H*W (~19.6M elements at 75x512x512). */
+        #pragma omp parallel for schedule(static)
         for (size_t i = 0; i < proj_size; i++)
             ratio[i] = (b[i] > 1e-3f) ? proj_measured[i] / b[i] : 0.f;
 
@@ -503,6 +579,9 @@ void reconstruct_cpu(const float *proj_measured, float *volume,
         bp_cpu(ratio_bp, bp_ratio, p);
         double t3 = get_time_sec();
 
+        /* Same as above -- elementwise, independent, previously
+         * single-threaded. vol_size is Nxz*Nxz*Ny (~16.7M at 256^3). */
+        #pragma omp parallel for schedule(static)
         for (size_t i = 0; i < vol_size; i++) {
             float denom = bp_ones[i];
             if (denom > 1e-10f)

@@ -42,8 +42,68 @@ __kernel void float_to_half(__global const float *src, __global half *dst, int n
 
 __constant sampler_t vol_samp =
     CLK_NORMALIZED_COORDS_FALSE |
-    CLK_ADDRESS_CLAMP_TO_EDGE   |
+    CLK_ADDRESS_CLAMP           |
     CLK_FILTER_LINEAR;
+
+/* ── FP_TEX_EXACT: texture cache, IEEE float32 blend ────────────────────
+ * Decouples the two things the hardware sampler bundles together:
+ *   - its 3D-tiled TEXTURE CACHE, which is where gpu-img's speed comes
+ *     from (gpu-buf is slow because plain __global reads miss that cache,
+ *     not because its math is expensive), and
+ *   - its fixed-function INTERPOLATION unit, whose blend weights carry
+ *     less than float32 precision and which is where the accuracy loss
+ *     comes from.
+ * CLK_FILTER_NEAREST returns the exact stored texel with no blending, so
+ * eight nearest fetches plus a manual float32 trilinear keep the cache
+ * and drop the lossy blend.
+ *
+ * Measured context (kale, 256^3, 100 epochs, MSE vs CPU):
+ *   baseline hardware-filtered      1.128e-07   14.65 s
+ *   --fp-buf (fp via gpu-buf path)  2.524e-09   26.82 s
+ * --fp-buf buys 45x accuracy but pays 1.8x because it abandons the
+ * texture cache entirely. This path aims to keep that accuracy at a
+ * smaller time cost by keeping the cache. Whether it does is empirical:
+ * 8 fetches + an ALU blend replace 1 filtered fetch, so it is NOT
+ * expected to match the 14.65 s baseline.
+ *
+ * Coordinate convention: the volume image is indexed (z, y, x) and the
+ * caller passes coord = (zi+0.5, yi+0.5, xi+0.5), so texel centres sit
+ * at integer+0.5. floor(c - 0.5) gives the lower neighbour and the
+ * remainder is the blend weight. Getting this wrong shifts the volume by
+ * half a voxel -- exactly the class of error this exists to remove.
+ *
+ * Uses CLK_ADDRESS_CLAMP to match vol_samp above, so out-of-range
+ * behaviour at the volume border is identical to the path it replaces. */
+__constant sampler_t vol_samp_exact =
+    CLK_NORMALIZED_COORDS_FALSE |
+    CLK_ADDRESS_CLAMP           |
+    CLK_FILTER_NEAREST;
+
+static float trilinear_tex(__read_only image3d_t vol, float3 c)
+{
+    float3 base = floor(c - 0.5f);
+    float3 f    = (c - 0.5f) - base;          /* blend weights in [0,1) */
+    float bx = base.x, by = base.y, bz = base.z;
+
+    /* +0.5f centres each fetch inside its texel so FILTER_NEAREST cannot
+     * land on a boundary and round unpredictably. */
+    float c000 = read_imagef(vol, vol_samp_exact, (float4)(bx+0.5f, by+0.5f, bz+0.5f, 0.f)).x;
+    float c100 = read_imagef(vol, vol_samp_exact, (float4)(bx+1.5f, by+0.5f, bz+0.5f, 0.f)).x;
+    float c010 = read_imagef(vol, vol_samp_exact, (float4)(bx+0.5f, by+1.5f, bz+0.5f, 0.f)).x;
+    float c110 = read_imagef(vol, vol_samp_exact, (float4)(bx+1.5f, by+1.5f, bz+0.5f, 0.f)).x;
+    float c001 = read_imagef(vol, vol_samp_exact, (float4)(bx+0.5f, by+0.5f, bz+1.5f, 0.f)).x;
+    float c101 = read_imagef(vol, vol_samp_exact, (float4)(bx+1.5f, by+0.5f, bz+1.5f, 0.f)).x;
+    float c011 = read_imagef(vol, vol_samp_exact, (float4)(bx+0.5f, by+1.5f, bz+1.5f, 0.f)).x;
+    float c111 = read_imagef(vol, vol_samp_exact, (float4)(bx+1.5f, by+1.5f, bz+1.5f, 0.f)).x;
+
+    float c00 = c000 + f.x * (c100 - c000);
+    float c10 = c010 + f.x * (c110 - c010);
+    float c01 = c001 + f.x * (c101 - c001);
+    float c11 = c011 + f.x * (c111 - c011);
+    float c0  = c00  + f.y * (c10  - c00);
+    float c1  = c01  + f.y * (c11  - c01);
+    return c0 + f.z * (c1 - c0);
+}
 
 /*
  * OSEM: ip_start/ip_count select a contiguous angle
@@ -73,7 +133,9 @@ __kernel void fp_image(
     float pixelSize,
     int   use_aabb,  /* 1 = clip ray to volume AABB; 0 = full n_samples */
     int   ip_start,
-    int   ip_count
+    int   ip_count,
+    int   tex_exact   /* 1 = NEAREST fetches + IEEE float32 blend (see
+                       * trilinear_tex above); 0 = hardware filtering */
 )
 {
     int iu = get_global_id(0);
@@ -100,7 +162,7 @@ __kernel void fp_image(
     for (int k=0;k<3;k++)
         rd[k] = R[k*3+0]*dirs[0] + R[k*3+1]*dirs[1] + R[k*3+2]*dirs[2];
 
-    float rd_norm  = native_sqrt(rd[0]*rd[0] + rd[1]*rd[1] + rd[2]*rd[2]);
+    float rd_norm  = sqrt(rd[0]*rd[0] + rd[1]*rd[1] + rd[2]*rd[2]);
     float step_val = dt * rd_norm;
 
     float inv_sv_xz = (float)Nxz / sVoxel_xz;
@@ -158,7 +220,9 @@ __kernel void fp_image(
             yi >= 0.f && yi < (float)(Ny  - 1) &&
             zi >= 0.f && zi < (float)(Nxz - 1)) {
             float4 coord = (float4)(zi + 0.5f, yi + 0.5f, xi + 0.5f, 0.f);
-            val += read_imagef(volume_img, vol_samp, coord).x;
+            val += tex_exact
+                     ? trilinear_tex(volume_img, (float3)(coord.x, coord.y, coord.z))
+                     : read_imagef(volume_img, vol_samp, coord).x;
         }
         wx += dox; wy += doy; wz += doz;
     }
