@@ -15,9 +15,7 @@ __constant sampler_t samp =
     CLK_ADDRESS_CLAMP           |
     CLK_FILTER_LINEAR;
 
-/* OSEM: see bp_buffer.cl's kernel comment for the
- * full ip_start/ip_count/M_PI_F-num_projs-cancellation rationale --
- * identical here. */
+/* OSEM: ip_start/ip_count select the angle subrange (see bp_buffer.cl). */
 __kernel void bp_image(
     __read_only  image2d_array_t proj_images, /* [num_projs][W][H] as 2D array */
     __global const float2 *angle_cs,          /* [num_projs] (.x=cos,.y=sin) LUT */
@@ -89,31 +87,17 @@ __kernel void bp_image(
 }
 
 /*
- * G3 (perf-algorithmic): bp_image + vol_update_img fused.
+ * bp_image + vol_update_img fused: bp_image writes an element that
+ * vol_update_img immediately reads and nothing else, so fusing removes
+ * one full buffer write+read and one kernel launch.
  *
- * bp_image writes d_bp_ratio[out_ix*Nxz*Ny+out_iy*Ny+iz]; vol_update_img
- * immediately reads that exact element and nothing else -- a pure
- * element-wise, index-identical dependency (bp_buffer.cl's
- * vol_update_img comment already documents the identical index
- * decomposition this kernel writes directly). Fusing removes one full
- * d_bp_ratio write + read (128 MB/epoch at 256^3, 1.07 GB at 512^3) and
- * one launch.
+ * Scope: float32 vol_img mode only, in-epoch update call
+ * (GPU_MODE_IMAGE && !use_half_vol). Not used for the bp(ones) precompute
+ * (still plain bp_image), --half mode (separate float_to_half path), or
+ * gpu-opt/bp_opt (different, already locally-cached kernel).
  *
- * Scope: float32 vol_img mode ONLY, and only the in-epoch-loop update
- * call (ct_gpu.c's reconstruct_gpu, cl->mode==GPU_MODE_IMAGE &&
- * !use_half_vol). NOT used for: (a) the bp(ones) precompute (there is no
- * "ones" update to divide by, it's computing the normalizer itself --
- * see ct_gpu.c:1127, unchanged, still calls plain bp_image into
- * d_bp_ones), (b) --half mode (its vol_img refresh goes through a
- * separate float_to_half+copy path incompatible with this fusion, see
- * ct_gpu.c's own comment at the vol_update_img/vol_update branch), and
- * (c) gpu-opt/bp_opt (a different, already locally-cached kernel --
- * fusing that is a separate, riskier follow-up, not this change).
- *
- * Scalar (not vec4) stores to volume/vol_img -- vol_update_img's vec4
- * form doesn't survive this kernel's 3D voxel indexing, but per
- * bp_buffer.cl's divide_preprocess_img precedent, 32 consecutive scalar
- * lanes coalesce identically to vstore4.
+ * Scalar (not vec4) stores -- coalesces the same as vstore4 across 32
+ * consecutive lanes, per divide_preprocess_img's precedent.
  */
 __kernel void bp_image_update(
     __read_only  image2d_array_t proj_images,

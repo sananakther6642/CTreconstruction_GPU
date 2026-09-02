@@ -32,11 +32,9 @@ static float trilinear_buf(__global const float *vol,
          + c011*(1-dx)*dy*dz         + c111*dx*dy*dz;
 }
 
-/* OSEM: ip_start/ip_count select a contiguous angle
- * subrange. See fp_image.cl's kernel comment for why the guard checks
- * "ip >= ip_start + ip_count" rather than "ip >= num_projs" -- the host's
- * per-slab gws rounding (run_fp_buffer, ct_gpu.c) can otherwise let
- * extra rounded-up work-items process angles past the intended subset. */
+/* OSEM: ip_start/ip_count select a contiguous angle subrange. Guard checks
+ * "ip >= ip_start + ip_count" rather than "ip >= num_projs" because the
+ * host's per-slab gws rounding can round work-items past the subset. */
 __kernel void fp_buffer(
     __global const float *volume,    /* [Nxz * Nxz * Ny] */
     __constant float     *R_mats,    /* [num_projs * 9] row-major R per angle */
@@ -53,16 +51,7 @@ __kernel void fp_buffer(
     float voxelSize,
     float pixelSize,
     int   use_aabb,  /* 1 = clip ray to volume AABB; 0 = full n_samples.
-                       * See fp_image.cl's identical arg -- previously
-                       * this was hardcoded "if (W > 512)" here, which
-                       * meant FP_IMAGE_AABB (ct_gpu.c) could not control
-                       * gpu-buf at all; the 512^3 benefit of AABB on
-                       * this path had never actually been measured,
-                       * only assumed by inheriting fp_image's gate
-                       * threshold. Host still defaults this the same
-                       * way (W > 512) -- see run_fp_buffer -- so default
-                       * behavior is unchanged; only the ability to
-                       * override it is new. */
+                       * Host defaults this from W > 512 (run_fp_buffer). */
     int   ip_start,
     int   ip_count
 )
@@ -111,10 +100,8 @@ __kernel void fp_buffer(
             if(t1>t2){float tmp=t1;t1=t2;t2=tmp;}
             tmin=fmax(tmin,t1); tmax=fmin(tmax,t2);
         }
-        /* component 1 (rd[1],oy0) -> yi via inv_sv_y (Ny axis): half-extent
-         * must be hy, not hxz. component 2 (rd[2],oz0) -> zi via
-         * inv_sv_xz: needs hxz, not hy. Was transposed — see fp_image.cl
-         * for the matching fix and full explanation. */
+        /* component 1 -> yi (Ny axis, half-extent hy); component 2 -> zi
+         * (Nxz axis, half-extent hxz) -- do not swap these. */
         if (fabs(rd[1]) > 1e-6f) {
             float t1=(-hy-oy0)/rd[1], t2=(hy-oy0)/rd[1];
             if(t1>t2){float tmp=t1;t1=t2;t2=tmp;}
