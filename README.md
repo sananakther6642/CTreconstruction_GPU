@@ -417,6 +417,12 @@ python3 run.py --mode gpu-img --epochs 100
 python3 run.py --mode gpu-opt --epochs 100 --subsets 1
 ```
 
+Pure-Python reference (256³ only, epoch count hardcoded in-script, not
+a `run.py`/`--epochs` argument):
+```bash
+python3 python/Topic_2_CTreconstruction.py
+```
+
 - Pure-Python fp/bp (scipy `RegularGridInterpolator` rebuilt per-angle,
   no vectorization/GPU): ~4690s/epoch at 256³ on GTX 680, script
   default `sample_ratio=2`. A complete 20-epoch run on the GTX 680 took
