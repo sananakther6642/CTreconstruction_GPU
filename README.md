@@ -30,24 +30,7 @@ CLI binary uses - no duplicated logic between the two entry points.
   correct - containment, not elimination. See the Validation section
   for full numbers.
 
-## pybind11 / torch Python interface
-
-Python-callable interface to the CT reconstruction backend (`src/`),
-built with `torch.utils.cpp_extension.load` per the course's required
-pattern (see `pybindextension/` for the original minimal example this
-follows).
-
-### Requirements
-
-- Linux (the C sources `#include <hdf5.h>` and `<omp.h>` unconditionally;
-  neither is set up for macOS here - build and run on pool15 / kale).
-- Python packages: `torch`, `numpy`, `h5py`.
-- `ninja` (torch's JIT build requires it; not always pulled in
-  automatically - `pip install ninja` if `from backend import _backend`
-  fails with "Ninja is required").
-- HDF5 dev headers/libs and an OpenCL ICD (see Build below).
-
-### Usage
+## Usage
 
 ```python
 from backend import _backend, KERNEL_DIR
@@ -75,11 +58,71 @@ All four return the reconstructed volume as a numpy `float32` array;
 none of them touch HDF5 - read input and write output in Python (see
 `run.py`).
 
-Demo / reference call site:
+Reference call site (`run.py`, `--mode` selects any of the four
+functions above, `--subsets` only applies to `gpu-opt`), data at
+`/lgrp/edu-2026-1-gpulab/`:
 
 ```bash
+python3 run.py --mode cpu     --epochs 100
+python3 run.py --mode gpu-buf --epochs 100
+python3 run.py --mode gpu-img --epochs 100
 python3 run.py --mode gpu-opt --epochs 100 --subsets 1  # --subsets>1 = OSEM
 ```
+
+Pure-Python reference (256³ only, epoch count hardcoded in-script, not
+a `run.py`/`--epochs` argument):
+```bash
+python3 python/Topic_2_CTreconstruction.py
+```
+
+## Files
+
+```
+backend.py            - pybind11/torch JIT loader, four reconstruct_* entry points
+run.py                - reference call site: HDF5 in/out around the pybind backend
+src/
+  ct_recon_bindings.cpp - pybind11 module, wraps utils.c/ct_cpu.c/ct_gpu.c
+  main.c               - CLI, dispatch, HDF5 save
+  utils.c/h            - HDF5 load/save, timing
+  ct_cpu.c/h           - CPU: cone_weight, fp_cpu, bp_cpu, reconstruct_cpu
+  ct_gpu.c/h           - OpenCL host: gpu_init, reconstruct_gpu, reconstruct_gpu_opt
+kernels/
+  bp_buffer.cl        - bp (buffer) + preprocess_proj + proj_divide + vol_update
+  fp_buffer.cl        - fp (buffer): ray march + manual trilinear + AABB
+  bp_image.cl         - bp (image): hardware bilinear + float2 LUT
+  fp_image.cl         - fp (image): hardware trilinear + AABB, FP_TEX_EXACT
+  bp_buffer_opt.cl    - bp_opt: image2d_array_t + float2 LUT + local mem
+python/
+  validate.py                 - MSE vs CPU + vs Python Ref, outlier diagnostics (256/512)
+  validate_ops.py             - per-operator fp/bp vs Topic_2_CTreconstruction.py
+  plot_results.py             - report figures (OSEM/MLEM convergence, slice comparisons)
+  plot_fp_tex_exact.py        - FP_TEX_EXACT precision-fix figure
+  Topic_2_CTreconstruction.py - reference script (fp_func/bp_func). v0 clamped
+                                 to [0,5] after each update (course-staff
+                                 approved fix for a numerical-stability gap;
+                                 see Correctness summary). fp_func/bp_func
+                                 themselves untouched.
+  Topic_2_CTreconstruction_512.py - 512³ variant, same v0 clamp; ran out of
+                                 memory on both machines (see Validation).
+pybindextension/       - course's original minimal pybind11 example, unmodified
+```
+
+## pybind11 / torch Python interface
+
+Python-callable interface to the CT reconstruction backend (`src/`),
+built with `torch.utils.cpp_extension.load` per the course's required
+pattern (see `pybindextension/` for the original minimal example this
+follows).
+
+### Requirements
+
+- Linux (the C sources `#include <hdf5.h>` and `<omp.h>` unconditionally;
+  neither is set up for macOS here - build and run on pool15 / kale).
+- Python packages: `torch`, `numpy`, `h5py`.
+- `ninja` (torch's JIT build requires it; not always pulled in
+  automatically - `pip install ninja` if `from backend import _backend`
+  fails with "Ninja is required").
+- HDF5 dev headers/libs and an OpenCL ICD (see Build below).
 
 ### Notes
 
@@ -169,6 +212,15 @@ shaders, 2.56 TFLOPS).
 | `gpu-buf` | 0.855-0.860s | 86.46s | 7.13-7.20s | 722.59s | 4.9× / 4.7× |
 | `gpu-img` | 0.142-0.148s | 14.67s | 1.226-1.256s | 126.74s | 28.9× / 27.0× |
 | `gpu-opt` | **0.138-0.143s** | **14.29s** | **1.226-1.245s** | **125.77s** | **29.7× / 27.2×** |
+
+### Pure-Python reference
+
+Pure-Python fp/bp (scipy `RegularGridInterpolator` rebuilt per-angle,
+no vectorization/GPU): ~4690s/epoch at 256³ on GTX 680, script default
+`sample_ratio=2`. A complete 20-epoch run on the GTX 680 took 20h 03m;
+steady-state cost (excluding the one-off first-epoch setup) is
+3483.5 s/epoch, against which `gpu-opt` at 0.141 s/epoch is
+~24,700× faster.
 
 Intel Xeon E5-2620 0 (24 threads) · NVIDIA GeForce GTX 680 (Kepler, no
 `cl_khr_fp16` - `--half` unavailable).
@@ -365,38 +417,6 @@ unconditionally on `gpu-buf` (see Optimization history).
 (lower bandwidth, ~3-decimal-digit quantization cost). `FP_TEX_EXACT=1`
 opts into exact float32 forward-projection interpolation (see above).
 
-## Files
-
-```
-backend.py            - pybind11/torch JIT loader, four reconstruct_* entry points
-run.py                - reference call site: HDF5 in/out around the pybind backend
-src/
-  ct_recon_bindings.cpp - pybind11 module, wraps utils.c/ct_cpu.c/ct_gpu.c
-  main.c               - CLI, dispatch, HDF5 save
-  utils.c/h            - HDF5 load/save, timing
-  ct_cpu.c/h           - CPU: cone_weight, fp_cpu, bp_cpu, reconstruct_cpu
-  ct_gpu.c/h           - OpenCL host: gpu_init, reconstruct_gpu, reconstruct_gpu_opt
-kernels/
-  bp_buffer.cl        - bp (buffer) + preprocess_proj + proj_divide + vol_update
-  fp_buffer.cl        - fp (buffer): ray march + manual trilinear + AABB
-  bp_image.cl         - bp (image): hardware bilinear + float2 LUT
-  fp_image.cl         - fp (image): hardware trilinear + AABB, FP_TEX_EXACT
-  bp_buffer_opt.cl    - bp_opt: image2d_array_t + float2 LUT + local mem
-python/
-  validate.py                 - MSE vs CPU + vs Python Ref, outlier diagnostics (256/512)
-  validate_ops.py             - per-operator fp/bp vs Topic_2_CTreconstruction.py
-  plot_results.py             - report figures (OSEM/MLEM convergence, slice comparisons)
-  plot_fp_tex_exact.py        - FP_TEX_EXACT precision-fix figure
-  Topic_2_CTreconstruction.py - reference script (fp_func/bp_func). v0 clamped
-                                 to [0,5] after each update (course-staff
-                                 approved fix for a numerical-stability gap;
-                                 see Correctness summary). fp_func/bp_func
-                                 themselves untouched.
-  Topic_2_CTreconstruction_512.py - 512³ variant, same v0 clamp; ran out of
-                                 memory on both machines (see Validation).
-pybindextension/       - course's original minimal pybind11 example, unmodified
-```
-
 ## Build
 
 No separate build step - `backend.py` JIT-compiles on first import
@@ -404,31 +424,6 @@ No separate build step - `backend.py` JIT-compiles on first import
 ```bash
 sudo apt install libhdf5-dev ocl-icd-opencl-dev opencl-headers
 ```
-
-## Run
-
-Data: `/lgrp/edu-2026-1-gpulab/`. `--mode` selects any of the four
-functions listed above; `--subsets` only applies to `gpu-opt`.
-
-```bash
-python3 run.py --mode cpu     --epochs 100
-python3 run.py --mode gpu-buf --epochs 100
-python3 run.py --mode gpu-img --epochs 100
-python3 run.py --mode gpu-opt --epochs 100 --subsets 1  # --subsets>1 = OSEM
-```
-
-Pure-Python reference (256³ only, epoch count hardcoded in-script, not
-a `run.py`/`--epochs` argument):
-```bash
-python3 python/Topic_2_CTreconstruction.py
-```
-
-- Pure-Python fp/bp (scipy `RegularGridInterpolator` rebuilt per-angle,
-  no vectorization/GPU): ~4690s/epoch at 256³ on GTX 680, script
-  default `sample_ratio=2`. A complete 20-epoch run on the GTX 680 took
-  20h 03m; steady-state cost (excluding the one-off first-epoch setup)
-  is 3483.5 s/epoch, against which `gpu-opt` at 0.141 s/epoch is
-  ~24,700× faster.
 
 ## Algorithm
 
