@@ -69,42 +69,65 @@ mid = ref.shape[2] // 2
 diff_d = d[:, :, mid] - ref[:, :, mid]
 diff_e = e[:, :, mid] - ref[:, :, mid]
 
-# Shared scale from a high percentile of the DEFAULT panel. Two failure modes
-# to avoid, both observed while iterating on this figure:
-#   - max|diff| lets a few extreme voxels own the range, compressing typical
-#     error toward white in both panels;
-#   - too low a percentile (99.5 was tried) saturates ordinary error in both
-#     panels, which also flattens the contrast between them.
-# 99.9 keeps the bulk of the error mid-scale while leaving headroom, so the
-# right panel reads as genuinely emptier rather than merely differently
-# saturated.
+# ── Why this figure is built the way it is ─────────────────────────────
+# A plain two-panel difference map badly undersells this result. At 256^3
+# the error is fine-grained speckle, and MSE squares it, so the 44.7x is
+# driven by a small number of extreme voxels that occupy almost no pixels.
+# The eye reads typical speckle amplitude, which changes far less. The
+# reference figure submission_outputs/hawaii/slices_diff_256_hawaii.png
+# shows the opposite failure: per-panel autoscaling makes a ~980x MSE gap
+# between gpu-buf and gpu-img look like no gap at all, because each panel
+# is normalised to its own range.
+#
+# So: two shared-scale maps for spatial structure, plus a log-scale
+# histogram of |error| that shows the actual distribution shift. The
+# histogram is where the magnitude becomes readable -- it puts the tail,
+# which is what MSE responds to, on an axis where a 45x change is visible.
 vm = float(np.percentile(np.abs(diff_d), 99.9)) or 1e-12
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 5.6))
+fig = plt.figure(figsize=(14, 5.4))
+gs = fig.add_gridspec(1, 3, width_ratios=[1, 1, 1.15], wspace=0.25)
+
+ax0 = fig.add_subplot(gs[0, 0])
+ax1 = fig.add_subplot(gs[0, 1])
 for ax, diff, mse, label in (
-    (axes[0], diff_d, mse_d, "default (hardware blend)"),
-    (axes[1], diff_e, mse_e, "FP_TEX_EXACT=1"),
+    (ax0, diff_d, mse_d, "default (hardware blend)"),
+    (ax1, diff_e, mse_e, "FP_TEX_EXACT=1"),
 ):
     im = ax.imshow(diff, cmap="seismic", vmin=-vm, vmax=vm)
-    ax.set_title(f"{label}\nMSE vs CPU = {mse:.3e}")
+    ax.set_title(f"{label}\nMSE vs CPU = {mse:.3e}", fontsize=10)
     ax.axis("off")
 
-# ONE colourbar for both panels: two separate bars would suggest two
-# independent scales and undercut the comparison the figure is making.
-cb = fig.colorbar(im, ax=axes, fraction=0.030, pad=0.02)
-cb.set_label("difference vs CPU reference")
+# One colourbar for both maps: separate bars would imply separate scales,
+# which is precisely the flaw in the reference figure above.
+cb = fig.colorbar(im, ax=[ax0, ax1], fraction=0.030, pad=0.02)
+cb.set_label("difference vs CPU reference", fontsize=9)
+
+# Error-magnitude distribution, whole volume (not just the shown slice).
+ax2 = fig.add_subplot(gs[0, 2])
+ad = np.abs(d - ref).ravel()
+ae = np.abs(e - ref).ravel()
+lo = max(min(ad[ad > 0].min(), ae[ae > 0].min()), 1e-12)
+hi = max(ad.max(), ae.max())
+bins = np.logspace(np.log10(lo), np.log10(hi), 120)
+ax2.hist(ad, bins=bins, histtype="step", label="default", color="crimson")
+ax2.hist(ae, bins=bins, histtype="step", label="FP_TEX_EXACT=1", color="steelblue")
+ax2.set_xscale("log")
+ax2.set_yscale("log")
+ax2.set_xlabel("|error| vs CPU", fontsize=9)
+ax2.set_ylabel("voxel count", fontsize=9)
+ax2.set_title("error distribution, whole volume\n(log-log; the tail drives MSE)",
+              fontsize=10)
+ax2.legend(fontsize=8, loc="upper right")
+ax2.tick_params(labelsize=8)
 
 ratio = (mse_d / mse_e) if mse_e > 0 else float("inf")
-# y/top set explicitly: with a colourbar spanning both axes, tight_layout()
-# cannot be used, and the default suptitle position overlaps the per-panel
-# titles.
 fig.suptitle(
-    f"{a.mode} error vs CPU reference, middle slice (z={mid}), "
-    f"{a.scale}³, {a.machine}   —   identical colour scale, "
-    f"MSE reduced {ratio:.1f}×",
-    y=0.98,
+    f"{a.mode} error vs CPU reference, {a.scale}³, {a.machine}   —   "
+    f"maps share one colour scale, middle slice (z={mid});   MSE reduced {ratio:.1f}×",
+    y=0.98, fontsize=11,
 )
-fig.subplots_adjust(top=0.82)
+fig.subplots_adjust(top=0.80)
 out = a.out or f"fp_tex_exact_{a.scale}.png"
 fig.savefig(out, dpi=150, bbox_inches="tight")
 print(f"Saved: {out}")
