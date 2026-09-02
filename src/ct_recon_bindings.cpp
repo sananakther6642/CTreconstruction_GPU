@@ -2,16 +2,10 @@
  * pybind11 bindings for the CT reconstruction OpenCL/OpenMP backend.
  *
  * IMPORTANT: no `extern "C"` around the headers below. torch's JIT build
- * (torch.utils.cpp_extension.load) compiles every non-.cu/.sycl source,
- * including the plain-C files utils.c/ct_cpu.c/ct_gpu.c, with the C++
- * compiler and -std=c++17 (verified: only .cu/.sycl get a distinct ninja
- * rule). Those symbols therefore get ITANIUM/C++ mangled names in the
- * built .o files. An `extern "C"` block here would declare them with C
- * linkage instead, and the two would not match at link time. The library
- * sources compile cleanly as C++17 as-is (no VLAs, no restrict, all
- * mallocs already explicitly cast), so plain C++ linkage throughout is
- * both required and sufficient -- do not "fix" this by adding extern "C"
- * back.
+ * compiles every source (including the plain-C files) as C++17, so their
+ * symbols get C++ mangled names -- an extern "C" block here would declare
+ * them with C linkage instead, and the two would not match at link time.
+ * Do not "fix" this by adding extern "C" back.
  */
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
@@ -37,27 +31,13 @@ namespace py = pybind11;
 namespace {
 
 /* Enable flush-to-zero / denormals-are-zero, matching what the CLI binary
- * gets for free and this extension does not.
- *
- * -ffast-math implies -ffast-math's FTZ/DAZ only by linking crtfastmath.o
- * into the *main executable*, where it sets MXCSR before main() runs. The
- * CLI links its own main.c that way. Here the main executable is python3,
- * built without -ffast-math -- compiling this .so with the flag does not
- * set MXCSR, so the extension computed denormals that the CLI flushed.
- *
- * Measured on kale: fp_cpu's per-epoch time was flat ~3.17s for ~20 epochs,
- * then climbed to 9.2s by epoch 30 and slowly recovered, tracking MLEM's
- * background voxels decaying through the float32 denormal range (~1e-38 to
- * ~1e-45) on their way to zero. Denormal arithmetic costs roughly 100x a
- * normal op. The curve reproduced to the hundredth of a second across
- * separate calls in one process and across thread counts -- deterministic
- * and data-dependent, which is what ruled out every environmental
- * explanation (THP, NUMA, thermal, scheduling, allocator). With FTZ/DAZ
- * set, fp_cpu holds 3.17s flat for all 40 epochs.
- *
- * MXCSR is per-thread, but OpenMP workers are created after this runs and
- * inherit it (verified: setting it on the main thread alone removed the
- * slowdown from the parallel region). */
+ * gets for free (via -ffast-math + crtfastmath.o linked into its main
+ * executable) and this extension does not (its main executable is
+ * python3, built without -ffast-math). Without this, MLEM's background
+ * voxels decaying through the float32 denormal range make fp_cpu's
+ * per-epoch time climb over tens of epochs -- denormal arithmetic costs
+ * roughly 100x a normal op. MXCSR is per-thread; OpenMP workers created
+ * after this runs inherit it. */
 void enable_flush_to_zero()
 {
 #if defined(__x86_64__) || defined(__i386__)
@@ -129,12 +109,8 @@ void validate_common(const FloatArr &proj, const DoubleArr &angles,
     if (epochs < 1)
         throw std::invalid_argument("epochs must be >= 1");
 
-    /* ct_gpu.c uses `int` for proj_n = np*H*W and vol_n = Nxz*Nxz*Ny
-     * (e.g. lines building fp_buffer/bp_opt dispatch sizes). main.c only
-     * ever exercised the two shipped datasets (256^3, 512^3); a Python
-     * caller can hand in arbitrary geometry, so this overflow guard
-     * exists specifically because the wrapper widens the input surface
-     * beyond what the CLI ever saw. */
+    /* ct_gpu.c uses `int` for proj_n/vol_n; a Python caller can hand in
+     * arbitrary geometry the CLI never exercised, so guard the overflow. */
     constexpr long long kIntMax = 2147483647LL;
     long long vol_n = (long long)Nxz * (long long)Nxz * (long long)Ny;
     long long proj_n = (long long)num_projs * (long long)H * (long long)W;
@@ -145,15 +121,9 @@ void validate_common(const FloatArr &proj, const DoubleArr &angles,
 }
 
 /* VRAM pre-flight for the OSEM path. ct_gpu.c never queries device
- * memory anywhere -- reconstruct_gpu_opt allocates one full volume-sized
- * d_bp_ones[s] buffer PER SUBSET on top of the fixed d_vol/d_bp_ratio/
- * proj buffers, and every allocation goes through CL_CHECK, which calls
- * exit(1) on failure. At 512^3 with S subsets that's roughly
- * (3+S)*vol_bytes + 4*proj_bytes -- e.g. S=5 needs ~4.6GB, already over
- * a 4GB card, and the C code's only "error handling" for that is to
- * kill the whole Python process with no traceback. This check exists
- * solely to convert that into a catchable exception before gpu_init
- * ever runs. */
+ * memory; a too-large allocation goes through CL_CHECK, which calls
+ * exit(1) and kills the whole Python process with no traceback. This
+ * converts that into a catchable exception before gpu_init ever runs. */
 void check_vram_budget(cl_device_id device, int Nxz, int Ny, int W, int H,
                         int num_projs, int subsets)
 {
@@ -325,24 +295,17 @@ py::array_t<float> py_reconstruct_gpu_opt(
     OwnedPara owned(angles, voxelSize, pixelSize, SDD, SOD,
                      Nxz, Ny, W, H, num_projs, n_samples, use_half);
 
-    /* Unconditional copy of the projection data. FloatArr's forcecast
-     * only copies when the caller's array doesn't already match
-     * (float32, C-contiguous) -- for a well-formed array it ALIASES the
-     * caller's numpy buffer instead. permute_projections_inplace below
-     * mutates its proj argument in place, so relying on forcecast having
-     * copied would mean the wrapper mutates the caller's array in the
-     * common case and doesn't in the rare one. Always copy here,
-     * regardless of what forcecast already did. */
+    /* Always copy: FloatArr's forcecast aliases the caller's numpy buffer
+     * for a well-formed array, but permute_projections_inplace below
+     * mutates its argument, so we can't rely on forcecast having copied. */
     size_t proj_n = (size_t)num_projs * (size_t)H * (size_t)W;
     std::vector<float> proj_copy(proj.data(), proj.data() + proj_n);
 
     if (subsets > 1) {
-        /* main.c:102-108's OSEM setup, reproduced exactly: compute the
-         * permutation, then apply it to BOTH the projection stack and
-         * the angles copy already owned by `owned`. ct_gpu.c's own
-         * comment on reconstruct_gpu_opt states the per-subset
-         * contiguous-range assumption is "valid ONLY because the caller
-         * has already permuted" -- this is not optional bookkeeping. */
+        /* Compute the permutation and apply it to both the projection
+         * stack and the angles copy -- reconstruct_gpu_opt's per-subset
+         * contiguous-range assumption requires the caller to have
+         * already permuted. */
         std::vector<int> perm(num_projs);
         compute_osem_permutation(num_projs, subsets, perm.data());
         size_t block_elems = (size_t)H * (size_t)W;
