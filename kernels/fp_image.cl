@@ -46,31 +46,18 @@ __constant sampler_t vol_samp =
     CLK_FILTER_LINEAR;
 
 /* ── FP_TEX_EXACT: texture cache, IEEE float32 blend ────────────────────
- * Decouples the two things the hardware sampler bundles together:
- *   - its 3D-tiled TEXTURE CACHE, which is where gpu-img's speed comes
- *     from (gpu-buf is slow because plain __global reads miss that cache,
- *     not because its math is expensive), and
- *   - its fixed-function INTERPOLATION unit, whose blend weights carry
- *     less than float32 precision and which is where the accuracy loss
- *     comes from.
- * CLK_FILTER_NEAREST returns the exact stored texel with no blending, so
- * eight nearest fetches plus a manual float32 trilinear keep the cache
- * and drop the lossy blend.
- *
- * Measured context (kale, 256^3, 100 epochs, MSE vs CPU):
- *   baseline hardware-filtered      1.128e-07   14.65 s
- *   --fp-buf (fp via gpu-buf path)  2.524e-09   26.82 s
- * --fp-buf buys 45x accuracy but pays 1.8x because it abandons the
- * texture cache entirely. This path aims to keep that accuracy at a
- * smaller time cost by keeping the cache. Whether it does is empirical:
- * 8 fetches + an ALU blend replace 1 filtered fetch, so it is NOT
- * expected to match the 14.65 s baseline.
+ * Decouples the two things the hardware sampler bundles together: its
+ * 3D-tiled texture cache (source of gpu-img's speed) and its
+ * fixed-function interpolation (blend weights below float32 precision,
+ * source of the accuracy loss). CLK_FILTER_NEAREST returns the exact
+ * stored texel with no blending, so eight nearest fetches plus a manual
+ * float32 trilinear keep the cache and drop the lossy blend.
  *
  * Coordinate convention: the volume image is indexed (z, y, x) and the
  * caller passes coord = (zi+0.5, yi+0.5, xi+0.5), so texel centres sit
  * at integer+0.5. floor(c - 0.5) gives the lower neighbour and the
- * remainder is the blend weight. Getting this wrong shifts the volume by
- * half a voxel -- exactly the class of error this exists to remove.
+ * remainder is the blend weight -- getting this wrong shifts the volume
+ * by half a voxel, exactly the error this exists to remove.
  *
  * Uses CLK_ADDRESS_CLAMP to match vol_samp above, so out-of-range
  * behaviour at the volume border is identical to the path it replaces. */
@@ -106,15 +93,10 @@ static float trilinear_tex(__read_only image3d_t vol, float3 c)
 }
 
 /*
- * OSEM: ip_start/ip_count select a contiguous angle
- * subrange. The host launches with a global work-offset of ip_start in
- * dim 2 and a work-size of ip_count rounded up to a multiple of lws[2]
- * (see run_fp_image in ct_gpu.c) -- that rounding is exactly why the
- * guard below checks "ip >= ip_start + ip_count", NOT "ip >= num_projs":
- * rounding ip_count up can push get_global_id(2) past ip_start+ip_count
- * while still being < num_projs, and a num_projs-only guard would let
- * those extra rounded-up work-items silently process angles beyond the
- * intended subset.
+ * OSEM: ip_start/ip_count select a contiguous angle subrange. Guard
+ * checks "ip >= ip_start + ip_count" rather than "ip >= num_projs"
+ * because the host's per-dispatch gws rounding (run_fp_image, ct_gpu.c)
+ * can round work-items past the subset while still under num_projs.
  */
 __kernel void fp_image(
     __read_only  image3d_t       volume_img,   /* [Nxz][Nxz][Ny] as 3D image */
@@ -183,13 +165,9 @@ __kernel void fp_image(
             if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
             tmin = fmax(tmin, t1); tmax = fmin(tmax, t2);
         }
-        /* component 1 (rd[1], oy0) maps to yi via inv_sv_y (the Ny-sized
-         * axis, see below), so its AABB half-extent must be hy, not hxz —
-         * and component 2 (rd[2], oz0) maps to zi via inv_sv_xz, so it
-         * needs hxz, not hy. Was transposed (harmless while Nxz==Ny on
-         * both datasets, but wrong for a future non-cubic volume). Fixed
-         * identically in ct_cpu.c and fp_buffer.cl so CPU/GPU stay in
-         * lockstep. */
+        /* component 1 -> yi (Ny axis, half-extent hy); component 2 -> zi
+         * (Nxz axis, half-extent hxz) -- do not swap these. Fixed
+         * identically in ct_cpu.c and fp_buffer.cl. */
         if (fabs(rd[1]) > 1e-6f) {
             float t1 = (-hy - oy0) / rd[1], t2 = (hy - oy0) / rd[1];
             if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
