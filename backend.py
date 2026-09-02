@@ -3,7 +3,7 @@ JIT-compiles and loads the pybind11 CT reconstruction backend.
 
 Usage (from the repo root, or with the repo root on sys.path):
 
-    from pybind_backend.backend import _backend, KERNEL_DIR
+    from backend import _backend, KERNEL_DIR
     volume = _backend.reconstruct_gpu_opt(proj, angles, ..., kernel_dir=KERNEL_DIR)
 
 This mirrors the course's pybindextension/backend.py example, but links
@@ -64,18 +64,17 @@ if sys.platform == "darwin":
         "macOS in this project). Build and run on pool15 or kale."
     )
 
-_here = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.dirname(_here)
+_repo_root = os.path.dirname(os.path.abspath(__file__))
 _src_dir = os.path.join(_repo_root, "src")
 KERNEL_DIR = os.path.join(_repo_root, "kernels")
 
 # Fail loudly and specifically at import time. Without this, a relocated
-# pybind_backend/ or a missing kernel file surfaces as
-# clCreateProgramWithSource failing inside gpu_init, which goes through
-# CL_CHECK -> exit(1) -- no Python traceback, just a dead interpreter.
+# backend.py or a missing kernel file surfaces as clCreateProgramWithSource
+# failing inside gpu_init, which goes through CL_CHECK -> exit(1) -- no
+# Python traceback, just a dead interpreter.
 if not os.path.isdir(_src_dir):
     raise FileNotFoundError(
-        f"expected C sources at {_src_dir} -- is pybind_backend/ still "
+        f"expected C sources at {_src_dir} -- is backend.py still "
         f"directly under the repo root?"
     )
 
@@ -125,7 +124,7 @@ def _build_directory():
 _backend = load(
     name="ct_recon",
     sources=[
-        os.path.join(_here, "src", "ct_recon_bindings.cpp"),
+        os.path.join(_src_dir, "ct_recon_bindings.cpp"),
         os.path.join(_src_dir, "utils.c"),
         os.path.join(_src_dir, "ct_cpu.c"),
         os.path.join(_src_dir, "ct_gpu.c"),
