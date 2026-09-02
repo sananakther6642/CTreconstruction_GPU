@@ -69,11 +69,15 @@ mid = ref.shape[2] // 2
 diff_d = d[:, :, mid] - ref[:, :, mid]
 diff_e = e[:, :, mid] - ref[:, :, mid]
 
-# Shared scale from the default panel, so the improvement is visible rather
-# than normalised away.
-vm = max(abs(diff_d.min()), abs(diff_d.max())) or 1e-12
+# Shared scale, set from a PERCENTILE of the default panel rather than its
+# maximum. Using the max lets a handful of extreme voxels own the range and
+# compresses the bulk of the error toward white in both panels -- which hides
+# the very thing the figure exists to show, since the improvement is largely
+# those extremes collapsing. The 99.5th percentile keeps typical error
+# visible; the few voxels beyond it simply saturate.
+vm = float(np.percentile(np.abs(diff_d), 99.5)) or 1e-12
 
-fig, axes = plt.subplots(1, 2, figsize=(11, 4.6))
+fig, axes = plt.subplots(1, 2, figsize=(11, 5.0))
 for ax, diff, mse, label in (
     (axes[0], diff_d, mse_d, "default (hardware blend)"),
     (axes[1], diff_e, mse_e, "FP_TEX_EXACT=1"),
@@ -81,15 +85,18 @@ for ax, diff, mse, label in (
     im = ax.imshow(diff, cmap="seismic", vmin=-vm, vmax=vm)
     ax.set_title(f"{label}\nMSE vs CPU = {mse:.3e}")
     ax.axis("off")
-    plt.colorbar(im, ax=ax, fraction=0.046)
+
+# ONE colourbar for both panels: two separate bars would suggest two
+# independent scales and undercut the comparison the figure is making.
+cb = fig.colorbar(im, ax=axes, fraction=0.030, pad=0.02)
+cb.set_label("difference vs CPU reference (saturating beyond ±99.5th pct)")
 
 ratio = (mse_d / mse_e) if mse_e > 0 else float("inf")
 fig.suptitle(
     f"{a.mode} error vs CPU reference, middle slice (z={mid}), "
     f"{a.scale}³, {a.machine}\n"
-    f"shared colour scale; MSE reduced {ratio:.0f}×"
+    f"identical colour scale on both panels; MSE reduced {ratio:.1f}×"
 )
-fig.tight_layout()
 out = a.out or f"fp_tex_exact_{a.scale}.png"
 fig.savefig(out, dpi=150, bbox_inches="tight")
 print(f"Saved: {out}")
