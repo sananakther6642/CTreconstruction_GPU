@@ -122,6 +122,31 @@ python/
 pybindextension/       - course's original minimal pybind11 example, unmodified
 ```
 
+## Modes
+
+| Mode | pybind function | Description |
+|---|---|---|
+| CPU | `reconstruct_cpu` | OpenMP, incremental ray stepping |
+| GPU buffer | `reconstruct_gpu_buf` | Manual bilinear/trilinear, no texture cache - naive baseline |
+| GPU image | `reconstruct_gpu_img` | Hardware image2d_array + image3d sampler |
+| GPU opt | `reconstruct_gpu_opt` | Hardware sampler + float2 LUT + local mem |
+
+`gpu-img`/`gpu-opt` share `fp_image.cl`; only their `bp` kernel differs.
+AABB clipping (gated `W>512`) applies to `fp_cpu`/`fp_image`; disabled
+unconditionally on `gpu-buf` (see Optimization history).
+
+`vol_img` defaults to float32; `--half` opts into `CL_HALF_FLOAT`
+(lower bandwidth, ~3-decimal-digit quantization cost). `FP_TEX_EXACT=1`
+opts into exact float32 forward-projection interpolation (see
+Performance below).
+
+## Build
+
+No separate build step - `backend.py` JIT-compiles on first import:
+```bash
+sudo apt install libhdf5-dev ocl-icd-opencl-dev opencl-headers
+```
+
 ## pybind11 / torch Python interface
 
 Python-callable interface to the CT reconstruction backend (`src/`),
@@ -137,7 +162,7 @@ follows).
 - `ninja` (torch's JIT build requires it; not always pulled in
   automatically - `pip install ninja` if `from backend import _backend`
   fails with "Ninja is required").
-- HDF5 dev headers/libs and an OpenCL ICD (see Build below).
+- HDF5 dev headers/libs and an OpenCL ICD (see Build above).
 
 ### Notes
 
@@ -154,7 +179,7 @@ follows).
   Without `-march=native`, `reconstruct_cpu` measured ~1.8× slower on
   kale (7.2s/epoch vs the CLI's 3.9s/epoch, same OMP env on both
   sides); with it, timings match. Output agrees with the CLI binary at
-  the float32 noise floor (see Verification below).
+  the float32 noise floor (see Verification above).
 - **CPU thread pinning**: `backend.py` sets `OMP_NUM_THREADS` /
   `OMP_PROC_BIND=close` / `OMP_PLACES=cores` at import time (matching
   the Makefile's `run-cpu` target) unless already set in the
@@ -401,31 +426,6 @@ Component tests: `--op fp|bp` dumps a single fp/bp call in isolation;
   `fp_buffer` `{16,16,1}→{2,16,2}` on GTX680 (Hawaii's `{4,64,1}`
   optimum does not transfer - re-tuned per platform). Env overrides:
   `FP_IMAGE_LWS`, `FP_BUFFER_LWS`, `FP_TILE_ENV`.
-
-## Modes
-
-| Mode | pybind function | Description |
-|---|---|---|
-| CPU | `reconstruct_cpu` | OpenMP, incremental ray stepping |
-| GPU buffer | `reconstruct_gpu_buf` | Manual bilinear/trilinear, no texture cache - naive baseline |
-| GPU image | `reconstruct_gpu_img` | Hardware image2d_array + image3d sampler |
-| GPU opt | `reconstruct_gpu_opt` | Hardware sampler + float2 LUT + local mem |
-
-`gpu-img`/`gpu-opt` share `fp_image.cl`; only their `bp` kernel differs.
-AABB clipping (gated `W>512`) applies to `fp_cpu`/`fp_image`; disabled
-unconditionally on `gpu-buf` (see Optimization history).
-
-`vol_img` defaults to float32; `--half` opts into `CL_HALF_FLOAT`
-(lower bandwidth, ~3-decimal-digit quantization cost). `FP_TEX_EXACT=1`
-opts into exact float32 forward-projection interpolation (see above).
-
-## Build
-
-No separate build step - `backend.py` JIT-compiles on first import
-(see pybind section above):
-```bash
-sudo apt install libhdf5-dev ocl-icd-opencl-dev opencl-headers
-```
 
 ## Algorithm
 
