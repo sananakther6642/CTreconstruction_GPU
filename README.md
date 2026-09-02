@@ -1,17 +1,17 @@
-# CT Volume Reconstruction — GPU Lab Project
+# CT Volume Reconstruction - GPU Lab Project
 
 Cone-beam CT reconstruction using iterative MLEM. CPU (OpenMP) and GPU
 (OpenCL) implementations, 256³ and 512³ datasets. Packaged per the
 course's required pattern: a pybind11/torch Python interface
 (`backend.py`, `run.py`) wraps the same compiled C/OpenCL sources the
-CLI binary uses — no duplicated logic between the two entry points.
+CLI binary uses - no duplicated logic between the two entry points.
 
 **Correctness summary:**
 - All 3 GPU modes (`gpu-buf`, `gpu-img`, `gpu-opt`) agree with the CPU
   reference at the float32 noise floor (MSE 1e-7 to 1e-10 vs CPU, both
-  datasets, both machines — see Performance/Validation below).
+  datasets, both machines - see Performance/Validation below).
 - MSE vs the course's Python reference (`Topic_2_CTreconstruction.py`)
-  was initially higher (`2.061e-02`/`6.371e-03` depending on hardware) —
+  was initially higher (`2.061e-02`/`6.371e-03` depending on hardware) -
   confirmed a numerical-stability bug in that script's unclamped MLEM
   update, not in this project's code. 26 voxels on one machine, 24 on
   the other (<0.0002% of the volume) diverged over 20 iterations.
@@ -27,7 +27,7 @@ CLI binary uses — no duplicated logic between the two entry points.
   (reaching 521.67); 47 (Hawaii) / 54 (GTX 680) now sit pinned at the
   clamp bound with it. MSE improves because capping 521.67→5.0 cuts a
   voxel's squared error by ~10⁴, not because those voxels became
-  correct — containment, not elimination. See the Validation section
+  correct - containment, not elimination. See the Validation section
   for full numbers.
 
 ## pybind11 / torch Python interface
@@ -40,10 +40,10 @@ follows).
 ### Requirements
 
 - Linux (the C sources `#include <hdf5.h>` and `<omp.h>` unconditionally;
-  neither is set up for macOS here — build and run on pool15 / kale).
+  neither is set up for macOS here - build and run on pool15 / kale).
 - Python packages: `torch`, `numpy`, `h5py`.
 - `ninja` (torch's JIT build requires it; not always pulled in
-  automatically — `pip install ninja` if `from backend import _backend`
+  automatically - `pip install ninja` if `from backend import _backend`
   fails with "Ninja is required").
 - HDF5 dev headers/libs and an OpenCL ICD (see Build below).
 
@@ -72,7 +72,7 @@ Four entry points:
 | `reconstruct_gpu_opt(..., kernel_dir=..., subsets=...)` | Hardware sampler + tuned kernels; only mode supporting OSEM (`subsets>1`) |
 
 All four return the reconstructed volume as a numpy `float32` array;
-none of them touch HDF5 — read input and write output in Python (see
+none of them touch HDF5 - read input and write output in Python (see
 `run.py`).
 
 Demo / reference call site:
@@ -83,7 +83,7 @@ python3 run.py --mode gpu-opt --epochs 100 --subsets 1
 
 ### Notes
 
-- **First import is slow (~30-60s)** — that's the JIT compile.
+- **First import is slow (~30-60s)** - that's the JIT compile.
   Subsequent imports reuse ninja's cached build (tracked by file
   mtimes) and are fast. If a build ever looks corrupted or stuck,
   delete the cache and retry:
@@ -92,7 +92,7 @@ python3 run.py --mode gpu-opt --epochs 100 --subsets 1
   ```
 - **`-march=native` and `-ffast-math`** match the Makefile's CLI build.
   The JIT build directory is namespaced per-host (see `backend.py`), so
-  a native-arch binary is never shared across machines — safe to use.
+  a native-arch binary is never shared across machines - safe to use.
   Without `-march=native`, `reconstruct_cpu` measured ~1.8× slower on
   kale (7.2s/epoch vs the CLI's 3.9s/epoch, same OMP env on both
   sides); with it, timings match. Output agrees with the CLI binary at
@@ -106,7 +106,7 @@ python3 run.py --mode gpu-opt --epochs 100 --subsets 1
 - **Env vars must be set before `import torch`, not just before the C
   call**: `backend.py` sets those three vars via
   `os.environ.setdefault(...)` above the `torch.utils.cpp_extension`
-  import. This ordering matters, not just the values — torch's own C++
+  import. This ordering matters, not just the values - torch's own C++
   init reads/caches OpenMP configuration once at import time, and
   GOMP's runtime is shared in-process with torch's. Setting the vars
   *after* `import torch` (even via `setdefault`, even moments later)
@@ -114,7 +114,7 @@ python3 run.py --mode gpu-opt --epochs 100 --subsets 1
   on both `fp` and `bp` despite identical values ending up in
   `os.environ` either way.
 - **Flush-to-zero / denormals-are-zero**: `-ffast-math` sets FTZ/DAZ via
-  `crtfastmath.o`, which is only linked into a *main executable* — the
+  `crtfastmath.o`, which is only linked into a *main executable* - the
   CLI's `main.c` gets it for free, but this extension's main executable
   is `python3`, built without `-ffast-math`, so compiling the `.so`
   with the flag alone did not set MXCSR here. Fixed by setting FTZ/DAZ
@@ -129,7 +129,7 @@ python3 run.py --mode gpu-opt --epochs 100 --subsets 1
   out-of-memory OpenCL allocation kill the process. 512³ volumes need
   `subsets=1` on a 4GB card; higher subset counts need more VRAM than
   is available (`~(3+subsets) × 537MB + 4 × 79MB` at 512³).
-- **Ctrl-C** works during a reconstruction — the GIL is released for the
+- **Ctrl-C** works during a reconstruction - the GIL is released for the
   duration of the C call.
 
 ### Verification
@@ -141,7 +141,7 @@ python3 python/validate.py   # MSE vs CPU + vs Python reference, both datasets
 
 The pybind interface produces bit-identical output to a separately
 built binary linking the same sources, at both resolutions, on Hawaii
-(verified, all four modes) — expected, since the binding JIT-compiles
+(verified, all four modes) - expected, since the binding JIT-compiles
 the same `src/ct_gpu.c` the rest of the project's results are measured
 from.
 
@@ -157,7 +157,7 @@ from.
 | `gpu-opt` | **0.080 s** | **0.740 s** | **32.9×** | **30.2×** |
 
 †`gpu-buf` at 512³ is the one figure here that is not a stable
-measurement — see the DVFS variance note below. Every other cell is
+measurement - see the DVFS variance note below. Every other cell is
 reproducible. Intel i7-5820K (12 threads) · AMD Hawaii PRO (2560
 shaders, 2.56 TFLOPS).
 
@@ -171,7 +171,7 @@ shaders, 2.56 TFLOPS).
 | `gpu-opt` | **0.138-0.143s** | **14.29s** | **1.226-1.245s** | **125.77s** | **29.7× / 27.2×** |
 
 Intel Xeon E5-2620 0 (24 threads) · NVIDIA GeForce GTX 680 (Kepler, no
-`cl_khr_fp16` — `--half` unavailable).
+`cl_khr_fp16` - `--half` unavailable).
 
 - MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07`
   (`gpu-img`/`gpu-opt`). 512³ `9.534e-11` (`gpu-buf`) / `1.232e-09`
@@ -184,7 +184,7 @@ which bundles two separable things: a 3D-tiled cache (the source of
 their speed) and a fixed-function interpolation stage whose blend
 weights carry less than float32 precision (the source of their MSE gap
 vs CPU). Setting `FP_TEX_EXACT=1` keeps the cache and replaces only the
-blend — eight `CLK_FILTER_NEAREST` fetches plus a manual float32
+blend - eight `CLK_FILTER_NEAREST` fetches plus a manual float32
 trilinear, in forward projection specifically. fp produces the ratio
 that drives every MLEM update, so its error re-enters the loop each
 epoch, while bp's averages out across 75 angles. Off by default;
@@ -202,13 +202,13 @@ opt-in.
 `gpu-buf` has no `fp_image`, so the flag does not apply to it. Every
 cell is measured; nothing is estimated. Improvement factors: 44.7×
 (GTX680 256³), 118× (Hawaii 256³), 2.2× (GTX680 512³), 1.6× (Hawaii
-512³) — the fix transfers across vendors and converges them to a
+512³) - the fix transfers across vendors and converges them to a
 similar corrected level, and the gain shrinks with resolution since
 512³ starts closer to the float32 noise floor.
 
 At 512³ on Hawaii the corrected texture path (`4.359e-10`) is more
 accurate than `gpu-buf` (`5.310e-10`) on the same data, while remaining
-~29-37× faster — the accuracy-vs-speed tradeoff motivating a separate
+~29-37× faster - the accuracy-vs-speed tradeoff motivating a separate
 manual-interpolation mode does not hold at that resolution on that
 hardware.
 
@@ -227,8 +227,8 @@ approaches that were tried and did not work, in
 `docs/precision-256-investigation.md`.
 
 - OSEM on Hawaii, MSE vs CPU: `1.062e-04` (S=5, 256³), `4.050e-05`
-  (S=2, 512³). OSEM converges through a different update path — S
-  partial updates per epoch rather than one full update — so a larger
+  (S=2, 512³). OSEM converges through a different update path - S
+  partial updates per epoch rather than one full update - so a larger
   divergence from plain MLEM is inherent to the method, not a
   precision defect.
 - `gpu-buf`'s MSE-vs-CPU margin over `gpu-img`/`gpu-opt` is
@@ -237,19 +237,19 @@ approaches that were tried and did not work, in
   one-voxel spatial displacement from the hardware `CLK_FILTER_LINEAR`
   sampler, not a `1/U²` singularity (ruled out directly). Mass is
   conserved across the displaced voxel pair. `FP_TEX_EXACT` closes this
-  gap (see above); `gpu-buf` (manual float32 trilinear) never had it —
+  gap (see above); `gpu-buf` (manual float32 trilinear) never had it -
   use `gpu-buf` when bit-level CPU fidelity matters more than speed and
   `FP_TEX_EXACT` isn't set.
 - **`gpu-buf` run-to-run variance on AMD Hawaii PRO** (75-102s over 10
   epochs at 512³, does not reproduce on GTX 680): root-caused to
   memory-clock (mclk) DVFS, confirmed by direct clock-state
-  instrumentation — every slow slab sampled `mclk=150MHz`, every fast
+  instrumentation - every slow slab sampled `mclk=150MHz`, every fast
   baseline `mclk=1500MHz`, no overlap, core clock and temperature both
   ruled out. Two mitigations were tried and both failed once measured
   at the 100-epoch scale actually reported (`FP_BUFFER_VOL_REALLOC_EVERY`:
   91.74s vs 86.96s baseline over 4 full runs; `FP_BUFFER_SKIP_SLAB_FINISH`:
-  looked like a 29% win at 30 epochs, measured 40.8 s/epoch — worse than
-  doing nothing — at 100). Both off by default. The sysfs knob that
+  looked like a 29% win at 30 epochs, measured 40.8 s/epoch - worse than
+  doing nothing - at 100). Both off by default. The sysfs knob that
   would pin the top clock state is not writable without root on this
   machine.
 
@@ -266,9 +266,9 @@ gpu-opt     0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=3.016e-04  ma
 ```
 MSE vs Python Ref: `6.371e-03` (unfixed) → `3.014e-04` (~21× better)
 after the `v0` clamp fix. `python_ref` max exactly `5.0000` (clamp
-bound, confirms engaging). 47 voxels sit pinned at that bound — bounded,
+bound, confirms engaging). 47 voxels sit pinned at that bound - bounded,
 not eliminated (see Correctness summary above). MSE vs CPU unchanged,
-as expected — the fix only touches the Python reference script.
+as expected - the fix only touches the Python reference script.
 
 ### 512³
 ```
@@ -278,7 +278,7 @@ gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.087e-11  max=0.0156
 gpu-img  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
 gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
 ```
-No Python-reference output at 512³ — ran out of memory on both machines
+No Python-reference output at 512³ - ran out of memory on both machines
 (15GB hard limit on Hawaii; GTX 680 has more RAM but still ran out
 partway).
 
@@ -294,7 +294,7 @@ gpu-img     0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=1.749e-04  ma
 gpu-opt     0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=1.749e-04  max=0.8966
 ```
 MSE vs Python Ref: `2.061e-02` (unfixed) → `1.749e-04` after the clamp
-fix — reproduces the Hawaii result on a second vendor. This row is
+fix - reproduces the Hawaii result on a second vendor. This row is
 scored against a 20-epoch CPU run (matching the Python script's own
 epoch count), so it's not directly comparable to the 100-epoch
 MSE-vs-CPU numbers elsewhere in this README. 54 voxels sit pinned at
@@ -309,10 +309,10 @@ gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.534e-11  max=0.0114
 gpu-img  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
 gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
 ```
-No Python-reference output at 512³ — same out-of-memory limit as above.
+No Python-reference output at 512³ - same out-of-memory limit as above.
 
 **Correctness fixes that got here:**
-- `fp_cpu` used `(int)xi` (truncation) instead of `floorf(xi)` — wrong
+- `fp_cpu` used `(int)xi` (truncation) instead of `floorf(xi)` - wrong
   bounds-check pass for `xi` in `(-1,0)`. Fixed; dropped CPU/GPU MSE by
   more than four orders of magnitude.
 - GPU `bp` kernels zero-padded individual out-of-bounds taps instead of
@@ -331,12 +331,12 @@ Component tests: `--op fp|bp` dumps a single fp/bp call in isolation;
   optimal at 512³ on the GTX 680.
 - **AABB ray-clipping**: a real win on `fp_cpu` at 512³ (~26% overall,
   ~32% on `fp_cpu` alone), but ~6% *slower* on `gpu-buf` even with the
-  gate on — that path's cost is dominated by uncoalesced memory access,
+  gate on - that path's cost is dominated by uncoalesced memory access,
   which range-narrowing doesn't address, so `gpu-buf`'s default was
   flipped to unconditionally off rather than sharing the CPU path's
   `W>512` threshold. Forcing AABB on at 256³ produces a ~4% regression
   on `fp_cpu`/`fp_image` (setup cost of 6 slab divisions outweighs the
-  savings) — the gate correctly stays at `W>512` there.
+  savings) - the gate correctly stays at `W>512` there.
 - **D1 (bp_cpu branch removal)**: reverted. Looked like a wash on a
   single noisy run; a 3-trial comparison found a real ~3.7% CPU
   regression. Original `continue`-based code restored.
@@ -345,7 +345,7 @@ Component tests: `--op fp|bp` dumps a single fp/bp call in isolation;
   `gpu-opt`/`gpu-img` now essentially tied (0.17% gap).
 - **Work-group tuning**: `fp_image` `{16,16,1}→{8,32,1}` (~5-7%),
   `fp_buffer` `{16,16,1}→{2,16,2}` on GTX680 (Hawaii's `{4,64,1}`
-  optimum does not transfer — re-tuned per platform). Env overrides:
+  optimum does not transfer - re-tuned per platform). Env overrides:
   `FP_IMAGE_LWS`, `FP_BUFFER_LWS`, `FP_TILE_ENV`.
 
 ## Modes
@@ -353,7 +353,7 @@ Component tests: `--op fp|bp` dumps a single fp/bp call in isolation;
 | Mode | pybind function | Description |
 |---|---|---|
 | CPU | `reconstruct_cpu` | OpenMP, incremental ray stepping |
-| GPU buffer | `reconstruct_gpu_buf` | Manual bilinear/trilinear, no texture cache — naive baseline |
+| GPU buffer | `reconstruct_gpu_buf` | Manual bilinear/trilinear, no texture cache - naive baseline |
 | GPU image | `reconstruct_gpu_img` | Hardware image2d_array + image3d sampler |
 | GPU opt | `reconstruct_gpu_opt` | Hardware sampler + float2 LUT + local mem |
 
@@ -368,38 +368,38 @@ opts into exact float32 forward-projection interpolation (see above).
 ## Files
 
 ```
-backend.py            — pybind11/torch JIT loader, four reconstruct_* entry points
-run.py                — reference call site: HDF5 in/out around the pybind backend
+backend.py            - pybind11/torch JIT loader, four reconstruct_* entry points
+run.py                - reference call site: HDF5 in/out around the pybind backend
 src/
-  ct_recon_bindings.cpp — pybind11 module, wraps utils.c/ct_cpu.c/ct_gpu.c
-  main.c               — CLI, dispatch, HDF5 save
-  utils.c/h            — HDF5 load/save, timing
-  ct_cpu.c/h           — CPU: cone_weight, fp_cpu, bp_cpu, reconstruct_cpu
-  ct_gpu.c/h           — OpenCL host: gpu_init, reconstruct_gpu, reconstruct_gpu_opt
+  ct_recon_bindings.cpp - pybind11 module, wraps utils.c/ct_cpu.c/ct_gpu.c
+  main.c               - CLI, dispatch, HDF5 save
+  utils.c/h            - HDF5 load/save, timing
+  ct_cpu.c/h           - CPU: cone_weight, fp_cpu, bp_cpu, reconstruct_cpu
+  ct_gpu.c/h           - OpenCL host: gpu_init, reconstruct_gpu, reconstruct_gpu_opt
 kernels/
-  bp_buffer.cl        — bp (buffer) + preprocess_proj + proj_divide + vol_update
-  fp_buffer.cl        — fp (buffer): ray march + manual trilinear + AABB
-  bp_image.cl         — bp (image): hardware bilinear + float2 LUT
-  fp_image.cl         — fp (image): hardware trilinear + AABB, FP_TEX_EXACT
-  bp_buffer_opt.cl    — bp_opt: image2d_array_t + float2 LUT + local mem
+  bp_buffer.cl        - bp (buffer) + preprocess_proj + proj_divide + vol_update
+  fp_buffer.cl        - fp (buffer): ray march + manual trilinear + AABB
+  bp_image.cl         - bp (image): hardware bilinear + float2 LUT
+  fp_image.cl         - fp (image): hardware trilinear + AABB, FP_TEX_EXACT
+  bp_buffer_opt.cl    - bp_opt: image2d_array_t + float2 LUT + local mem
 python/
-  validate.py                 — MSE vs CPU + vs Python Ref, outlier diagnostics (256/512)
-  validate_ops.py             — per-operator fp/bp vs Topic_2_CTreconstruction.py
-  plot_results.py             — report figures (OSEM/MLEM convergence, slice comparisons)
-  plot_fp_tex_exact.py        — FP_TEX_EXACT precision-fix figure
-  Topic_2_CTreconstruction.py — reference script (fp_func/bp_func). v0 clamped
+  validate.py                 - MSE vs CPU + vs Python Ref, outlier diagnostics (256/512)
+  validate_ops.py             - per-operator fp/bp vs Topic_2_CTreconstruction.py
+  plot_results.py             - report figures (OSEM/MLEM convergence, slice comparisons)
+  plot_fp_tex_exact.py        - FP_TEX_EXACT precision-fix figure
+  Topic_2_CTreconstruction.py - reference script (fp_func/bp_func). v0 clamped
                                  to [0,5] after each update (course-staff
                                  approved fix for a numerical-stability gap;
                                  see Correctness summary). fp_func/bp_func
                                  themselves untouched.
-  Topic_2_CTreconstruction_512.py — 512³ variant, same v0 clamp; ran out of
+  Topic_2_CTreconstruction_512.py - 512³ variant, same v0 clamp; ran out of
                                  memory on both machines (see Validation).
-pybindextension/       — course's original minimal pybind11 example, unmodified
+pybindextension/       - course's original minimal pybind11 example, unmodified
 ```
 
 ## Build
 
-No separate build step — `backend.py` JIT-compiles on first import
+No separate build step - `backend.py` JIT-compiles on first import
 (see pybind section above):
 ```bash
 sudo apt install libhdf5-dev ocl-icd-opencl-dev opencl-headers
@@ -462,12 +462,12 @@ for each epoch (= one pass over all N subsets):
   becomes a contiguous `(ip_start, ip_count)` launch range.
 - 256³ only. Confirmed on the NVIDIA GeForce GTX 680 (4037MiB VRAM):
   plain `gpu-opt` at 512³ (S=1) already uses ~3244-3274MiB, leaving
-  ~760-790MiB headroom — not enough for the 1024MiB (2×512MiB) a
+  ~760-790MiB headroom - not enough for the 1024MiB (2×512MiB) a
   second subset's normalizer buffers would need at S=2.
 - Regression tests: `--subsets` unset vs baseline, MSE unchanged;
   `--subsets 1` vs unset, byte-identical.
 
-**Result** (256³, 100 epochs, log-likelihood vs wall-clock — logged via
+**Result** (256³, 100 epochs, log-likelihood vs wall-clock - logged via
 `--log-convergence <file.csv>`, off by default):
 
 | Time | S=1 | S=3 | S=5 | S=15 | S=25 |
@@ -478,7 +478,7 @@ for each epoch (= one pass over all N subsets):
 
 S=1 plateaus by ~20s (100-epoch ceiling). Every OSEM config keeps
 improving through 36s. S=15 leads at 10s, but S=25 overtakes it and
-wins clearly from ~15s on — report the time-matched curve, not a
+wins clearly from ~15s on - report the time-matched curve, not a
 single "best S."
 
 ## Optimizations
