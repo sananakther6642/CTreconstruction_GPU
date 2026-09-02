@@ -400,6 +400,12 @@ default path's remaining MSE gap vs CPU/`gpu-buf` - visible above as
 `-fp_tex_exact` rows - at a runtime cost of roughly 1.3-1.7× (see Performance
 below for the full cost/gain breakdown and why it's off by default).
 
+The `-fp_tex_exact` rows have no `MSE vs Python Ref` figure: they come
+from a separate run (`FP_TEX_EXACT=1`, measuring MSE vs CPU only) that
+had no Python-reference output in its directory to diff against, unlike
+the other rows in each block above them, which are pulled from the
+full validation run that did include one.
+
 **Correctness fixes that got here:**
 - `fp_cpu` used `(int)xi` (truncation) instead of `floorf(xi)` - wrong
   bounds-check pass for `xi` in `(-1,0)`. Fixed; dropped CPU/GPU MSE by
