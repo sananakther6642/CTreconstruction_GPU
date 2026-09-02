@@ -85,8 +85,10 @@ diff_e = e[:, :, mid] - ref[:, :, mid]
 # which is what MSE responds to, on an axis where a 45x change is visible.
 vm = float(np.percentile(np.abs(diff_d), 99.9)) or 1e-12
 
-fig = plt.figure(figsize=(14, 5.4))
-gs = fig.add_gridspec(1, 3, width_ratios=[1, 1, 1.15], wspace=0.25)
+fig = plt.figure(figsize=(15.5, 5.4))
+# Extra wspace: the shared colourbar sits to the right of the second map,
+# and at tighter spacing it overlaps the histogram's y-axis label.
+gs = fig.add_gridspec(1, 3, width_ratios=[1, 1, 1.15], wspace=0.55)
 
 ax0 = fig.add_subplot(gs[0, 0])
 ax1 = fig.add_subplot(gs[0, 1])
@@ -100,7 +102,7 @@ for ax, diff, mse, label in (
 
 # One colourbar for both maps: separate bars would imply separate scales,
 # which is precisely the flaw in the reference figure above.
-cb = fig.colorbar(im, ax=[ax0, ax1], fraction=0.030, pad=0.02)
+cb = fig.colorbar(im, ax=[ax0, ax1], fraction=0.030, pad=0.04)
 cb.set_label("difference vs CPU reference", fontsize=9)
 
 # Error-magnitude distribution, whole volume (not just the shown slice).
