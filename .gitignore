@@ -2,6 +2,11 @@
 build/
 *.o
 *.a
+__pycache__/
+*.pyc
+
+# torch JIT extension build cache
+.cache/torch_extensions/
 
 # Output data
 *.hdf5
@@ -33,3 +38,6 @@ submission_outputs/
 
 # Session logs (local only, never pushed)
 sessions/
+
+# Investigation docs (local only, never pushed)
+docs/

@@ -38,6 +38,9 @@ typedef struct {
     cl_kernel  k_bp_img;
     cl_kernel  k_fp_img;
     cl_kernel  k_f2h;      /* float_to_half: float vol buffer → half buf for vol_img */
+    cl_kernel  k_bp_img_update; /* G3 fusion: bp_image + vol_update_img, float32
+                                  * GPU_MODE_IMAGE only -- see bp_image.cl's
+                                  * bp_image_update comment for scope */
 
     /* optimized kernels */
     cl_program prog_opt;
