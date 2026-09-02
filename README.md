@@ -97,6 +97,14 @@ uses same-build numbers on both sides and so is unaffected either way. At 512³ 
 since 512³ starts much closer to the float32 noise floor — finer voxels shrink
 the sampler's absolute interpolation error.
 
+**Figures:** `submission_outputs/gtx680/fp_tex_exact_{256,512}.png` — shared-scale
+difference maps plus a log-log error-distribution histogram. The histogram is the
+readable panel: a difference map alone undersells the 256³ result, since the error
+is fine-grained speckle and MSE squares it, so 44.7× is driven by a few extreme
+voxels covering almost no pixels. Full write-up in
+`docs/precision-256-investigation.md`, including four approaches that were tested
+and did not work.
+
 CLI and `pybind_backend` produce bit-identical output at both resolutions on
 Hawaii (verified 2026-09-01, all four modes), as expected since the binding
 JIT-compiles the same `src/ct_gpu.c`.
