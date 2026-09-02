@@ -55,10 +55,8 @@ ap.add_argument("--scale", default="256")
 ap.add_argument("--machine", default="NVIDIA GTX 680")
 ap.add_argument("--out", default=None)
 ap.add_argument("--log-maps", action="store_true",
-                help="plot log10|error| maps and a per-voxel improvement-ratio "
-                     "panel instead of signed-difference maps. Intended for the "
-                     "512^3 case, where the improvement is ~1.6x and a linear "
-                     "seismic map leaves both panels near-white.")
+                help="TRIED AND WORSE -- see the block below. Kept only as a "
+                     "recorded negative result; use the default view.")
 a = ap.parse_args()
 
 ref = load(a.cpu).astype(np.float64)
@@ -89,7 +87,23 @@ diff_e = e[:, :, mid] - ref[:, :, mid]
 # histogram is where the magnitude becomes readable -- it puts the tail,
 # which is what MSE responds to, on an axis where a 45x change is visible.
 if a.log_maps:
-    # ── Log-magnitude variant ───────────────────────────────────────────
+    # ── Log-magnitude variant — MEASURED WORSE, kept as a negative result ──
+    # Built to make the 512^3 case (~1.6x) more legible. It did the
+    # opposite, on both panels:
+    #   - log10|error| compressed everything into a near-uniform field, so
+    #     the two maps became LESS distinguishable than the linear version,
+    #     and the real structure (error concentrating at the skull
+    #     boundary) disappeared. It also amplified near-zero background
+    #     into a distracting moire pattern.
+    #   - the per-voxel ratio panel came out almost entirely white, i.e.
+    #     ratio ~= 1 nearly everywhere.
+    # That second panel is genuinely informative even though the figure
+    # failed: it shows the 1.6x is NOT most voxels improving slightly, but
+    # a minority of high-error voxels shrinking a lot. Which is the same
+    # tail effect the default view's histogram already shows, more clearly.
+    # Conclusion: a tail-driven 1.6x has no good spatial rendering. Use the
+    # default view.
+    # ────────────────────────────────────────────────────────────────────
     # At 512^3 the gain is ~1.6x because the default is already near the
     # float32 noise floor (6.849e-10 on Hawaii, against gpu-buf's 5.310e-10
     # on the same data). A linear signed-difference map cannot show a 1.6x
