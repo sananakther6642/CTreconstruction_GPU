@@ -18,13 +18,14 @@ CLI binary uses - no duplicated logic between the two entry points.
   Reported to course staff, approved to fix. Fix: clamp `v0` to `[0,5]`
   after each update in `Topic_2_CTreconstruction.py` and its 512³
   variant; `fp_func`/`bp_func` themselves untouched.
-- Re-verified with a real 20-epoch run on AMD Hawaii PRO: MSE vs Python
-  Ref `6.371e-03` → `3.014e-04` (~21× better), all 4 modes agree
-  identically, `python_ref` max exactly `5.0000` (the clamp bound).
-  Independently reproduced on NVIDIA GTX 680 (`2.06e-02` → `1.749e-04`).
+- Re-verified with a real 20-epoch run on pool15 (Intel i7-5820K + AMD
+  Hawaii PRO): MSE vs Python Ref `6.371e-03` → `3.014e-04` (~21×
+  better), all 4 modes agree identically, `python_ref` max exactly
+  `5.0000` (the clamp bound). Independently reproduced on kale (Intel
+  Xeon E5-2620 + NVIDIA GTX 680) (`2.06e-02` → `1.749e-04`).
 - One qualification: the fix **bounds** the unstable voxels rather than
   removing them. Counted directly: 56 voxels ran away unclamped
-  (reaching 521.67); 47 (Hawaii) / 54 (GTX 680) now sit pinned at the
+  (reaching 521.67); 47 (pool15) / 54 (kale) now sit pinned at the
   clamp bound with it. MSE improves because capping 521.67→5.0 cuts a
   voxel's squared error by ~10⁴, not because those voxels became
   correct - containment, not elimination. See the Validation section
@@ -85,7 +86,7 @@ python3 python/validate.py   # MSE vs CPU + vs Python reference, both datasets
 ```
 
 The pybind interface produces bit-identical output to a separately
-built binary linking the same sources, at both resolutions, on Hawaii
+built binary linking the same sources, at both resolutions, on pool15
 (verified, all four modes) - expected, since the binding JIT-compiles
 the same `src/ct_gpu.c` the rest of the project's results are measured
 from.
@@ -217,7 +218,7 @@ follows).
 
 ## Performance
 
-### AMD Hawaii PRO, EPOCHS=100
+### pool15 (Intel i7-5820K + AMD Hawaii PRO), EPOCHS=100
 
 | Mode | 256³ time/epoch | 512³ time/epoch | Speedup 256³ | Speedup 512³ |
 |---|---|---|---|---|
@@ -228,10 +229,10 @@ follows).
 
 †`gpu-buf` at 512³ is the one figure here that is not a stable
 measurement - see the DVFS variance note below. Every other cell is
-reproducible. Intel i7-5820K (12 threads) · AMD Hawaii PRO (2560
-shaders, 2.56 TFLOPS).
+reproducible. CPU: Intel i7-5820K, 12 threads. GPU: AMD Hawaii PRO,
+2560 shaders, 2.56 TFLOPS.
 
-### NVIDIA GeForce GTX 680, EPOCHS=100
+### kale (Intel Xeon E5-2620 + NVIDIA GTX 680), EPOCHS=100
 
 | Mode | 256³ time/epoch | 256³ total | 512³ time/epoch | 512³ total | Speedup |
 |---|---|---|---|---|---|
@@ -240,17 +241,17 @@ shaders, 2.56 TFLOPS).
 | `gpu-img` | 0.142-0.148s | 14.67s | 1.226-1.256s | 126.74s | 28.9× / 27.0× |
 | `gpu-opt` | **0.138-0.143s** | **14.29s** | **1.226-1.245s** | **125.77s** | **29.7× / 27.2×** |
 
+CPU: Intel Xeon E5-2620 0, 24 threads. GPU: NVIDIA GTX 680 (Kepler, no
+`cl_khr_fp16` - `--half` unavailable).
+
 ### Pure-Python reference
 
 Pure-Python fp/bp (scipy `RegularGridInterpolator` rebuilt per-angle,
-no vectorization/GPU): ~4690s/epoch at 256³ on GTX 680, script default
-`sample_ratio=2`. A complete 20-epoch run on the GTX 680 took 20h 03m;
+no vectorization/GPU): ~4690s/epoch at 256³ on kale, script default
+`sample_ratio=2`. A complete 20-epoch run on kale took 20h 03m;
 steady-state cost (excluding the one-off first-epoch setup) is
 3483.5 s/epoch, against which `gpu-opt` at 0.141 s/epoch is
 ~24,700× faster.
-
-Intel Xeon E5-2620 0 (24 threads) · NVIDIA GeForce GTX 680 (Kepler, no
-`cl_khr_fp16` - `--half` unavailable).
 
 - MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07`
   (`gpu-img`/`gpu-opt`). 512³ `9.534e-11` (`gpu-buf`) / `1.232e-09`
@@ -271,12 +272,12 @@ opt-in. MSE numbers (both platforms, both scales) are in the `-exact`
 rows of the Validation tables below.
 
 `gpu-buf` has no `fp_image`, so the flag does not apply to it.
-Improvement factors: 44.7× (GTX680 256³), 118× (Hawaii 256³), 2.2×
-(GTX680 512³), 1.6× (Hawaii 512³) - the fix transfers across vendors
+Improvement factors: 44.7× (kale 256³), 118× (pool15 256³), 2.2×
+(kale 512³), 1.6× (pool15 512³) - the fix transfers across vendors
 and converges them to a similar corrected level, and the gain shrinks
 with resolution since 512³ starts closer to the float32 noise floor.
 
-At 512³ on Hawaii the corrected texture path (`4.359e-10`) is more
+At 512³ on pool15 the corrected texture path (`4.359e-10`) is more
 accurate than `gpu-buf` (`5.310e-10`) on the same data, while remaining
 ~29-37× faster - the accuracy-vs-speed tradeoff motivating a separate
 manual-interpolation mode does not hold at that resolution on that
@@ -287,16 +288,16 @@ meaningful):**
 
 | Platform | Scale | hardware sampler → `FP_TEX_EXACT=1` (`gpu-img`) | hardware sampler → `FP_TEX_EXACT=1` (`gpu-opt`) | ratio |
 |---|---|---|---|---|
-| GTX 680 | 256³ | 16.95s → 21.33s | 16.51s → 20.98s | 1.26–1.27× |
-| Hawaii | 256³ | 8.60s → 11.22s | 8.01s → 10.61s | 1.30×/1.32× |
-| Hawaii | 512³ | 108.27s → 156.27s | 74.00s → 123.14s | 1.44×/1.66× |
+| kale | 256³ | 16.95s → 21.33s | 16.51s → 20.98s | 1.26–1.27× |
+| pool15 | 256³ | 8.60s → 11.22s | 8.01s → 10.61s | 1.30×/1.32× |
+| pool15 | 512³ | 108.27s → 156.27s | 74.00s → 123.14s | 1.44×/1.66× |
 
 A 45× MSE reduction for ~1.3× runtime at 256³. Defaults are unchanged;
 the flag costs nothing unless set. Full write-up, including four
 approaches that were tried and did not work, in
 `docs/precision-256-investigation.md`.
 
-- OSEM on Hawaii, MSE vs CPU: `1.062e-04` (S=5, 256³), `4.050e-05`
+- OSEM on pool15, MSE vs CPU: `1.062e-04` (S=5, 256³), `4.050e-05`
   (S=2, 512³). OSEM converges through a different update path - S
   partial updates per epoch rather than one full update - so a larger
   divergence from plain MLEM is inherent to the method, not a
@@ -310,8 +311,8 @@ approaches that were tried and did not work, in
   gap (see above); `gpu-buf` (manual float32 trilinear) never had it -
   use `gpu-buf` when bit-level CPU fidelity matters more than speed and
   `FP_TEX_EXACT` isn't set.
-- **`gpu-buf` run-to-run variance on AMD Hawaii PRO** (75-102s over 10
-  epochs at 512³, does not reproduce on GTX 680): root-caused to
+- **`gpu-buf` run-to-run variance on pool15** (75-102s over 10
+  epochs at 512³, does not reproduce on kale): root-caused to
   memory-clock (mclk) DVFS, confirmed by direct clock-state
   instrumentation - every slow slab sampled `mclk=150MHz`, every fast
   baseline `mclk=1500MHz`, no overlap, core clock and temperature both
@@ -323,7 +324,7 @@ approaches that were tried and did not work, in
   would pin the top clock state is not writable without root on this
   machine.
 
-## Validation (AMD Hawaii PRO, 100 epochs, both datasets, all four modes)
+## Validation (pool15: Intel i7-5820K + AMD Hawaii PRO, 100 epochs, both datasets, all four modes)
 
 ### 256³
 ```
@@ -354,10 +355,10 @@ gpu-img-exact 0.0000   1.0053   0.0330    0    0  MSE=4.359e-10
 gpu-opt-exact 0.0000   1.0053   0.0330    0    0  MSE=4.359e-10
 ```
 No Python-reference output at 512³ - ran out of memory on both machines
-(15GB hard limit on Hawaii; GTX 680 has more RAM but still ran out
+(15GB hard limit on pool15; kale has more RAM but still ran out
 partway).
 
-## Validation (NVIDIA GeForce GTX 680)
+## Validation (kale: Intel Xeon E5-2620 + NVIDIA GTX 680)
 
 ### 256³, 100 epochs C/GPU, 20 epochs Python reference
 ```
@@ -372,7 +373,7 @@ gpu-opt-exact 0.0000   1.7332   0.0067    0    0  MSE=2.524e-09
 ```
 `-exact` rows: `FP_TEX_EXACT=1` (see explanation below). MSE vs Python
 Ref: `2.061e-02` (unfixed) → `1.749e-04` after the clamp fix -
-reproduces the Hawaii result on a second vendor. This row is scored
+reproduces the pool15 result on a second vendor. This row is scored
 against a 20-epoch CPU run (matching the Python script's own epoch
 count), so it's not directly comparable to the 100-epoch MSE-vs-CPU
 numbers elsewhere in this README. 54 voxels sit pinned at the clamp
@@ -416,7 +417,7 @@ Component tests: `--op fp|bp` dumps a single fp/bp call in isolation;
   as outer loop → cache-friendly access order. `cpu` 512³: 44.5-45.7s
   → 26.06s/epoch. `FP_TILE` is resolution-aware in the shipped code
   (384 at 512³, 32 at 256³) after a later re-sweep found 32 no longer
-  optimal at 512³ on the GTX 680.
+  optimal at 512³ on kale.
 - **AABB ray-clipping**: a real win on `fp_cpu` at 512³ (~26% overall,
   ~32% on `fp_cpu` alone), but ~6% *slower* on `gpu-buf` even with the
   gate on - that path's cost is dominated by uncoalesced memory access,
@@ -428,12 +429,12 @@ Component tests: `--op fp|bp` dumps a single fp/bp call in isolation;
 - **D1 (bp_cpu branch removal)**: reverted. Looked like a wash on a
   single noisy run; a 3-trial comparison found a real ~3.7% CPU
   regression. Original `continue`-based code restored.
-- **unroll-x2 in bp_opt**: removed. Measured 1.6% regression on AMD
-  Hawaii (register pressure hurt occupancy more than ILP helped).
-  `gpu-opt`/`gpu-img` now essentially tied (0.17% gap).
+- **unroll-x2 in bp_opt**: removed. Measured 1.6% regression on pool15
+  (register pressure hurt occupancy more than ILP helped). `gpu-opt`/
+  `gpu-img` now essentially tied (0.17% gap).
 - **Work-group tuning**: `fp_image` `{16,16,1}→{8,32,1}` (~5-7%),
-  `fp_buffer` `{16,16,1}→{2,16,2}` on GTX680 (Hawaii's `{4,64,1}`
-  optimum does not transfer - re-tuned per platform). Env overrides:
+  `fp_buffer` `{16,16,1}→{2,16,2}` on kale (pool15's `{4,64,1}` optimum
+  does not transfer - re-tuned per platform). Env overrides:
   `FP_IMAGE_LWS`, `FP_BUFFER_LWS`, `FP_TILE_ENV`.
 
 ## Algorithm
@@ -475,7 +476,7 @@ for each epoch (= one pass over all N subsets):
   subsets visited in a golden-ratio-derived coprime stride order.
   Permutation applied once at load time (`utils.c`), so each subset
   becomes a contiguous `(ip_start, ip_count)` launch range.
-- 256³ only. Confirmed on the NVIDIA GeForce GTX 680 (4037MiB VRAM):
+- 256³ only. Confirmed on kale (NVIDIA GTX 680, 4037MiB VRAM):
   plain `gpu-opt` at 512³ (S=1) already uses ~3244-3274MiB, leaving
   ~760-790MiB headroom - not enough for the 1024MiB (2×512MiB) a
   second subset's normalizer buffers would need at S=2.
