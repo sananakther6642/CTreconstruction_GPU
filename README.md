@@ -59,17 +59,29 @@ backprojection moved MSE only 6% while costing 55% runtime.
 | | NVIDIA GTX 680 | | AMD Hawaii PRO | |
 |---|---|---|---|---|
 | | default | `FP_TEX_EXACT=1` | default | `FP_TEX_EXACT=1` |
-| 256³ `gpu-img`/`gpu-opt` | `1.128e-07` | `2.524e-09` | `1.949e-07` | *pending* |
+| 256³ `gpu-img`/`gpu-opt` | `1.128e-07` | `2.524e-09` | `1.949e-07` | `1.651e-09` |
 | 512³ `gpu-img`/`gpu-opt` | `1.232e-09` | `5.528e-10` | `6.849e-10` | *pending* |
 | 256³ `gpu-buf` | `1.148e-10` | n/a | `6.436e-10` | n/a |
 | 512³ `gpu-buf` | `9.534e-11` | n/a | `5.310e-10` | n/a |
 
-`gpu-buf` has no `fp_image`, so the flag does not apply to it. The Hawaii
-`FP_TEX_EXACT` columns are pending `temp_scripts/run_hawaii_precision_100ep.sh`;
-the kernel is shared between both machines but has so far only been run on
-NVIDIA. Hawaii's baselines are looser than the GTX 680's across the board —
-a pre-existing AMD-vs-NVIDIA difference documented in the Validation section,
-independent of this change.
+`gpu-buf` has no `fp_image`, so the flag does not apply to it. Hawaii's 512³
+`FP_TEX_EXACT` figure is still running
+(`temp_scripts/run_hawaii_precision_100ep.sh`).
+
+**The fix transfers across vendors, and brings the two machines into
+agreement.** Hawaii's 256³ gain is 118× — larger than the GTX 680's 44.7×
+only because its baseline was worse (`1.949e-07` vs `1.128e-07`); both land at
+the same corrected level (`1.651e-09` vs `2.524e-09`). That convergence is
+itself evidence the sampler was the dominant machine-specific error source,
+since Hawaii's baselines are otherwise looser than the GTX 680's across the
+board (a pre-existing AMD-vs-NVIDIA difference documented in the Validation
+section).
+
+Two corroborating details from the Hawaii 256³ run: `max` moved from `1.8741`
+(8% above the CPU reference's `1.7303`) to `1.7332`, within 0.2%; and the
+worst-disagreeing voxel moved from `(49,211,33)` to `(10,102,249)` — which is
+`gpu-buf`'s worst voxel too. The sampler-specific error is gone, leaving the
+common float32 floor both paths share.
 
 **Runtime cost (GTX 680, 256³, 100 epochs):**
 
