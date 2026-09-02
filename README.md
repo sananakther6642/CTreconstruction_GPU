@@ -9,7 +9,7 @@ Cone-beam CT reconstruction using iterative MLEM. CPU (OpenMP) and GPU
 - Reported to course staff, approved to fix.
 - Per-epoch ratio clamp tried first, doesn't work — observed ~1.3 ratio already inside any reasonable clamp range, never triggers, compounding continues (verified via standalone simulation, not run for real).
 - Actual fix: clamp `v0` to `[0, 5]` after each update, added to `Topic_2_CTreconstruction.py` and its 512³ variant (documented in each file). 5.0 is well above ~1.7-1.9 normal converged range, doesn't affect correct voxels.
-- **Re-verified, real 20-epoch run, AMD Hawaii PRO (2026-08-28):** MSE vs Python Ref `6.371e-03` → `3.014e-04` (~21x better). Zero outlier voxels remain, all 4 modes agree identically, `python_ref` max exactly `5.0000` (the clamp bound). Fix confirmed working.
+- **Re-verified, real 20-epoch run, AMD Hawaii PRO (2026-08-28):** MSE vs Python Ref `6.371e-03` → `3.014e-04` (~21x better), all 4 modes agree identically, `python_ref` max exactly `5.0000` (the clamp bound). Fix confirmed working — but see the correction below: the outlier voxels are *bounded*, not removed.
 - **Independently re-verified on NVIDIA GTX 680 (2026-09-02), 20 epochs, 19h 41m:** MSE vs a 20-epoch CPU run `2.06e-02` → `1.749e-04`. `python_ref` max again exactly `5.0000`, zero NaN/Inf, min `1.98e-14` (non-negativity held). The fix therefore reproduces on both vendors. Two caveats on this figure: it is scored against a **20-epoch** CPU run (correctly — Topic_2 ran 20 epochs, so a 100-epoch reference would conflate convergence with accuracy), so it is *not* comparable to the 100-epoch MSE-vs-CPU numbers elsewhere in this README. And the max absolute difference is still `5.000000`, meaning the worst voxels are now *bounded* at the clamp rather than eliminated — containment, not removal. Over 99% of voxels agree to within `0.0046`; median difference `4.94e-05`.
 - See Validation section for original (unfixed) numbers, investigation, fixed-run details.
 
@@ -168,7 +168,8 @@ gpu-buf     0.0000   1.7307   0.0067    0    0  MSE=6.436e-10  MSE=3.014e-04  ma
 gpu-img     0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=3.016e-04  max=1.1490
 gpu-opt     0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=3.016e-04  max=1.1490
 ```
-- MSE vs Python Ref: `6.371e-03` (unfixed) → `3.014e-04` (~21x better). `python_ref` max exactly `5.0000` (clamp bound, confirms engaging). Matches the ~0.00030 estimate from excluding the 24 outlier voxels — fix removes outliers, doesn't mask them.
+- MSE vs Python Ref: `6.371e-03` (unfixed) → `3.014e-04` (~21x better). `python_ref` max exactly `5.0000` (clamp bound, confirms engaging). Matches the ~0.00030 estimate from excluding the outlier voxels.
+- **Correction (2026-09-02):** an earlier version of this section said "zero outlier voxels remain" and that the fix "removes outliers, doesn't mask them". Direct counting of the volumes disproves it. Voxels at the clamp bound (≥4.999): unclamped Hawaii **56** (max 521.67), clamped Hawaii **47**, clamped GTX 680 **54**. The same voxels are still diverging; they are now *bounded at 5.0* instead of running away. The MSE argument was sound — capping 521.67 → 5.0 cuts a voxel's squared error by ~10⁴, so its contribution falls to roughly what excluding it would give — but "removes" was the wrong conclusion to draw from it. **Contained, not eliminated.** That remains an appropriate response: the instability is in the course-provided script's unclamped MLEM update at ill-conditioned voxels, not in this project's code.
 - MSE vs CPU unchanged, as expected — fix only touches the Python reference script.
 
 ### 512³
