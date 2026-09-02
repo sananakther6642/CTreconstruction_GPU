@@ -1313,13 +1313,11 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
      * straight into ratio_img, no intermediate buffers needed. */
     cl_mem d_bp_ratio  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
     CL_CHECK(err, "d_bp_ratio opt");
-    /* OSEM: one normalizer bp(cone_weight(ones)) per
-     * subset -- each subset's sensitivity map differs since it only sums
-     * its own angle range. S=1 (default) allocates exactly one buffer,
-     * identical to the pre-OSEM single-normalizer behavior. 256^3 only
-     * for now (S=1..25 costs 32-800MB total there); the plan's VRAM
-     * analysis found this infeasible at 512^3 without fp16 normalizers,
-     * not implemented here -- see the plan's C1 section. */
+    /* OSEM: one normalizer bp(cone_weight(ones)) per subset -- each
+     * subset's sensitivity map differs since it only sums its own angle
+     * range. S=1 (default) allocates exactly one buffer, identical to
+     * the pre-OSEM single-normalizer behavior. 256^3 only for now --
+     * infeasible at 512^3 without fp16 normalizers, not implemented. */
     cl_mem *d_bp_ones = (cl_mem *)malloc((size_t)S * sizeof(cl_mem));
     for (int s = 0; s < S; s++) {
         d_bp_ones[s] = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, vol_bytes, NULL, &err);
@@ -1337,10 +1335,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     /* d_proj_meas stays raw — cone weight applied to ratio after divide, matching Python */
 
     /* ── bp_ones: preprocess all-ones → image, run bp_opt once per subset ──
-     * OSEM: total precompute cost across all S subsets equals
-     * one full-angle bp_ones (each subset only sums its own 1/S of the
-     * angles) -- the ones_img/preprocess step is subset-independent and
-     * done once; only the bp_opt call and its ip_start/ip_count vary. */
+     * ones_img/preprocess is subset-independent and done once; only the
+     * bp_opt call and its ip_start/ip_count vary per subset. */
     {
         cl_mem d_ones_raw  = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, proj_bytes, NULL, &err);
         CL_CHECK(err,"d_ones_raw opt");
@@ -1432,12 +1428,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     CL_CHECK(err,"vol_img persistent");
 
     /* Staging buffer: only needed for --half (float_to_half must write
-     * somewhere before the image copy). In float32 mode d_vol is copied
-     * straight into vol_img in the epoch loop below — no staging buffer,
-     * no allocation. The old unconditional allocation + same-format
-     * clEnqueueCopyBuffer memcpy did nothing in float32 mode but add
-     * ~1.07GB/epoch of redundant traffic at 512^3 (~0.7% of a 930ms
-     * epoch — real but small). */
+     * somewhere before the image copy). float32 mode needs no staging. */
     cl_mem d_vol_half = NULL;
     if (p->use_half_vol) {
         d_vol_half = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE,
@@ -1445,11 +1436,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
         CL_CHECK(err,"d_vol_half");
     }
 
-    /* vol_img fusion: seed vol_img once with the initial volume
-     * (float32 mode only). After this, vol_update_img keeps vol_img
-     * current at the end of every epoch, so the per-epoch
-     * clEnqueueCopyBufferToImage this loop used to do at the START of
-     * every epoch (~1.07GB/epoch at 512^3) is removed entirely below. */
+    /* Seed vol_img once with the initial volume (float32 mode only);
+     * vol_update_img keeps it current at the end of every epoch. */
     if (!p->use_half_vol) {
         size_t vorigin0[3]={0,0,0};
         size_t vregion0[3]={(size_t)Ny,(size_t)Nxz,(size_t)Nxz};
@@ -1464,24 +1452,14 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     float *v_prev_host = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
     float *v_cur_host  = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
 
-    /*
-     * OSEM: one epoch = one full pass over all S
-     * subsets. S=1 makes the inner loop run exactly once with
-     * ip_start=0/ip_count=np, i.e. byte-identical to the pre-OSEM
-     * MLEM loop -- the only structural difference from before is this
-     * added (degenerate, S=1) inner loop.
-     *
-     * fp is now restricted to the subset's ip_start/ip_count (used to
-     * cover the full angle range every sub-iteration -- an accepted
-     * S-fold cost). Bit-identical to the full-range version: d_proj_b
-     * slices outside the subset now hold stale values from a previous
-     * sub-iteration instead of a fresh fp(v_current), but those slices
-     * are only ever consumed by run_divide_preprocess_img below (which
-     * still runs full-range and writes all of ratio_img), and bp_opt
-     * is launched with this same ip_start/ip_count -- it never reads
-     * ratio_img outside the subset. The stale fp values are computed,
-     * written into ratio_img, and discarded; the update is unchanged.
-     */
+    /* OSEM: one epoch = one full pass over all S subsets. S=1 runs the
+     * inner loop exactly once with ip_start=0/ip_count=np, byte-identical
+     * to the pre-OSEM MLEM loop. fp is restricted to each subset's
+     * ip_start/ip_count; d_proj_b slices outside the subset hold stale
+     * values from a previous sub-iteration, but only bp_opt (launched
+     * with the same ip_start/ip_count) ever reads ratio_img, so those
+     * stale values are computed and discarded without affecting the
+     * update. */
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
 
@@ -1509,32 +1487,20 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                                                0, origin, region, 0,NULL,NULL);
                 CL_CHECK(err,"CopyBufferToImage vol half");
             }
-            /* float32 mode: no copy needed here -- vol_img was seeded before
-             * the loop and is kept current by vol_update_img at the end of
-             * every sub-iteration (Phase B4). fp now restricted to this
-             * subset -- see function-level comment above for why this is
-             * bit-identical to the previous full-range call. */
+            /* float32 mode: no copy needed here -- vol_img was seeded
+             * before the loop and kept current by vol_update_img. */
             run_fp_image(cl, p, vol_img, d_proj_b, ip_start, ip_count);
 
             if (conv_log && s == 0)
                 clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
                                      (size_t)proj_n * sizeof(float), b_host, 0, NULL, NULL);
 
-            /* Kernel fusion: fuses ratio=p0/b with cone_weight+flip+
-             * transpose+write-to-image into one kernel -- no d_ratio
-             * intermediate buffer, no buffer->image copy (was ~0.80GB/epoch
-             * at 512^3 plus two kernel launches). Same math, same values.
-             *
-             * OSEM step 2 (see the function-level comment above for step
-             * 1): now restricted to this subset's ip_start/ip_count, the
-             * other half of the S-fold saving -- d_proj_b outside the
-             * subset already only holds stale fp() values (step 1), so
-             * computing ratio/cone-weight/write-to-image for them was
-             * pure waste. ratio_img's out-of-subset slices are simply
-             * never written this sub-iteration instead of being
-             * (re)written with a value nothing reads: ratio_img is read
-             * only by bp_opt below, which is itself launched with this
-             * same ip_start/ip_count and never touches other slices. */
+            /* Fuses ratio=p0/b with cone_weight+flip+transpose+write-to-
+             * image into one kernel -- no intermediate buffer, no
+             * buffer->image copy. Restricted to this subset's
+             * ip_start/ip_count: ratio_img's out-of-subset slices are
+             * simply never written this sub-iteration, since only bp_opt
+             * below (same ip_start/ip_count) ever reads ratio_img. */
             run_divide_preprocess_img(cl, p, d_proj_meas, d_proj_b, ratio_img, ip_start, ip_count);
 
             /* ── bp_opt(ratio_img), this subset's angle range only ── */
@@ -1572,11 +1538,9 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             }
 
             /* ── update, this subset's normalizer ──
-             * vol_img fusion: float32 mode uses vol_update_img, which
-             * also writes straight into vol_img (replacing the copy that
-             * used to run at the top of the NEXT sub-iteration). --half
-             * keeps plain vol_update since its vol_img is refreshed via
-             * float_to_half+copy above instead. */
+             * float32 mode uses vol_update_img, which also writes into
+             * vol_img directly; --half keeps plain vol_update since its
+             * vol_img refreshes via float_to_half+copy instead. */
             if (!p->use_half_vol) {
                 cl_kernel k = cl->k_update_img;
                 clSetKernelArg(k,0,sizeof(cl_mem),&d_vol);
