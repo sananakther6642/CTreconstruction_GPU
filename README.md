@@ -45,8 +45,7 @@ follows).
 - `ninja` (torch's JIT build requires it; not always pulled in
   automatically — `pip install ninja` if `from backend import _backend`
   fails with "Ninja is required").
-- HDF5 dev headers/libs and an OpenCL ICD, same as the CLI build (see
-  Build below).
+- HDF5 dev headers/libs and an OpenCL ICD (see Build below).
 
 ### Usage
 
@@ -63,14 +62,14 @@ volume = _backend.reconstruct_gpu_opt(
 # volume: numpy float32 array, shape (Nxz, Nxz, Ny)
 ```
 
-Four entry points, mirroring the CLI's `--mode`:
+Four entry points:
 
-| Function | CLI equivalent |
+| Function | Description |
 |---|---|
-| `reconstruct_cpu(...)` | `--mode cpu` |
-| `reconstruct_gpu_buf(..., kernel_dir=...)` | `--mode gpu-buf` |
-| `reconstruct_gpu_img(..., kernel_dir=...)` | `--mode gpu-img` |
-| `reconstruct_gpu_opt(..., kernel_dir=..., subsets=...)` | `--mode gpu-opt` |
+| `reconstruct_cpu(...)` | OpenMP CPU reference |
+| `reconstruct_gpu_buf(..., kernel_dir=...)` | Manual buffer gather, no texture cache |
+| `reconstruct_gpu_img(..., kernel_dir=...)` | Hardware texture sampler |
+| `reconstruct_gpu_opt(..., kernel_dir=..., subsets=...)` | Hardware sampler + tuned kernels; only mode supporting OSEM (`subsets>1`) |
 
 All four return the reconstructed volume as a numpy `float32` array;
 none of them touch HDF5 — read input and write output in Python (see
@@ -135,19 +134,16 @@ python3 run.py --mode gpu-opt --epochs 100 --subsets 1
 
 ### Verification
 
-Compare wrapper output against the existing CLI binary on identical
-input — both run the exact same compiled C/OpenCL code, so results
-should agree at the float32 noise floor:
-
 ```bash
-make run-gpu-opt                                  # produces output_gpu_opt.hdf5
 python3 run.py --mode gpu-opt --out output_gpu_opt_py.hdf5
-python3 python/validate.py                         # or a direct h5py diff of the two Volume datasets
+python3 python/validate.py   # MSE vs CPU + vs Python reference, both datasets
 ```
 
-CLI and the pybind interface produce bit-identical output at both
-resolutions on Hawaii (verified, all four modes), as expected since the
-binding JIT-compiles the same `src/ct_gpu.c`.
+The pybind interface produces bit-identical output to a separately
+built binary linking the same sources, at both resolutions, on Hawaii
+(verified, all four modes) — expected, since the binding JIT-compiles
+the same `src/ct_gpu.c` the rest of the project's results are measured
+from.
 
 ## Performance
 
@@ -354,12 +350,12 @@ Component tests: `--op fp|bp` dumps a single fp/bp call in isolation;
 
 ## Modes
 
-| Mode | Flag | Description |
+| Mode | pybind function | Description |
 |---|---|---|
-| CPU | `--mode cpu` | OpenMP, incremental ray stepping |
-| GPU buffer | `--mode gpu-buf` | Manual bilinear/trilinear, no texture cache — naive baseline |
-| GPU image | `--mode gpu-img` | Hardware image2d_array + image3d sampler |
-| GPU opt | `--mode gpu-opt` | Hardware sampler + float2 LUT + local mem |
+| CPU | `reconstruct_cpu` | OpenMP, incremental ray stepping |
+| GPU buffer | `reconstruct_gpu_buf` | Manual bilinear/trilinear, no texture cache — naive baseline |
+| GPU image | `reconstruct_gpu_img` | Hardware image2d_array + image3d sampler |
+| GPU opt | `reconstruct_gpu_opt` | Hardware sampler + float2 LUT + local mem |
 
 `gpu-img`/`gpu-opt` share `fp_image.cl`; only their `bp` kernel differs.
 AABB clipping (gated `W>512`) applies to `fp_cpu`/`fp_image`; disabled
@@ -403,51 +399,19 @@ pybindextension/       — course's original minimal pybind11 example, unmodifie
 
 ## Build
 
-CLI binary:
+No separate build step — `backend.py` JIT-compiles on first import
+(see pybind section above):
 ```bash
-sudo apt install libhdf5-dev ocl-icd-opencl-dev opencl-headers gcc make
-make
+sudo apt install libhdf5-dev ocl-icd-opencl-dev opencl-headers
 ```
-
-pybind interface: no separate build step — `backend.py` JIT-compiles on
-first import (see pybind section above). Same system packages required.
 
 ## Run
 
 Data: `/lgrp/edu-2026-1-gpulab/`.
 
-**Via pybind (primary interface):**
 ```bash
 python3 run.py --mode gpu-opt --epochs 100
 python3 run.py --mode cpu --epochs 20 --subsets 1
-```
-
-**Via CLI:**
-```bash
-# 256³
-make run-cpu     EPOCHS=100
-make run-gpu-buf EPOCHS=100
-make run-gpu-img EPOCHS=100
-make run-gpu-opt EPOCHS=100
-python3 python/validate.py
-
-# 512³
-make run-cpu-512     EPOCHS=100
-make run-gpu-buf-512 EPOCHS=100
-make run-gpu-img-512 EPOCHS=100
-make run-gpu-opt-512 EPOCHS=100
-python3 python/validate.py 512
-
-# component tests (CPU only, isolate fp/bp correctness)
-make run-op-fp       # dumps fp_cpu.hdf5 (256³)
-make run-op-bp       # dumps bp_cpu.hdf5 (256³)
-make run-op-fp-512   # dumps fp_cpu_512.hdf5 (512³, use SAMPLES512=64 for a quick check)
-make run-op-bp-512   # dumps bp_cpu_512.hdf5 (512³)
-python3 python/validate_ops.py fp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --dump fp_cpu.hdf5
-python3 python/validate_ops.py bp --data /lgrp/edu-2026-1-gpulab/proj_256_75.hdf5 --dump bp_cpu.hdf5
-
-# Reference (python) -- 256³ only, hardcoded epoch count in-script
-make run-python
 ```
 
 - Pure-Python fp/bp (scipy `RegularGridInterpolator` rebuilt per-angle,
