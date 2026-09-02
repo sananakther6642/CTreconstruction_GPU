@@ -268,7 +268,7 @@ blend - eight `CLK_FILTER_NEAREST` fetches plus a manual float32
 trilinear, in forward projection specifically. fp produces the ratio
 that drives every MLEM update, so its error re-enters the loop each
 epoch, while bp's averages out across 75 angles. Off by default;
-opt-in. MSE numbers (both platforms, both scales) are in the `-exact`
+opt-in. MSE numbers (both platforms, both scales) are in the `-fp_tex_exact`
 rows of the Validation tables below.
 
 `gpu-buf` has no `fp_image`, so the flag does not apply to it.
@@ -328,16 +328,16 @@ approaches that were tried and did not work, in
 
 ### 256³
 ```
-Mode          min      max      mean   nan  inf  MSE vs CPU     MSE vs Python Ref
-python_ref    0.0000   5.0000   0.0069    0    0  (python ref)
-cpu           0.0000   1.7303   0.0067    0    0  (reference)    MSE=3.014e-04
-gpu-buf       0.0000   1.7307   0.0067    0    0  MSE=6.436e-10  MSE=3.014e-04  max=0.0511
-gpu-img       0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=3.016e-04  max=1.1490
-gpu-opt       0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=3.016e-04  max=1.1490
-gpu-img-exact 0.0000   1.7332   0.0067    0    0  MSE=1.651e-09
-gpu-opt-exact 0.0000   1.7332   0.0067    0    0  MSE=1.651e-09
+Mode                  min      max      mean   nan  inf  MSE vs CPU     MSE vs Python Ref
+python_ref            0.0000   5.0000   0.0069    0    0  (python ref)
+cpu                   0.0000   1.7303   0.0067    0    0  (reference)    MSE=3.014e-04
+gpu-buf               0.0000   1.7307   0.0067    0    0  MSE=6.436e-10  MSE=3.014e-04  max=0.0511
+gpu-img               0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=3.016e-04  max=1.1490
+gpu-opt               0.0000   1.8741   0.0067    0    0  MSE=1.949e-07  MSE=3.016e-04  max=1.1490
+gpu-img-fp_tex_exact  0.0000   1.7332   0.0067    0    0  MSE=1.651e-09
+gpu-opt-fp_tex_exact  0.0000   1.7332   0.0067    0    0  MSE=1.651e-09
 ```
-`-exact` rows: `FP_TEX_EXACT=1` (see explanation below). MSE vs Python
+`-fp_tex_exact` rows: `FP_TEX_EXACT=1` (see explanation below). MSE vs Python
 Ref: `6.371e-03` (unfixed) → `3.014e-04` (~21× better) after the `v0`
 clamp fix. `python_ref` max exactly `5.0000` (clamp bound, confirms
 engaging). 47 voxels sit pinned at that bound - bounded, not eliminated
@@ -346,13 +346,13 @@ the fix only touches the Python reference script.
 
 ### 512³
 ```
-Mode          min      max     mean   nan  inf  MSE vs CPU     MSE vs Python Ref
-cpu           0.0000   1.0055   0.0330    0    0  (reference)
-gpu-buf       0.0000   1.0054   0.0330    0    0  MSE=9.087e-11  max=0.0156
-gpu-img       0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
-gpu-opt       0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
-gpu-img-exact 0.0000   1.0053   0.0330    0    0  MSE=4.359e-10
-gpu-opt-exact 0.0000   1.0053   0.0330    0    0  MSE=4.359e-10
+Mode                  min      max     mean   nan  inf  MSE vs CPU     MSE vs Python Ref
+cpu                   0.0000   1.0055   0.0330    0    0  (reference)
+gpu-buf               0.0000   1.0054   0.0330    0    0  MSE=9.087e-11  max=0.0156
+gpu-img               0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
+gpu-opt               0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0169
+gpu-img-fp_tex_exact  0.0000   1.0053   0.0330    0    0  MSE=4.359e-10
+gpu-opt-fp_tex_exact  0.0000   1.0053   0.0330    0    0  MSE=4.359e-10
 ```
 No Python-reference output at 512³ - ran out of memory on both machines
 (15GB hard limit on pool15; kale has more RAM but still ran out
@@ -362,16 +362,16 @@ partway).
 
 ### 256³, 100 epochs C/GPU, 20 epochs Python reference
 ```
-Mode          min      max      mean   nan  inf  MSE vs CPU     MSE vs Python Ref
-python_ref    0.0000   5.0000   0.0069    0    0  (python ref)
-cpu           0.0000   1.7303   0.0067    0    0  (reference)    MSE=1.749e-04
-gpu-buf       0.0000   1.7292   0.0067    0    0  MSE=1.148e-10  MSE=1.749e-04  max=0.0203
-gpu-img       0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=1.749e-04  max=0.8966
-gpu-opt       0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=1.749e-04  max=0.8966
-gpu-img-exact 0.0000   1.7332   0.0067    0    0  MSE=2.524e-09
-gpu-opt-exact 0.0000   1.7332   0.0067    0    0  MSE=2.524e-09
+Mode                  min      max      mean   nan  inf  MSE vs CPU     MSE vs Python Ref
+python_ref            0.0000   5.0000   0.0069    0    0  (python ref)
+cpu                   0.0000   1.7303   0.0067    0    0  (reference)    MSE=1.749e-04
+gpu-buf               0.0000   1.7292   0.0067    0    0  MSE=1.148e-10  MSE=1.749e-04  max=0.0203
+gpu-img               0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=1.749e-04  max=0.8966
+gpu-opt               0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=1.749e-04  max=0.8966
+gpu-img-fp_tex_exact  0.0000   1.7332   0.0067    0    0  MSE=2.524e-09
+gpu-opt-fp_tex_exact  0.0000   1.7332   0.0067    0    0  MSE=2.524e-09
 ```
-`-exact` rows: `FP_TEX_EXACT=1` (see explanation below). MSE vs Python
+`-fp_tex_exact` rows: `FP_TEX_EXACT=1` (see explanation below). MSE vs Python
 Ref: `2.061e-02` (unfixed) → `1.749e-04` after the clamp fix -
 reproduces the pool15 result on a second vendor. This row is scored
 against a 20-epoch CPU run (matching the Python script's own epoch
@@ -382,22 +382,22 @@ bound. Over 99% of voxels agree to within 0.0046; median difference
 
 ### 512³
 ```
-Mode          min      max     mean   nan  inf  MSE vs CPU     MSE vs Python Ref
-cpu           0.0000   1.0055   0.0330    0    0  (reference)
-gpu-buf       0.0000   1.0054   0.0330    0    0  MSE=9.534e-11  max=0.0114
-gpu-img       0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
-gpu-opt       0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
-gpu-img-exact 0.0000   1.0054   0.0330    0    0  MSE=5.528e-10
-gpu-opt-exact 0.0000   1.0054   0.0330    0    0  MSE=5.528e-10
+Mode                  min      max     mean   nan  inf  MSE vs CPU     MSE vs Python Ref
+cpu                   0.0000   1.0055   0.0330    0    0  (reference)
+gpu-buf               0.0000   1.0054   0.0330    0    0  MSE=9.534e-11  max=0.0114
+gpu-img               0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
+gpu-opt               0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
+gpu-img-fp_tex_exact  0.0000   1.0054   0.0330    0    0  MSE=5.528e-10
+gpu-opt-fp_tex_exact  0.0000   1.0054   0.0330    0    0  MSE=5.528e-10
 ```
 No Python-reference output at 512³ - same out-of-memory limit as above.
 
-**What `-exact` means:** `FP_TEX_EXACT=1` replaces the hardware texture
+**What `-fp_tex_exact` means:** `FP_TEX_EXACT=1` replaces the hardware texture
 sampler's lossy interpolation blend with a manual float32 trilinear
 (same texture cache, exact math) in forward projection. It closes the
 default path's remaining MSE gap vs CPU/`gpu-buf` - visible above as
 `gpu-img`/`gpu-opt`'s MSE dropping by orders of magnitude in the
-`-exact` rows - at a runtime cost of roughly 1.3-1.7× (see Performance
+`-fp_tex_exact` rows - at a runtime cost of roughly 1.3-1.7× (see Performance
 below for the full cost/gain breakdown and why it's off by default).
 
 **Correctness fixes that got here:**
