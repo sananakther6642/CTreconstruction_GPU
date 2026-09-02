@@ -78,7 +78,7 @@ none of them touch HDF5 - read input and write output in Python (see
 Demo / reference call site:
 
 ```bash
-python3 run.py --mode gpu-opt --epochs 100 --subsets 1
+python3 run.py --mode gpu-opt --epochs 100 --subsets 1  # --subsets>1 = OSEM
 ```
 
 ### Notes
@@ -414,7 +414,7 @@ functions listed above; `--subsets` only applies to `gpu-opt`.
 python3 run.py --mode cpu     --epochs 100
 python3 run.py --mode gpu-buf --epochs 100
 python3 run.py --mode gpu-img --epochs 100
-python3 run.py --mode gpu-opt --epochs 100 --subsets 1
+python3 run.py --mode gpu-opt --epochs 100 --subsets 1  # --subsets>1 = OSEM
 ```
 
 Pure-Python reference (256³ only, epoch count hardcoded in-script, not
