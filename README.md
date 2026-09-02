@@ -77,6 +77,19 @@ a `run.py`/`--epochs` argument):
 python3 python/Topic_2_CTreconstruction.py
 ```
 
+### Verification
+
+```bash
+python3 run.py --mode gpu-opt --out output_gpu_opt_py.hdf5
+python3 python/validate.py   # MSE vs CPU + vs Python reference, both datasets
+```
+
+The pybind interface produces bit-identical output to a separately
+built binary linking the same sources, at both resolutions, on Hawaii
+(verified, all four modes) - expected, since the binding JIT-compiles
+the same `src/ct_gpu.c` the rest of the project's results are measured
+from.
+
 ## Files
 
 ```
@@ -176,19 +189,6 @@ follows).
   is available (`~(3+subsets) × 537MB + 4 × 79MB` at 512³).
 - **Ctrl-C** works during a reconstruction - the GIL is released for the
   duration of the C call.
-
-### Verification
-
-```bash
-python3 run.py --mode gpu-opt --out output_gpu_opt_py.hdf5
-python3 python/validate.py   # MSE vs CPU + vs Python reference, both datasets
-```
-
-The pybind interface produces bit-identical output to a separately
-built binary linking the same sources, at both resolutions, on Hawaii
-(verified, all four modes) - expected, since the binding JIT-compiles
-the same `src/ct_gpu.c` the rest of the project's results are measured
-from.
 
 ## Performance
 
