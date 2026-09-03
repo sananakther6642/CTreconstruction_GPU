@@ -385,13 +385,18 @@ bound. Over 99% of voxels agree to within 0.0046; median difference
 ```
 Mode                  min      max     mean   nan  inf  MSE vs CPU     MSE vs Python Ref
 cpu                   0.0000   1.0055   0.0330    0    0  (reference)
-gpu-buf               0.0000   1.0054   0.0330    0    0  MSE=9.534e-11  max=0.0114
+gpu-buf               0.0000   1.0053   0.0330    0    0  MSE=5.607e-10  max=0.0422
 gpu-img               0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
 gpu-opt               0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
 gpu-img-fp_tex_exact  0.0000   1.0054   0.0330    0    0  MSE=5.528e-10
 gpu-opt-fp_tex_exact  0.0000   1.0054   0.0330    0    0  MSE=5.528e-10
 ```
 No Python-reference output at 512³ - same out-of-memory limit as above.
+`gpu-buf`'s MSE here (`5.607e-10`) is higher than a prior kale
+measurement (`9.534e-11`) - unexplained; kale's `gpu-buf` is documented
+elsewhere as flat/stable (unlike pool15's DVFS-driven variance), so
+this gap hasn't been root-caused. `gpu-img`/`gpu-opt` match the prior
+measurement exactly.
 
 **What `-fp_tex_exact` means:** `FP_TEX_EXACT=1` replaces the hardware texture
 sampler's lossy interpolation blend with a manual float32 trilinear
