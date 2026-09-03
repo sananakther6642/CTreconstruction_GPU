@@ -368,10 +368,14 @@ cpu                   0.0000   1.7303   0.0067    0    0  (reference)    MSE=1.7
 gpu-buf               0.0000   1.7292   0.0067    0    0  MSE=1.148e-10  MSE=1.749e-04  max=0.0203
 gpu-img               0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=1.749e-04  max=0.8966
 gpu-opt               0.0000   1.6577   0.0067    0    0  MSE=1.128e-07  MSE=1.749e-04  max=0.8966
-gpu-img-fp_tex_exact  0.0000   1.7332   0.0067    0    0  MSE=2.524e-09
-gpu-opt-fp_tex_exact  0.0000   1.7332   0.0067    0    0  MSE=2.524e-09
+gpu-img-fp_tex_exact  0.0000   1.7338   0.0067    0    0  MSE=2.524e-09  MSE=3.176e-04
+gpu-opt-fp_tex_exact  0.0000   1.7338   0.0067    0    0  MSE=2.524e-09  MSE=3.176e-04
 ```
-`-fp_tex_exact` rows: `FP_TEX_EXACT=1` (see explanation below). MSE vs Python
+`-fp_tex_exact` rows: `FP_TEX_EXACT=1` (see explanation below). The
+`-fp_tex_exact` MSE vs Python Ref (`3.176e-04`) is scored against a
+100-epoch CPU run, not epoch-matched to the 20-epoch `python_ref` -
+weaker comparison than the other rows here, kept for completeness
+rather than left blank. MSE vs Python
 Ref: `2.061e-02` (unfixed) → `1.749e-04` after the clamp fix -
 reproduces the pool15 result on a second vendor. This row is scored
 against a 20-epoch CPU run (matching the Python script's own epoch
