@@ -255,8 +255,8 @@ steady-state cost (excluding the one-off first-epoch setup) is
 ~24,700× faster.
 
 - MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07`
-  (`gpu-img`/`gpu-opt`). 512³ `9.534e-11` (`gpu-buf`) / `1.232e-09`
-  (`gpu-img`/`gpu-opt`). No NaN/inf.
+  (`gpu-img`/`gpu-opt`). 512³ `5.607e-10` (`gpu-buf`, see note below) /
+  `1.232e-09` (`gpu-img`/`gpu-opt`). No NaN/inf.
 
 ### `FP_TEX_EXACT`: exact forward-projection interpolation
 
@@ -494,14 +494,14 @@ for each epoch (= one pass over all N subsets):
 
 | Time | S=1 | S=3 | S=5 | S=15 | S=25 |
 |---|---|---|---|---|---|
-| 10s | −482,720 | −481,297 | −481,109 | **−480,543** | −480,577 |
-| 20s | −480,652 (plateaued) | −480,013 | −479,942 | −479,305 | **−478,917** |
-| 36s | −480,652 (plateaued) | −479,610 | −479,580 | −478,964 | **−478,571** |
+| 10s | −483,669 | −480,198 | −479,760 | −478,867 | **−478,436** |
+| 20s | −480,785 | −479,631 | −479,477 | −478,766 | **−478,358** |
+| 36s | −480,652 (100-ep ceiling, reached ~21s) | −479,598 | −479,426 | −478,746 | **−478,339** |
 
-S=1 plateaus by ~20s (100-epoch ceiling). Every OSEM config keeps
-improving through 36s. S=15 leads at 10s, but S=25 overtakes it and
-wins clearly from ~15s on - report the time-matched curve, not a
-single "best S."
+S=1 reaches its 100-epoch ceiling by ~21s and cannot improve further.
+Every OSEM config (S>1) keeps improving monotonically through 36s, and
+S=25 leads at every time cut measured here, from 10s onward - report
+the time-matched curve, not a single "best S."
 
 ## Optimizations
 
