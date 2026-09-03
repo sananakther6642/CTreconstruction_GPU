@@ -30,15 +30,16 @@ Intel i7-5820K (12 threads) · AMD Hawaii PRO (2560 shaders, 2.56 TFLOPS).
 
 | Mode | 256³ time/epoch | 256³ total | 512³ time/epoch | 512³ total | Speedup vs CPU |
 |---|---|---|---|---|---|
-| `cpu` | ~4.20s | 423.86s | ~34s | 3415.58s | 1× |
-| `gpu-buf` | 0.855-0.860s | 86.46s | 7.13-7.20s | 722.59s | 4.9× / 4.7× |
-| `gpu-img` | 0.142-0.148s | 14.67s | 1.226-1.256s | 126.74s | 28.9× / 27.0× |
-| `gpu-opt` | 0.138-0.143s | 14.29s | 1.226-1.245s | 125.77s | 29.7× / 27.2× |
+| `cpu` | 3.970s | 396.98s | 33.610s | 3360.98s | 1× |
+| `gpu-buf` | 0.394s | 39.40s | 5.141s | 514.08s | 10.1× / 6.5× |
+| `gpu-img` | 0.169s | 16.94s | n/a† | n/a† | 23.4× / n/a† |
+| `gpu-opt` | 0.165s | 16.50s | 1.360s | 136.04s | 24.1× / 24.7× |
 
+†`gpu-img` at 512³ was not measured in this run (job did not start).
 Intel Xeon E5-2620 0 (24 threads) · NVIDIA GeForce GTX 680 (Kepler, no
 `cl_khr_fp16` — `--half` unavailable).
 
-- MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07` (`gpu-img`/`gpu-opt`). 512³ `9.534e-11` (`gpu-buf`) / `1.232e-09` (`gpu-img`/`gpu-opt`). No NaN/inf.
+- MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07` (`gpu-img`/`gpu-opt`). 512³ `5.607e-10` (`gpu-buf`, higher than a prior measurement of `9.534e-11`, unexplained — kale's `gpu-buf` is otherwise documented as flat/stable) / `1.232e-09` (`gpu-img`/`gpu-opt`). No NaN/inf.
 
 ### `FP_TEX_EXACT`: exact forward-projection interpolation
 
@@ -63,10 +64,13 @@ backprojection moved MSE only 6% while costing 55% runtime.
 | 256³ `gpu-img`/`gpu-opt` | `1.128e-07` | `2.524e-09` | `1.949e-07` | `1.651e-09` |
 | 512³ `gpu-img`/`gpu-opt` | `1.232e-09` | `5.528e-10` | `6.849e-10` | `4.359e-10` |
 | 256³ `gpu-buf` | `1.148e-10` | n/a | `6.436e-10` | n/a |
-| 512³ `gpu-buf` | `9.534e-11` | n/a | `5.310e-10` | n/a |
+| 512³ `gpu-buf` | `5.607e-10`† | n/a | `5.310e-10` | n/a |
 
 `gpu-buf` has no `fp_image`, so the flag does not apply to it. Every cell is
-measured; nothing is estimated.
+measured; nothing is estimated. †This GTX 680 512³ figure is higher than a
+prior measurement (`9.534e-11`) — unexplained; `gpu-buf` is otherwise
+documented as flat/stable on this machine, unlike Hawaii's DVFS-driven
+variance.
 
 **The fix transfers across vendors, and brings the two machines into
 agreement.** Hawaii's 256³ gain is 118× — larger than the GTX 680's 44.7×
@@ -218,7 +222,7 @@ tried).
 ```
 Mode       min      max     mean   nan  inf  MSE vs CPU     MSE vs Python Ref
 cpu      0.0000   1.0055   0.0330    0    0  (reference)
-gpu-buf  0.0000   1.0054   0.0330    0    0  MSE=9.534e-11  max=0.0114
+gpu-buf  0.0000   1.0053   0.0330    0    0  MSE=5.607e-10  max=0.0422
 gpu-img  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
 gpu-opt  0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0186
 ```
