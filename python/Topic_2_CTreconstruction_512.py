@@ -242,9 +242,8 @@ if __name__ == '__main__':
         bp_f = lambda projection:  bp_func(projection,cb_para)
 
         ## input parameters, (which can be load later)
-        Epochs=10   # 512^3 timing is unmeasured -- started lower than the 256^3
-        # script's 20 to get a real per-epoch rate first before committing to
-        # a longer run. Can choose any number until get good reconstruction results
+        Epochs=20   # matches the 256^3 script's epoch count, for a directly
+        # comparable run. Can choose any number until get good reconstruction results
 
         # bp(ones) is the MLEM normalizer -- it does not depend on v0 and is
         # identical every epoch. Was recomputed inside the loop 100 times;

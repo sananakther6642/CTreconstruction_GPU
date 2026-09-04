@@ -80,25 +80,17 @@ int main(int argc, char **argv)
     printf("  Angles:    %d\n", para.num_projs);
     printf("  SOD/SDD:   %.1f / %.1f mm\n", para.SOD, para.SDD);
 
-    /* Reject subsets > num_projs here, before any permutation work: without
-     * this, main.c would permute the full angle stack for the requested S
-     * and then reconstruct_gpu_opt would silently clamp S back to 1 --
-     * mathematically fine but NOT byte-identical to unpermuted --subsets 1
-     * (permuted float summation order differs), contradicting the
-     * "provably identical to N unset" guarantee below for this one edge
-     * case. Fail fast instead of doing wasted, order-perturbing work. */
+    /* Reject subsets > num_projs before any permutation work: otherwise
+     * reconstruct_gpu_opt would clamp S back to 1, but the angle stack
+     * would still be permuted, breaking byte-identity with --subsets 1. */
     if (subsets > para.num_projs) {
         fprintf(stderr, "--subsets %d exceeds num_projs %d\n", subsets, para.num_projs);
         return 1;
     }
 
-    /* OSEM: permute the angle/projection stack BEFORE
-     * build_RT_buffers is ever called (that happens inside gpu_init's
-     * callers, later) so R_mats/T_vecs/ang_cs all inherit the permuted
-     * order automatically. subsets==1 computes and applies the identity
-     * permutation (a no-op memcpy-equivalent, verified as such via
-     * compute_osem_permutation's own S<=1 fast path) -- required so the
-     * default path is PROVABLY unchanged, not just assumed equivalent. */
+    /* OSEM: permute the angle/projection stack before build_RT_buffers is
+     * called so R_mats/T_vecs/ang_cs inherit the permuted order. subsets==1
+     * applies the identity permutation, keeping the default path unchanged. */
     if (subsets > 1 && !strcmp(mode_str, "gpu-opt")) {
         int *perm = (int *)malloc((size_t)para.num_projs * sizeof(int));
         compute_osem_permutation(para.num_projs, subsets, perm);

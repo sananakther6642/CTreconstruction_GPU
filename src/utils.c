@@ -133,8 +133,7 @@ void compute_osem_permutation(int num_projs, int S, int *perm)
 
     /* Step B: subset visit order -- stride coprime to S, chosen close to
      * the golden-ratio point S*0.382 so consecutive visited subsets are
-     * maximally angularly separated (matches the plan's worked examples:
-     * S=5 -> stride 2 -> order 0,2,4,1,3). */
+     * maximally angularly separated (e.g. S=5 -> stride 2 -> 0,2,4,1,3). */
     int best_stride = 1;
     double target = (double)S * 0.381966011; /* 1/phi^2 */
     double best_dist = 1e18;

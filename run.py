@@ -3,11 +3,7 @@ Reference call site for the pybind11 CT reconstruction backend.
 
 Run from the repo root:
 
-    python3 -m pybind_backend.run --mode gpu-opt --epochs 100
-
-or directly:
-
-    python3 pybind_backend/run.py --mode cpu --epochs 20
+    python3 run.py --mode gpu-opt --epochs 100
 """
 import argparse
 import os
@@ -15,7 +11,7 @@ import os
 import h5py
 import numpy as np
 
-from pybind_backend.backend import KERNEL_DIR, _backend
+from backend import KERNEL_DIR, _backend
 
 # Matches the Makefile's DATA256 default -- the shared dataset path on
 # the lab machines, not a path relative to the repo (a fresh clone has

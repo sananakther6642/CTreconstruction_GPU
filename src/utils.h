@@ -46,19 +46,15 @@ void log_convergence(const char *path, int epoch, double epoch_time_s,
                       const float *v_cur, const float *v_prev, size_t vol_n);
 
 /*
- * OSEM: compute the angle permutation that makes each
- * of S subsets both angularly interleaved (subset s gets angles
- * {s, s+S, s+2S, ...}) and visited in maximally-separated order (subsets
- * themselves reordered by a stride coprime to S, close to the golden
- * ratio). After applying this permutation to both para->angles and the
- * projection stack (each angle's [H][W] block, via
- * permute_projections_inplace below), subset k is exactly the contiguous
- * angle range [k*num_projs/S, (k+1)*num_projs/S).
+ * OSEM: compute the angle permutation that interleaves each of S subsets
+ * (subset s gets angles {s, s+S, s+2S, ...}) and orders subsets by a
+ * golden-ratio-coprime stride for maximal angular separation. After
+ * applying this (and permute_projections_inplace below) to angles/proj,
+ * subset k is the contiguous range [k*num_projs/S, (k+1)*num_projs/S).
  *
- * perm[i] = original index of the angle that should end up at permuted
- * position i. Caller allocates perm[num_projs]. S==1 fills the identity
- * permutation (perm[i]=i) -- the required no-op path for --subsets 1.
- * num_projs need not be evenly divisible by S.
+ * perm[i] = original index landing at permuted position i. Caller
+ * allocates perm[num_projs]. S==1 is the identity permutation (required
+ * no-op for --subsets 1). num_projs need not divide evenly by S.
  */
 void compute_osem_permutation(int num_projs, int S, int *perm);
 

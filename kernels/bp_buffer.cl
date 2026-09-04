@@ -37,17 +37,12 @@ static float bilinear_buf(__global const float *img,
 }
 
 /*
- * OSEM: ip_start/ip_count select a contiguous angle
- * subrange instead of always summing all num_projs angles. Callers use
- * ip_start=0, ip_count=num_projs for plain MLEM (--subsets 1, the
- * default) -- identical to the pre-OSEM behavior. M_PI_F/num_projs is
- * deliberately left as num_projs (not ip_count): it appears in both
- * bp(ratio) and bp(ones) and cancels exactly in the v*=bp(ratio)/bp(ones)
- * update regardless of which angle range is summed, so leaving it alone
- * avoids a redundant rescale and keeps this kernel's only change the
- * loop bounds. Requires the angle stack to have been permuted at load
- * time (see utils.c compute_osem_permutation/permute_projections_inplace)
- * so that subset k IS the contiguous range [ip_start, ip_start+ip_count).
+ * OSEM: ip_start/ip_count select a contiguous angle subrange (plain MLEM
+ * uses ip_start=0, ip_count=num_projs). M_PI_F is divided by num_projs,
+ * not ip_count -- it cancels exactly in v*=bp(ratio)/bp(ones) regardless
+ * of angle range, so leaving it alone avoids a redundant rescale.
+ * Requires the angle stack pre-permuted at load time (see utils.c
+ * compute_osem_permutation) so subset k is [ip_start, ip_start+ip_count).
  */
 __kernel void bp_buffer(
     __global const float *proj,       /* [num_projs * W * H] cone-weighted */
@@ -146,37 +141,21 @@ __kernel void preprocess_proj(
 }
 
 /*
- * divide_preprocess_img — fuses three former steps into one kernel:
- *   1. proj_divide:      ratio = p0/b (with the same b>1e-3 guard)
- *   2. preprocess_proj:  cone_weight + flip(H-axis) + transpose + /voxelSize
- *   3. clEnqueueCopyBufferToImage: buffer -> ratio_img
- * into a single pass that reads p0/b and writes straight into an
- * image2d_array_t (width=H, height=W, depth=np).
+ * divide_preprocess_img — fuses proj_divide (ratio=p0/b) +
+ * preprocess_proj (cone_weight + flip + transpose + /voxelSize) +
+ * buffer-to-image copy into one pass, writing straight into an
+ * image2d_array_t. The intermediate buffers were write-once/read-once
+ * and the buffer->image copy was pure data movement -- classic fusable
+ * intermediates. Same divide-by-zero guard and math as the kernels it
+ * replaces, only the fusion point moved.
  *
- * Kernel fusion: the intermediate d_ratio and d_ratio_prep buffers
- * were each write-once/read-once and never used anywhere else -- classic
- * fusable intermediates, plus the buffer->image copy was pure data
- * movement (~0.80GB/epoch at 512^3) the GPU already had the values for.
- * Projection-side traffic per epoch drops from the original three steps'
- * combined ~2.8x proj_bytes to this kernel's 2x (read p0, read b) -- the
- * image write isn't counted as host-visible buffer traffic. Same
- * divide-by-zero guard and same cone-weight/flip/transpose math as the
- * kernels it replaces; only the fusion point moved, no arithmetic changed
- * (see ct_gpu.c's run_divide_preprocess_img for the index-equivalence
- * derivation against the original two-kernel version).
+ * Not float4-vectorized: 3D-indexed (iw,ih,ip) to match the
+ * flip+transpose, but consecutive scalar loads along iw coalesce the
+ * same as vload4 would.
  *
- * Not float4-vectorized like proj_divide was: this kernel is 3D-indexed
- * (iw,ih,ip) to match the flip+transpose, and on GCN a 64-wide wavefront
- * issuing 64 consecutive scalar 4-byte loads along iw coalesces into the
- * same memory transactions vload4 would -- no loss from dropping the
- * explicit vectorization.
- */
-/* ip_start/ip_count: OSEM support, mirrors fp_image's pattern -- the host
- * launches with offset[2]=ip_start, gws[2]=ip_count (rounded up to lws),
- * so get_global_id(2) never goes below ip_start; only the upper bound
- * needs guarding here for the lws round-up. num_projs itself is not
- * needed as a separate arg since ip_start+ip_count <= num_projs always
- * (subset ranges partition [0,num_projs) by construction). */
+ * ip_start/ip_count: OSEM support, mirrors fp_image's pattern -- only
+ * the upper bound needs guarding since the host's gws offset already
+ * keeps get_global_id(2) >= ip_start. */
 __kernel void divide_preprocess_img(
     __global const float *p0,
     __global const float *b,
@@ -289,22 +268,16 @@ __kernel void vol_update(
 /*
  * vol_update_img — same update as vol_update, but also writes the result
  * directly into vol_img (a 3D image), eliminating the separate
- * clEnqueueCopyBufferToImage(d_vol -> vol_img) the epoch loop used to do
- * right before fp_image's next call (~1.07GB/epoch at 512^3: 537MB read +
- * 537MB write). Requires cl_khr_3d_image_writes (OpenCL 1.2 has no 3D
- * read-write images without it) -- confirmed supported on this Hawaii
- * device via a runtime capability check in ct_gpu.c. float32 mode only; --half still uses the
- * separate float_to_half + copy path since half-precision needs an
- * actual format conversion this kernel doesn't do.
+ * buffer-to-image copy the epoch loop used to do before fp_image's next
+ * call. Requires cl_khr_3d_image_writes (checked at runtime in
+ * ct_gpu.c). float32 mode only; --half still uses the separate
+ * float_to_half + copy path since it needs an actual format conversion.
  *
- * the vol_img fusion path. Flat buffer index j decomposes as
- * j = x*(Nxz*Ny) + y*Ny + z (matching the existing buffer layout), and
- * the image is (width=Ny/z-axis, height=Nxz/y-axis, depth=Nxz/x-axis) --
- * verified against fp_image.cl's own read_imagef(volume_img, samp,
- * (zi,yi,xi)) coordinate convention. Since Ny (256 or 512) is always a
- * multiple of 4, four consecutive flat indices in one vec4 always share
- * the same (x,y) and differ only in z -- safe to decompose into four
- * scalar write_imagef calls at (z,z+1,z+2,z+3) with the same (y,x).
+ * Flat buffer index j decomposes as j = x*(Nxz*Ny) + y*Ny + z; the image
+ * is (width=Ny/z-axis, height=Nxz/y-axis, depth=Nxz/x-axis), matching
+ * fp_image.cl's read convention. Ny is always a multiple of 4, so four
+ * consecutive flat indices share (x,y) and differ only in z -- safe to
+ * decompose one vec4 into four scalar write_imagef calls.
  */
 __kernel void vol_update_img(
     __global       float *volume,
