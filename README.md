@@ -354,9 +354,13 @@ gpu-opt               0.0000   1.0054   0.0330    0    0  MSE=6.849e-10  max=0.0
 gpu-img-fp_tex_exact  0.0000   1.0053   0.0330    0    0  MSE=4.359e-10
 gpu-opt-fp_tex_exact  0.0000   1.0053   0.0330    0    0  MSE=4.359e-10
 ```
-No Python-reference output at 512³ - ran out of memory on both machines
-(15GB hard limit on pool15; kale has more RAM but still ran out
-partway).
+No Python-reference output at 512³ on pool15 - confirmed infeasible by
+direct measurement, not just a cap-tuning issue like kale's (see below).
+pool15 has 15GB total RAM, no swap; the reference script's actual
+memory footprint (measured on kale, where it does run) ranges from
+~21.8GB at its lowest to 61.4GB+ at its peak, and keeps growing across
+epochs rather than settling - every reading exceeds pool15's entire
+RAM by 1.4-4x. No memory cap fixes this on this hardware.
 
 ## Validation (kale: Intel Xeon E5-2620 + NVIDIA GTX 680)
 
@@ -394,7 +398,15 @@ gpu-opt               0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0
 gpu-img-fp_tex_exact  0.0000   1.0054   0.0330    0    0  MSE=5.528e-10
 gpu-opt-fp_tex_exact  0.0000   1.0054   0.0330    0    0  MSE=5.528e-10
 ```
-No Python-reference output at 512³ - same out-of-memory limit as above.
+No Python-reference output at 512³ yet on kale - the earlier "ran out
+of memory" finding turned out to be a memory-cap-configuration issue,
+not a true hardware ceiling (kale has 188GB RAM; the run had only been
+tried up to a 32GB cap before, which wasn't enough headroom above the
+reference script's ~15GB+ single-array allocations). Re-run in
+progress at `MEM_CAP_GB=96`, 20 epochs to match the 256³ script: 3/20
+epochs complete as of this writing, ~6.4h/epoch, full run expected to
+take roughly 5 days. This section will be updated with the real MSE
+once it finishes.
 `gpu-buf`'s MSE here (`5.607e-10`) is higher than a prior kale
 measurement (`9.534e-11`) - unexplained; kale's `gpu-buf` is documented
 elsewhere as flat/stable (unlike pool15's DVFS-driven variance), so
