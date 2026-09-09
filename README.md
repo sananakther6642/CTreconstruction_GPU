@@ -251,9 +251,12 @@ no vectorization/GPU): ~4690s/epoch at 256³ on kale, script default
 `sample_ratio=2` (early spot measurement, confirmed by a complete
 1-epoch run at the same setting: 4311.8s, cross-checked against a
 matching 1-epoch CPU reference at MSE=4.968e-09, well under the 1e-8
-bar). A complete 20-epoch run on kale took 20h 03m; steady-state cost
-(excluding the one-off first-epoch setup) is 3483.5 s/epoch, against
-which `gpu-opt` at 0.165 s/epoch is ~21,100× faster.
+bar). The same 1-epoch, sample_ratio=2 measurement at 512³ took
+34,310.5s (~9h32m), MSE=2.289e-10 against its own matching 1-epoch CPU
+reference - both well under a 24-hour ceiling. A complete 20-epoch run
+on kale took 20h 03m; steady-state cost (excluding the one-off
+first-epoch setup) is 3483.5 s/epoch, against which `gpu-opt` at
+0.165 s/epoch is ~21,100× faster.
 
 - MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07`
   (`gpu-img`/`gpu-opt`). 512³ `5.607e-10` (`gpu-buf`, see note below) /
