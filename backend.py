@@ -28,6 +28,7 @@ safe to compile with -march=native below: a native-arch binary is
 never reused on a different host, so there is no cross-host SIGILL
 risk from a mismatched instruction set.
 """
+import glob
 import os
 import platform
 import subprocess
@@ -91,15 +92,34 @@ if _missing_cl:
 
 
 def _hdf5_lib_flag():
-    """Mirror the Makefile's ldconfig probe: Debian/Ubuntu package HDF5 as
-    libhdf5_serial, other distros as libhdf5."""
-    try:
-        out = subprocess.run(
-            ["ldconfig", "-p"], capture_output=True, text=True, check=False
-        ).stdout
-        return "-lhdf5_serial" if "libhdf5_serial" in out else "-lhdf5"
-    except Exception:
-        return "-lhdf5"
+    """Pick -lhdf5 vs -lhdf5_serial. Debian/Ubuntu package HDF5 as
+    libhdf5_serial; other distros as libhdf5. Probe ldconfig first
+    (trying /sbin explicitly, since it is often off PATH in a reduced
+    build environment), then fall back to scanning the linker's own
+    library directories for the file itself."""
+    for ldconfig in ("ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"):
+        try:
+            out = subprocess.run(
+                [ldconfig, "-p"], capture_output=True, text=True, check=False
+            ).stdout
+        except Exception:
+            continue
+        if "libhdf5_serial.so" in out:
+            return "-lhdf5_serial"
+        if "libhdf5.so" in out:
+            return "-lhdf5"
+    # ldconfig unavailable: look on disk directly.
+    libdirs = [
+        "/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib",
+        "/usr/local/lib", "/lib/x86_64-linux-gnu",
+    ]
+    has_serial = has_plain = False
+    for d in libdirs:
+        has_serial = has_serial or bool(glob.glob(os.path.join(d, "libhdf5_serial.so*")))
+        has_plain = has_plain or bool(glob.glob(os.path.join(d, "libhdf5.so*")))
+    if has_serial and not has_plain:
+        return "-lhdf5_serial"
+    return "-lhdf5"
 
 
 def _hdf5_include_dirs():
