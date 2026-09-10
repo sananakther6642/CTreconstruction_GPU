@@ -5,9 +5,25 @@ UNAME := $(shell uname)
 ifeq ($(UNAME), Darwin)
     LDFLAGS = -lm -lhdf5 -framework OpenCL
 else
-    # Ubuntu/Debian installs HDF5 as hdf5_serial; fall back to hdf5 if not found
-    HDF5_LIB := $(shell ldconfig -p 2>/dev/null | grep -q libhdf5_serial && echo hdf5_serial || echo hdf5)
-    HDF5_INC := $(shell test -d /usr/include/hdf5/serial && echo /usr/include/hdf5/serial || echo /usr/include)
+    # Ubuntu/Debian package HDF5 as libhdf5_serial; other distros as libhdf5.
+    # Probe ldconfig (trying /sbin and /usr/sbin explicitly, since ldconfig
+    # is often off PATH), then fall back to scanning the standard library
+    # directories for the file itself. Override on the command line if
+    # neither finds it, e.g. `make HDF5_LIB=hdf5_serial HDF5_INC=...`.
+    LDCONFIG := $(firstword $(wildcard /sbin/ldconfig /usr/sbin/ldconfig) ldconfig)
+    HDF5_SERIAL_LDCONF := $(shell $(LDCONFIG) -p 2>/dev/null | grep -c libhdf5_serial.so)
+    HDF5_SERIAL_FILE   := $(firstword $(wildcard \
+        /usr/lib/x86_64-linux-gnu/libhdf5_serial.so \
+        /usr/lib64/libhdf5_serial.so /usr/lib/libhdf5_serial.so \
+        /usr/local/lib/libhdf5_serial.so /lib/x86_64-linux-gnu/libhdf5_serial.so))
+    ifneq ($(HDF5_SERIAL_LDCONF),0)
+        HDF5_LIB ?= hdf5_serial
+    else ifneq ($(HDF5_SERIAL_FILE),)
+        HDF5_LIB ?= hdf5_serial
+    else
+        HDF5_LIB ?= hdf5
+    endif
+    HDF5_INC ?= $(shell test -d /usr/include/hdf5/serial && echo /usr/include/hdf5/serial || echo /usr/include)
     CFLAGS  += -I$(HDF5_INC)
     LDFLAGS  = -lm -l$(HDF5_LIB) -lOpenCL
 endif
