@@ -238,7 +238,7 @@ reproducible. CPU: Intel Core i7-5820K, 12 threads. GPU: AMD Hawaii PRO,
 | `cpu` | 3.970s | 396.98s | 33.610s | 3360.98s | 1× |
 | `gpu-buf` | 0.394s | 39.40s | 5.141s | 514.08s | 10.1× / 6.5× |
 | `gpu-img` | 0.169s | 16.94s | 1.691s | 169.12s | 23.4× / 19.9× |
-| `gpu-opt` | **0.165s** | **16.50s** | **1.346s** | **136.08s** | **24.1× / 24.7×** |
+| `gpu-opt` | **0.165s** | **16.50s** | **1.361s** | **136.08s** | **24.1× / 24.7×** |
 
 CPU: Intel Xeon E5-2620, 24 threads. GPU: NVIDIA GeForce GTX 680
 (Kepler, no `cl_khr_fp16` - `--half` unavailable).
@@ -302,11 +302,16 @@ the flag costs nothing unless set. Full write-up, including four
 approaches that were tried and did not work, in
 `docs/precision-256-investigation.md`.
 
-- OSEM on Platform A, MSE vs CPU: `1.062e-04` (S=5, 256³), `4.050e-05`
-  (S=2, 512³). OSEM converges through a different update path - S
-  partial updates per epoch rather than one full update - so a larger
-  divergence from plain MLEM is inherent to the method, not a
-  precision defect.
+- OSEM S=5 (256³) and S=2 (512³) were also run on Platform A
+  (`results_hawaiifull_100ep_20260901_190641/pybind_gpu_opt_s{5,2}_*.log`);
+  MSE vs CPU recorded as `1.062e-04` / `4.050e-05`. These are not in the
+  report and cannot now be re-verified - the output volumes were deleted
+  under a disk quota. `1.062e-04` is within rounding of the Platform B
+  S=5 figure (`1.0607e-04`, `docs/results_100ep_20260901.md`), so treat
+  the platform attribution as unconfirmed. Either way: OSEM converges
+  through a different update path (S partial updates per epoch rather
+  than one full update), so a larger divergence from plain MLEM is
+  inherent to the method, not a precision defect.
 - `gpu-buf`'s MSE-vs-CPU margin over `gpu-img`/`gpu-opt` is
   scale-dependent: ~980× tighter at 256³, ~13× tighter at 512³.
 - `gpu-img`/`gpu-opt`'s remaining default-path gap vs CPU/`gpu-buf` is a
@@ -403,15 +408,13 @@ gpu-opt               0.0000   1.0054   0.0330    0    0  MSE=1.232e-09  max=0.0
 gpu-img-fp_tex_exact  0.0000   1.0054   0.0330    0    0  MSE=5.528e-10
 gpu-opt-fp_tex_exact  0.0000   1.0054   0.0330    0    0  MSE=5.528e-10
 ```
-No Python-reference output at 512³ yet on Platform B - the earlier "ran out
-of memory" finding turned out to be a memory-cap-configuration issue,
-not a true hardware ceiling (Platform B has 188GB RAM; the run had only been
-tried up to a 32GB cap before, which wasn't enough headroom above the
-reference script's ~15GB+ single-array allocations). Re-run in
-progress at `MEM_CAP_GB=96`, 20 epochs to match the 256³ script: 3/20
-epochs complete as of this writing, ~6.4h/epoch, full run expected to
-take roughly 5 days. This section will be updated with the real MSE
-once it finishes.
+Python-reference validation at 512³ on Platform B is the single-epoch
+run in the Pure-Python reference section above: 34,310.5s (~9h32m) for
+one epoch at `sample_ratio=2`, MSE 2.289e-10 vs a matched 1-epoch CPU
+run. A full multi-epoch Python-reference run at 512³ is not practical
+(the script's steady-state cost extrapolates to days) and is not needed
+- the single matched epoch already exposes any algorithmic
+disagreement.
 `gpu-buf`'s MSE here (`5.607e-10`) is higher than a prior Platform B
 measurement (`9.534e-11`) - unexplained; Platform B's `gpu-buf` is documented
 elsewhere as flat/stable (unlike Platform A's DVFS-driven variance), so
