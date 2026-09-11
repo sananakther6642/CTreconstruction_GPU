@@ -2,9 +2,7 @@
 
 Investigations that produced real, measured, report-worthy findings but
 were not merged into `features`/`main` — either negative results, or
-alternatives superseded by what shipped. Kept here (rather than only on
-their unmerged branches) so the code/writeup is visible alongside the
-main submission for grading and the report.
+alternatives superseded by what shipped.
 
 - **`hybrid-precision/`** — fp16-speed sampler + fp32 correction for
   `gpu-img`/`gpu-opt`; found redundant once `gpu-buf` was recognized as
