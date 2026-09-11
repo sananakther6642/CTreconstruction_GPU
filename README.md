@@ -253,10 +253,14 @@ matching 1-epoch CPU reference at MSE=4.968e-09, well under the 1e-8
 bar; the same 1-epoch run on Platform A took 2266.3s, MSE=4.936e-09). The
 same 1-epoch, sample_ratio=2 measurement at 512³ took
 34,310.5s (~9h32m) on Platform B, MSE=2.289e-10 against its own matching
-1-epoch CPU reference - all well under a 24-hour ceiling. A complete 20-epoch run
-on Platform B took 20h 03m; steady-state cost (excluding the one-off
-first-epoch setup) is 3483.5 s/epoch, against which `gpu-opt` at
-0.165 s/epoch is ~21,100× faster.
+1-epoch CPU reference - all well under a 24-hour ceiling. The
+single-epoch runs above are the validation of record. A separate
+20-epoch run on Platform B (20h 03m; steady-state 3483.5 s/epoch
+excluding the one-off first-epoch setup) was done to demonstrate and
+confirm the fix for the reference script's numerical instability, which
+only shows up after many iterations - not as a competing validation.
+Against that 3483.5 s/epoch baseline, `gpu-opt` at 0.165 s/epoch is
+~21,100× faster.
 
 - MSE vs CPU: 256³ `1.1477e-10` (`gpu-buf`) / `1.1278e-07`
   (`gpu-img`/`gpu-opt`). 512³ `5.607e-10` (`gpu-buf`, see note below) /
