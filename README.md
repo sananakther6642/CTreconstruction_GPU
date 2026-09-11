@@ -119,7 +119,6 @@ python/
                                  themselves untouched.
   Topic_2_CTreconstruction_512.py - 512³ variant, same v0 clamp; ran out of
                                  memory on both machines (see Validation).
-pybindextension/       - course's original minimal pybind11 example, unmodified
 ```
 
 ## Modes
@@ -151,8 +150,7 @@ sudo apt install libhdf5-dev ocl-icd-opencl-dev opencl-headers
 
 Python-callable interface to the CT reconstruction backend (`src/`),
 built with `torch.utils.cpp_extension.load` per the course's required
-pattern (see `pybindextension/` for the original minimal example this
-follows).
+pattern.
 
 ### Requirements
 

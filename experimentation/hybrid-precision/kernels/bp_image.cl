@@ -16,65 +16,27 @@ __constant sampler_t samp =
     CLK_FILTER_LINEAR;
 
 #ifdef HYBRID_PRECISION
-/* perf-v2 hybrid-precision -- MEASURED NEGATIVE RESULT, kept off by
- * default (HYBRID_PRECISION unset). Do not enable without re-reading
- * this comment.
+/* MEASURED NEGATIVE RESULT, off by default (HYBRID_PRECISION unset).
  *
- * Hypothesis going in: CLK_FILTER_LINEAR's hardware bilinear blend
- * quantizes its interpolation weight to a small number of fractional
- * bits (fixed-function texture-filter silicon, not a bug) -- measured
- * via diag_op_attribution.py to be the dominant source of gpu-img/
- * gpu-opt's MSE-vs-CPU gap (bp RMS 3.99e-5 vs fp's 3.67e-10, ~100,000x
- * larger). CLK_FILTER_NEAREST returns the exact stored texel with no
- * hardware blending, so four nearest fetches + a manual float32 blend
- * SHOULD reproduce bp_buffer.cl's bilinear_buf exactly and be strictly
- * more accurate wherever it fires.
+ * Hypothesis: CLK_FILTER_LINEAR's quantized hardware blend is the
+ * dominant source of gpu-img/gpu-opt's MSE-vs-CPU gap (bp RMS 3.99e-5 vs
+ * fp's 3.67e-10) -- so CLK_FILTER_NEAREST fetches + a manual float32
+ * blend should reproduce bp_buffer.cl's bilinear_buf exactly and improve
+ * accuracy. Manual-blend math verified correct three independent ways
+ * (hand-derivation, numpy match to 1e-6, gate-disabled byte-identical
+ * check).
  *
- * The manual-blend math was independently verified correct three ways
- * (hand-derivation of the coordinate/corner mapping, a numpy simulation
- * matching bilinear_buf to 1e-6 across random inputs, and a kale test
- * confirming HYBRID_GRAD_THRESH set high enough to disable the gate --
- * 1e6 -- reproduces the pre-hybrid baseline output BYTE-FOR-BYTE). The
- * gate logic is also confirmed correct: it is not a stuck-always-on bug.
+ * Measured (kale, 256^3, 10 epochs, coverage swept via radius_frac):
+ * MSE-vs-CPU got WORSE with MORE manual-blend coverage (8.42e-10 ->
+ * 1.16e-9, ~37% worse), and epoch time got 37-53% slower.
+ * -cl-fast-relaxed-math ruled out (byte-identical with/without it).
+ * Likely cause: "MSE vs CPU" measures agreement with one interpolation
+ * scheme, not ground truth -- nothing guarantees the manual blend is
+ * actually closer to the true value than the hardware sampler.
  *
- * Measured on kale (256^3, 10 epochs), varying coverage from a tiny
- * radius_frac=0.99 band up to radius_frac=0.001 (effectively the whole
- * volume): MSE-vs-CPU got WORSE with MORE manual-blend coverage, not
- * better (baseline 8.42e-10 -> full-coverage 1.16e-9, ~37% worse), while
- * epoch time got 37-53% SLOWER. The single worst voxel across every
- * coverage level was identically (244,66,17) with an identical diff
- * (0.0734) regardless of how much of the volume used the manual path --
- * i.e. this specific voxel's error is intrinsic to the manual blend
- * itself, not a gate-tuning artifact.
- *
- * -cl-fast-relaxed-math theory: TESTED AND RULED OUT. Rebuilt the image/
- * opt programs with that flag entirely stripped (HYBRID_PRECISION_NO_
- * FASTMATH=1) -- output was byte-identical to the flag-on run at every
- * digit, including this exact voxel. Not the cause.
- *
- * Actual likely explanation: "MSE vs CPU" was never really "MSE vs
- * ground truth" -- it's agreement with one specific numerical scheme
- * (manual float32 bilinear interpolation). Both the CPU path and the
- * hardware sampler are approximations of the true continuous
- * backprojection integral; bilinear interpolation itself carries bias,
- * and nothing guarantees the manual scheme sits closer to the true
- * value than the hardware sampler's rounding does at every voxel. At
- * (244,66,17) they appear to genuinely disagree by a real (not buggy)
- * amount, with no ground truth available in this dataset (see README's
- * Files section -- proj_*.hdf5 has no reference volume) to say which
- * is actually more correct. Not chased further: the cost (real,
- * measured 37-53% slowdown) already outweighs the tiny gap this was
- * meant to close (0.0026-0.0255% of signal range, see README), and the
- * "which is more correct" question would need an independent ground
- * truth this project's data doesn't have.
- *
- * Kept in the codebase (not reverted) as a measured negative result, in
- * the same spirit as unroll-x2, AABB-at-256, and
- * FP_BUFFER_VOL_REALLOC_EVERY elsewhere in this project -- zero cost
- * when off (this whole block preprocesses away, confirmed byte-identical
- * via `gcc -E` diff against the pre-hybrid source), real information if
- * anyone revisits it. Gated behind a compile-time define (see gpu_init's
- * HYBRID_PRECISION build flag, ct_gpu.c) rather than a new mode. */
+ * Kept as a documented negative result, zero cost when off (preprocesses
+ * away, confirmed via `gcc -E` diff). Gated by HYBRID_PRECISION
+ * (ct_gpu.c) rather than a new mode. */
 __constant sampler_t samp_exact =
     CLK_NORMALIZED_COORDS_FALSE |
     CLK_ADDRESS_CLAMP           |

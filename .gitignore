@@ -48,3 +48,6 @@ email_guangpu_yang*.txt
 diag_bp_ones_output.txt
 log_div.txt
 out.txt
+
+# Ad-hoc run scripts (local only, not part of the submission)
+temp_scripts/

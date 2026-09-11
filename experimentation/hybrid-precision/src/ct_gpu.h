@@ -77,20 +77,15 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
 /*
  * Optimized reconstruction (LUT + local mem + float4 + loop unroll).
  *
- * OSEM: subsets implements Ordered Subsets EM (OSEM).
- * subsets=1 (default) is EXACTLY the pre-OSEM MLEM path -- no
- * permutation, one full-angle normalizer, ip_start=0/ip_count=num_projs
- * every sub-iteration. subsets=S>1 requires the caller to have already
- * permuted p->angles AND proj_measured with the SAME permutation (see
- * utils.h compute_osem_permutation/permute_projections_inplace) so that
- * subset k is exactly the contiguous angle range
+ * OSEM: subsets=1 (default) is EXACTLY the pre-OSEM MLEM path. subsets=S>1
+ * requires the caller to have already permuted p->angles AND
+ * proj_measured identically (see utils.h compute_osem_permutation/
+ * permute_projections_inplace) so subset k is the contiguous range
  * [k*num_projs/S, (k+1)*num_projs/S).
  *
- * --epochs convention: one epoch is one full pass over all S subsets
- * (S sub-iterations), matching plain MLEM's "one epoch = one full-angle
- * update" in total work done, NOT in wall-clock number of volume
- * updates -- --epochs 20 --subsets 5 does 100 sub-iterations total,
- * the same fp/bp work as --epochs 100 --subsets 1.
+ * --epochs is total work, not wall-clock updates: one epoch = one pass
+ * over all S subsets, so --epochs 20 --subsets 5 does the same fp/bp
+ * work as --epochs 100 --subsets 1.
  */
 void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                          const float *proj_measured, float *volume,
@@ -98,20 +93,15 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
 
 /*
  * Component test, GPU version of the --op fp|bp CPU path (see main.c).
- * Runs a single fp or bp call on all-ones input, no MLEM iteration --
- * isolates operator precision so it can be compared against gpu-buf's
- * manual (exact) interpolation. cl must already be gpu_init'd in
- * GPU_MODE_IMAGE or GPU_MODE_OPT (fp) / any GPU mode (bp).
+ * Single fp or bp call on all-ones input, no MLEM iteration -- isolates
+ * operator precision against gpu-buf's manual interpolation. cl must
+ * already be gpu_init'd (GPU_MODE_IMAGE/OPT for fp; any GPU mode for bp).
  *
- * gpu_op_fp:  proj_out must be pre-allocated, size num_projs*H*W floats.
- *             volume is used as-is (caller fills with 1.0f for the
- *             all-ones case, matching --op fp's CPU behavior).
- * gpu_op_bp:  volume_out must be pre-allocated, size Nxz*Nxz*Ny floats.
- *             Internally fills a raw-ones projection buffer, applies the
- *             same cone_weight+flip+transpose preprocessing run_preprocess
- *             does inside reconstruct_gpu (matching --op bp's CPU
- *             cone_weight_cpu + manual layout transform), then bp's it --
- *             so both are bp(cone_weight(ones)), not raw bp(ones).
+ * gpu_op_fp: proj_out pre-allocated, num_projs*H*W floats; volume used
+ *            as-is (caller fills 1.0f, matching --op fp's CPU behavior).
+ * gpu_op_bp: volume_out pre-allocated, Nxz*Nxz*Ny floats; internally
+ *            builds cone_weight(ones) the same way the CPU path does,
+ *            then bp's that -- not raw bp(ones).
  */
 void gpu_op_fp(CLState *cl, const CBpara *p, const float *volume, float *proj_out);
 void gpu_op_bp(CLState *cl, const CBpara *p, float *volume_out);

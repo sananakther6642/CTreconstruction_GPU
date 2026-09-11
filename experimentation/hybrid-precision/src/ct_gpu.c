@@ -153,19 +153,11 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
     clGetDeviceInfo(cl->device, CL_DEVICE_NAME, sizeof(dev_name), dev_name, NULL);
     printf("OpenCL device: %s\n", dev_name);
 
-    /* Check cl_khr_3d_image_writes -- gates the float32 vol_img fusion path
-     * (vol_update writing directly into vol_img instead of a separate
-     * clEnqueueCopyBufferToImage each epoch). OpenCL 1.2 has no 3D
-     * read-write images without this extension. Printed once at init,
-     * not gated behind an env var since it costs nothing. */
-    /* perf-v2: also check cl_khr_fp16 -- required for --half mode's
-     * float_to_half kernel (kernels/fp_image.cl). Confirmed present on
-     * the original AMD Hawaii target but ABSENT on this project's other
-     * target, an NVIDIA GTX 680 -- without this check, --half
-     * mode's kernel source fails to compile there and takes down the
-     * whole image-mode program build, not just --half. Remembered on
-     * CLState so main.c can refuse --half cleanly instead of crashing,
-     * and passed as -DHAVE_FP16 to the image-mode program build below. */
+    /* cl_khr_3d_image_writes gates the vol_img fusion path (OpenCL 1.2 has
+     * no 3D read-write images without it). cl_khr_fp16 gates --half mode:
+     * present on Hawaii, absent on GTX 680, where an unguarded build would
+     * fail for the whole image-mode program, not just --half. Remembered
+     * on CLState so main.c can refuse --half instead of crashing. */
     {
         size_t ext_sz = 0;
         clGetDeviceInfo(cl->device, CL_DEVICE_EXTENSIONS, 0, NULL, &ext_sz);
@@ -358,17 +350,11 @@ static void run_preprocess(CLState *cl, const CBpara *p,
 }
 
 /*
- * Kernel fusion: fuses proj_divide (ratio=p0/b) with cone_weight +
- * flip + transpose, writing straight into an image2d_array_t (ratio_img)
- * instead of a buffer. Replaces what was three steps (proj_divide into a
- * d_ratio buffer, preprocess into a d_ratio_prep buffer,
- * clEnqueueCopyBufferToImage into the image) with one kernel launch.
- * d_ratio/d_ratio_prep were both write-once/read-once and never used
- * elsewhere. An intermediate B1-only version that fused just the
- * image-write step (without the divide) was tried first and superseded
- * by this fully-fused version once B2 landed -- removed rather than kept
- * as dead code. See divide_preprocess_img in kernels/bp_buffer.cl for the
- * kernel and its math-equivalence note against the original two kernels.
+ * Kernel fusion: fuses proj_divide (ratio=p0/b) with cone_weight + flip +
+ * transpose, writing straight into an image2d_array_t (ratio_img) instead
+ * of a buffer. Replaces three steps (divide, preprocess, copy-to-image)
+ * with one launch; the intermediate d_ratio/d_ratio_prep buffers are gone.
+ * See divide_preprocess_img in kernels/bp_buffer.cl.
  */
 static void run_divide_preprocess_img(CLState *cl, const CBpara *p,
                                        cl_mem d_proj_meas, cl_mem d_proj_b,
@@ -431,19 +417,11 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,12, sizeof(int),    &ip_start);
     clSetKernelArg(k,13, sizeof(int),    &ip_count);
 
-    /* {4,4,16} tuned once early on (718ms->290ms, the biggest measured win
-     * at the time) and never re-swept until fp_image/fp_buffer's sweeps
-     * (both found significant headroom over their similarly-untested
-     * defaults) prompted re-checking this one too. Re-swept at 512^3
-     * (gpu-opt, 3-epoch runs): {4,4,16} 0.874-0.879s still wins outright;
-     * every alternative tried was 14-49% slower (e.g. {8,4,8} ~0.997s,
-     * {4,16,4} ~1.10s, {2,2,64} ~1.17-1.19s, {8,8,4} ~1.30s). Unlike
-     * fp_image/fp_buffer, this one really was already at (or very near)
-     * its optimum — confirmed, not assumed. Shared BP_LWS env override
-     * across all four bp call sites (run_bp_buffer, run_bp_image, bp_opt
-     * x2) kept for any future re-test. Keep lws[2] a divisor of
-     * Z_SLAB=64 below (1,2,4,8,16,32,64) — the z-slab chunking
-     * requires it. */
+    /* {4,4,16} re-swept at 512^3 against {8,4,8}/{4,16,4}/{2,2,64}/{8,8,4}:
+     * still wins outright (0.874-0.879s vs 14-49% slower) -- unlike
+     * fp_image/fp_buffer, this one was already near-optimal. Shared BP_LWS
+     * env override across all bp call sites. Keep lws[2] a divisor of
+     * Z_SLAB=64 below -- the z-slab chunking requires it. */
     size_t lws[3] = {4, 4, 16};  /* 16 contiguous z-threads → coalesced writes */
     {
         const char *bp_lws_env = getenv("BP_LWS");
@@ -522,27 +500,11 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
     clSetKernelArg(k,14, sizeof(int),    &ip_start);
     clSetKernelArg(k,15, sizeof(int),    &ip_count);
 
-    /* perf-v2: hardware target switched from AMD Hawaii PRO,
-     * GCN 1.1, 64-wide wavefront) to NVIDIA GTX 680 (Kepler,
-     * 32-wide warp) -- work-group tuning does not transfer between them,
-     * confirmed by direct sweep rather than assumed.
-     *
-     * AMD Hawaii PRO history: swept 16,16,1 / 8,32,1 / 4,64,1 /
-     * 32,8,1 / 8,16,1 at 512^3 (10-epoch confirmation) -- 4,64,1 gave
-     * 75.37s/10ep vs 321.19s/10ep for the old 16,16,1 default, >4x
-     * faster. Wide-short shapes (32,8,1 / 8,16,1) were catastrophic
-     * (~4-8x slower) on that GPU.
-     *
-     * GTX 680 re-sweep: 4,64,1 (the Hawaii winner) was NOT best
-     * here -- 10.53s/10ep @ 256^3. Swept 2,32,1 / 4,32,1 / 2,16,2 /
-     * 8,32,1 / 1,32,1 / 2,16,1 / 4,16,2 / 1,16,2 / 2,8,2: 2,16,2 won
-     * (9.77s, ~7.2% faster than 4,64,1), with 2,32,1 close behind
-     * (9.83s). 8,32,1 was worst (12.88s, ~30% slower) -- the same
-     * wide-short-shape penalty as on Hawaii, but the specific optimum
-     * shifted with the warp width, confirming this needs re-tuning per
-     * GPU rather than reusing one card's numbers. FP_BUFFER_LWS=X,Y,Z
-     * still overrides for further testing on other hardware -- keep Z a
-     * divisor of ANG_SLAB=8, the angle-slab chunking below requires it. */
+    /* Work-group shape doesn't transfer across GPUs: Hawaii (64-wide
+     * wavefront) swept best at 4,64,1 (>4x over the 16,16,1 default); GTX
+     * 680 (32-wide warp) re-swept best at 2,16,2 instead, ~7% faster than
+     * reusing Hawaii's 4,64,1. Wide-short shapes were worst on both.
+     * FP_BUFFER_LWS=X,Y,Z overrides; Z must divide ANG_SLAB=8 below. */
     size_t lws[3] = {2, 16, 2};
     const char *lws_env = getenv("FP_BUFFER_LWS");
     if (lws_env) {
@@ -590,57 +552,12 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
         const char *skip_env = getenv("FP_BUFFER_SKIP_SLAB_FINISH");
         if (skip_env && atoi(skip_env) != 0) skip_slab_finish = 1;
     }
-    /* Variance investigation (see README "gpu-buf run-to-run variance"):
-     * ruled out other-user contention and per-angle geometry, couldn't
-     * check dmesg (no root). GPU-side event profiling
-     * (CL_PROFILING_COMMAND_START/END, already enabled on the queue via
-     * CL_QUEUE_PROFILING_ENABLE) confirmed slow slabs are GPU-bound
-     * (wall==gpu to the ms), and a follow-up diagnostic (--diag
-     * repeat-slab, the variance diagnostic) found the actual mechanism: NOT
-     * thermal throttling (Hawaii's ~3.2x DVFS range can't produce the
-     * observed ~5.8-6x jump, and gpu-img/gpu-opt stay stable in the same
-     * sessions gpu-buf goes slow). Repeating one fixed angle-slab many
-     * times showed a step degradation to ~6x cost that HOLDS, then
-     * recovers instantly when d_vol is freed and recreated -- and then
-     * degrades again after a further, variable number of launches (6-13
-     * in testing). This is consistent with the OpenCL driver periodically
-     * demoting the 537MB d_vol buffer's memory placement under sustained
-     * access (e.g. losing a large-page mapping or migrating out of the
-     * fastest VRAM tier), recoverable by reallocation, recurring on a
-     * roughly time/pressure-based cycle rather than a fixed launch count.
-     *
-     * FP_BUFFER_VOL_REALLOC_EVERY: mitigation attempt -- every N angle-slabs,
-     * read the current d_vol contents back to host, free the buffer, and
-     * recreate it fresh from that same data, on the theory that this resets
-     * whatever driver-side state causes the demotion confirmed via --diag
-     * repeat-slab (see that diagnostic's comment for the root-cause
-     * evidence: NOT thermal throttling, a step-degradation that recovers
-     * instantly on reallocation and recurs after 6-13 further launches).
-     *
-     * DOES NOT RELIABLY BEAT BASELINE -- kept off by default (0) after
-     * real testing contradicted an earlier promising result. A 5-epoch
-     * sweep at N in {3,4,5,6,7,10} showed N=5 as a clear winner (34.91s
-     * vs a 37.7-50.9s baseline-equivalent range, clean of slow-slab
-     * warnings after 2 epochs of warmup) -- but that did not reproduce at
-     * the full 10-epoch/75-angle scale used for the documented baseline.
-     * Four full 10-epoch runs with N=5 gave [105.84, 86.77, 89.04, 85.31]s
-     * (mean 91.74s, stdev 9.52) against the three existing unmitigated
-     * baseline runs [75.37, 101.89, 83.63]s (mean 86.96s, stdev 13.57) --
-     * the mitigated mean is *slower*, not faster (-5.5%), though the
-     * spread narrowed somewhat (weak signal at this sample size, not
-     * treated as confirmed). Most mitigated runs still showed scattered
-     * GPU-BOUND warnings despite reallocating every 5 launches, meaning
-     * it does not reliably land inside the degradation-avoidance window
-     * at this scale, and each reallocation itself costs real time
-     * (~0.2-0.4s observed, readback+upload of 537MB) that appears to
-     * roughly cancel whatever it saves.
-     *
-     * Root-cause diagnosis (buffer-tied, driver-side, not thermal) stands
-     * on its own evidence from --diag repeat-slab; this specific
-     * mitigation strategy does not fix it in practice at real MLEM scale.
-     * Left in as an opt-in env var for further tuning (e.g. a different
-     * trigger heuristic, or per-buffer-size scaling) rather than removed,
-     * since the underlying mechanism and hook point are still correct. */
+    /* gpu-buf variance (see README): --diag repeat-slab showed a driver-side
+     * step degradation on the 537MB d_vol buffer, not thermal throttling --
+     * recovers on reallocation, recurs after 6-13 further launches.
+     * FP_BUFFER_VOL_REALLOC_EVERY reallocs every N slabs to test that fix;
+     * measured slower on average at full 10-epoch scale (-5.5%), so off by
+     * default. Left in as an opt-in hook, not removed. */
     int realloc_every = 0;
     {
         const char *re_env = getenv("FP_BUFFER_VOL_REALLOC_EVERY");
@@ -715,36 +632,14 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
 }
 
 /*
- * ── Diagnostic: repeat one fp_buffer angle-slab N times ─────────────────
- *
- * perf-v2 plan Phase A2/A3: the README's "thermal throttling" explanation
- * for gpu-buf's run-to-run variance is disputed (6.6x discrete jump is
- * beyond Hawaii's ~3.2x DVFS range, and gpu-img/gpu-opt stay stable in the
- * same sessions gpu-buf goes slow -- device-wide throttling can't be
- * mode-selective). This isolates ONE fixed angle-slab and launches it N
- * times back-to-back, timing each with GPU-side event profiling:
- *
- *   - Throttling predicts MONOTONE degradation (die heating under load).
- *   - TLB/page-residency predicts BIMODAL switching between two cost levels.
- *   - Memory-channel camping predicts UNIFORMLY slow, every time (fully
- *     deterministic for that angle set).
- *
- * angle_offset lets the same test be re-run with a different angle range
- * in the same slab-index slot (A3: does slowness follow slab INDEX or
- * ANGLE VALUE?) without changing which position in the launch sequence it
- * occupies.
- *
- * realloc_at (0 = never): after this many repeats have completed, free
- * d_vol and create a fresh buffer from the same host data, then continue.
- * Both repeat-slab runs so far show a one-time step degradation (~5.8-6x)
- * that then holds permanently for the rest of the run, angle-independent
- * -- not thermal (no monotone ramp), not channel camping (starts fast),
- * not classic TLB bimodal flapping (single step, not repeated switching).
- * That points at a one-shot driver-side event tied to the allocation
- * itself (e.g. page migration/remapping under sustained pressure). If
- * speed recovers after realloc, this confirms it and gives a workaround
- * (periodic reallocation); if it doesn't, the cause is external to the
- * buffer (global GPU/driver state).
+ * Diagnostic: repeat one fp_buffer angle-slab N times, GPU-event-timed, to
+ * distinguish thermal throttling (monotone ramp) from TLB/page effects
+ * (bimodal step) from channel camping (uniformly slow). angle_offset varies
+ * the angle range at a fixed slab-index slot. realloc_at (0 = never) frees
+ * and recreates d_vol after N repeats to test whether that recovers speed.
+ * Result: a one-time step degradation (~5.8-6x) that holds thereafter,
+ * angle-independent -- points at a driver-side event tied to the
+ * allocation itself, not thermal or channel camping.
  */
 static void run_diag_repeat_slab(CLState *cl, const CBpara *p,
                                   const float *volume,
@@ -907,20 +802,10 @@ static void run_bp_image(CLState *cl, const CBpara *p,
 
 /* ── Internal: run forward projection (image mode) ─────────────────────── */
 /*
- * OSEM: ip_start/ip_count select a contiguous angle
- * subrange. Launches with a global work-offset of ip_start in dim 2 and
- * a global work-size of ip_count (rounded up to lws[2]) instead of the
- * full num_projs -- get_global_id(2) then naturally ranges over
- * [ip_start, ip_start+ip_count) inside the kernel.
- *
- * The rounding-up-to-lws step is exactly the bug risk the perf-v2 plan
- * flagged before any code was written: rounding ip_count up can push
- * gws[2] past ip_count while still being < num_projs, so a guard of
- * "ip >= num_projs" alone would NOT catch the extra rounded-up
- * work-items -- they'd process angles beyond the subset. Fixed by
- * passing ip_start/ip_count into the kernel itself and guarding
- * "ip >= ip_start + ip_count" there (see fp_image.cl), not just
- * "ip >= num_projs".
+ * OSEM: ip_start/ip_count select a contiguous angle subrange via a
+ * work-offset of ip_start and work-size ip_count (rounded up to lws[2]).
+ * Rounding can push gws[2] past ip_count, so the kernel guards
+ * "ip >= ip_start + ip_count" (fp_image.cl), not just "ip >= num_projs".
  */
 static void run_fp_image(CLState *cl, const CBpara *p,
                           cl_mem vol_img, cl_mem d_proj,
@@ -1768,22 +1653,11 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     float *v_cur_host  = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
 
     /*
-     * OSEM: one epoch = one full pass over all S
-     * subsets. S=1 makes the inner loop run exactly once with
-     * ip_start=0/ip_count=np, i.e. byte-identical to the pre-OSEM
-     * MLEM loop -- the only structural difference from before is this
-     * added (degenerate, S=1) inner loop.
-     *
-     * fp is still computed over the FULL angle range every
-     * sub-iteration (via vol_img, which holds the current whole
-     * volume) -- OSEM restricts which angles' DATA feed the update,
-     * not how fp is computed; only the ratio/bp/update stage uses the
-     * subset's ip_start/ip_count. Practically this means fp_image
-     * still does a full pass each sub-iteration rather than a 1/S
-     * pass -- an accepted cost of this implementation, not a
-     * correctness issue (fp(v) for angles outside the subset is wasted
-     * work this sub-iteration, but harmless: the divide+bp+update
-     * below only reads the subset's slice of ratio_img).
+     * OSEM: one epoch = one full pass over all S subsets. S=1 is exactly
+     * one inner-loop iteration with ip_start=0/ip_count=np -- byte-
+     * identical to the pre-OSEM MLEM loop. fp still runs over the FULL
+     * angle range each sub-iteration (only ratio/bp/update use the
+     * subset); fp(v) outside the subset is wasted but harmless work.
      */
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();

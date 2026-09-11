@@ -227,5 +227,3 @@ plan rather than built, for four reasons:
 Estimated cost to implement properly: 3+ days, for an algorithm that
 targets the wrong noise model and is expected to underperform the
 OSEM already in the tree. Not implemented.
-
-## Optimizations
