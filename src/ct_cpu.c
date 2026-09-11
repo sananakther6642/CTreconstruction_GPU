@@ -282,22 +282,14 @@ void fp_cpu(const float *volume, float *proj, const CBpara *p)
      * vs full-volume center rays) -- static chunks leave threads idle on
      * the slowest chunk; guided balances the tail more cheaply than
      * dynamic's constant re-dispatch. */
-    /* Tile over iv: neighboring detector rows have rays that diverge only
-     * slightly, so their volume reads cluster at a given sample index.
-     * Batching TILE rays and iterating the sample index in the outer loop
-     * keeps those reads close together in time instead of scattered
-     * across a full ray march per pixel -- improves cache reuse for the
-     * 8-tap trilinear gather that dominates fp_cpu's cost at 512^3.
-     * Correctness is unchanged: each ray still computes its own
-     * s_start/s_end and bounds check; only the read ordering changes. */
-/* FP_TILE=32 was the swept optimum at 512^3 on the original hardware;
- * re-swept on kale, a wider range plateaus at 384 instead (~5% further
- * win), while 32 remains optimal at 256^3 -- resolution-dependent, keyed
- * on Nxz since 384's larger per-tile stack footprint is pure overhead at
- * 256^3. FP_TILE_MAX=1280 is the first round number above H=1184 (the
- * largest detector height in use); tile_n is capped at H regardless, so
- * nothing above H can ever matter. Verified bit-identical across tile
- * sizes -- pure memory-access reordering, no arithmetic reassociation. */
+    /* Tile over iv: batching TILE neighboring rays and iterating the
+     * sample index outermost clusters their volume reads in time
+     * instead of scattering a full march per pixel -- pure read
+     * reordering, correctness (per-ray s_start/s_end) is unchanged. */
+/* FP_TILE: 384 at 512^3, 32 at 256^3 -- resolution-aware since the
+ * larger tile's stack footprint is pure overhead at 256^3. Sweep and
+ * bit-identical verification in the report. FP_TILE_MAX=1280 is the
+ * first round number above H=1184 (largest detector height in use). */
 #define FP_TILE_MAX 1280
     int FP_TILE = (Nxz >= 512) ? 384 : 32;
     {

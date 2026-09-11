@@ -46,21 +46,15 @@ __constant sampler_t vol_samp =
     CLK_FILTER_LINEAR;
 
 /* ── FP_TEX_EXACT: texture cache, IEEE float32 blend ────────────────────
- * Decouples the two things the hardware sampler bundles together: its
- * 3D-tiled texture cache (source of gpu-img's speed) and its
- * fixed-function interpolation (blend weights below float32 precision,
- * source of the accuracy loss). CLK_FILTER_NEAREST returns the exact
- * stored texel with no blending, so eight nearest fetches plus a manual
- * float32 trilinear keep the cache and drop the lossy blend.
+ * Keeps the hardware texture cache but replaces its fixed-function
+ * (sub-float32) blend with a manual float32 trilinear over
+ * CLK_FILTER_NEAREST fetches -- see the report for why.
  *
- * Coordinate convention: the volume image is indexed (z, y, x) and the
- * caller passes coord = (zi+0.5, yi+0.5, xi+0.5), so texel centres sit
- * at integer+0.5. floor(c - 0.5) gives the lower neighbour and the
- * remainder is the blend weight -- getting this wrong shifts the volume
- * by half a voxel, exactly the error this exists to remove.
- *
- * Uses CLK_ADDRESS_CLAMP to match vol_samp above, so out-of-range
- * behaviour at the volume border is identical to the path it replaces. */
+ * Coord convention: image is (z,y,x), caller passes (zi+0.5, yi+0.5,
+ * xi+0.5) since texel centres sit at integer+0.5; floor(c-0.5) gives
+ * the lower neighbour. Get this wrong and the volume shifts half a
+ * voxel -- exactly the error this kernel exists to remove.
+ * CLK_ADDRESS_CLAMP matches vol_samp's border behaviour. */
 __constant sampler_t vol_samp_exact =
     CLK_NORMALIZED_COORDS_FALSE |
     CLK_ADDRESS_CLAMP           |

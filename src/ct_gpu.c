@@ -577,16 +577,10 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
         const char *skip_env = getenv("FP_BUFFER_SKIP_SLAB_FINISH");
         if (skip_env && atoi(skip_env) != 0) skip_slab_finish = 1;
     }
-    /* gpu-buf's run-to-run variance on Hawaii (see README) is root-caused
-     * to memory-clock DVFS, not thermal throttling or contention -- GPU
-     * event profiling confirmed slow slabs are GPU-bound. Not driver-side
-     * buffer-placement demotion, an earlier theory this superseded.
-     *
-     * FP_BUFFER_VOL_REALLOC_EVERY: mitigation attempt -- every N
-     * angle-slabs, free and recreate d_vol from the same data. DOES NOT
-     * RELIABLY BEAT BASELINE at real MLEM scale (looked like a win in a
-     * short sweep, measured slower over full runs) -- off by default,
-     * kept as an opt-in env var for further tuning. */
+    /* gpu-buf's Hawaii variance is memory-clock DVFS, not thermal
+     * throttling/contention (see report). FP_BUFFER_VOL_REALLOC_EVERY:
+     * reallocate d_vol every N slabs -- won a short sweep but lost at
+     * real MLEM scale, kept off by default as an opt-in env var. */
     int realloc_every = 0;
     {
         const char *re_env = getenv("FP_BUFFER_VOL_REALLOC_EVERY");
@@ -861,16 +855,10 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     /* FP_TEX_EXACT=1: keep the 3D texture cache but replace the sampler's
      * fixed-function blend with an IEEE float32 one -- eight
      * CLK_FILTER_NEAREST fetches plus a manual trilinear (see
-     * kernels/fp_image.cl's trilinear_tex).
-     *
-     * The forward projection is where the sampler's interpolation error
-     * actually matters: fp produces the ratio driving every MLEM update, so
-     * its error re-enters the loop each epoch, while bp's averages out over
-     * 75 angles. Measured on GTX 680, 100 epochs, MSE vs CPU:
-     *   256^3  1.128e-07 -> 2.524e-09 (45x)
-     *            gpu-img 14.65s -> 21.34s, gpu-opt 14.20s -> 20.48s
-     *   512^3  1.232e-09 -> 5.528e-10 (2.2x)
-     * Off by default; unset leaves the hardware-filtered path untouched. */
+     * kernels/fp_image.cl's trilinear_tex). Applied to fp only: its error
+     * re-enters the MLEM ratio each epoch, while bp's averages out over
+     * 75 angles. See the report for measured MSE/runtime. Off by
+     * default; unset leaves the hardware-filtered path untouched. */
     int tex_exact = 0;
     {
         const char *te = getenv("FP_TEX_EXACT");
@@ -879,22 +867,13 @@ static void run_fp_image(CLState *cl, const CBpara *p,
     clSetKernelArg(k,17, sizeof(int), &tex_exact);
 
     size_t gws[3] = {(size_t)W, (size_t)H, (size_t)ip_count};
-    /* {8,32,1} measured ~5% faster than the previous {16,16,1} at 512^3 on
-     * this hardware (AMD Hawaii): 0.873-0.879s/epoch vs 0.921-0.928s over
-     * a 10-candidate sweep (64,1,1 through 32,16,1; the latter and
-     * {16,32,1} exceed the device's 256-item max work-group size and fail
-     * with CL_INVALID_WORK_GROUP_SIZE). Aspect ratio matters independent
-     * of total group size: {8,32,1} beat {32,8,1} by 25%, and {8,16,1}
-     * (half the items, same 1:4 ratio) was 20% slower than {8,32,1} — so
-     * this is not just "more occupancy wins", the W-narrow/H-tall shape
-     * specifically helps on this detector layout (W=1120, H=1184). */
+    /* {8,32,1}: ~5% faster than {16,16,1} at 512^3 on AMD Hawaii; the
+     * narrow-W/tall-H aspect matters on its own, not just occupancy
+     * (beat {32,8,1} by 25%). Unlike fp_buffer, this shape held after
+     * the switch to NVIDIA GTX 680 -- still best there too. */
     size_t lws[3] = {8, 32, 1};
     /* FP_IMAGE_LWS=X,Y,Z overrides the work-group shape for further
      * sweeping without a rebuild. */
-    /* Re-swept on NVIDIA GTX 680 (32-wide warp) after the
-     * Unlike fp_buffer, this shape did not need re-tuning after the
-     * hardware switch -- {8,32,1} is still best on GTX 680 too; a sweep
-     * of alternatives at 256^3 confirmed all worse. */
     const char *lws_env = getenv("FP_IMAGE_LWS");
     if (lws_env) {
         unsigned long a=8, b=32, c=1;
@@ -1452,14 +1431,10 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     float *v_prev_host = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
     float *v_cur_host  = conv_log ? (float *)malloc((size_t)vol_n  * sizeof(float)) : NULL;
 
-    /* OSEM: one epoch = one full pass over all S subsets. S=1 runs the
-     * inner loop exactly once with ip_start=0/ip_count=np, byte-identical
-     * to the pre-OSEM MLEM loop. fp is restricted to each subset's
-     * ip_start/ip_count; d_proj_b slices outside the subset hold stale
-     * values from a previous sub-iteration, but only bp_opt (launched
-     * with the same ip_start/ip_count) ever reads ratio_img, so those
-     * stale values are computed and discarded without affecting the
-     * update. */
+    /* OSEM: one epoch = one full pass over all S subsets; S=1 is
+     * byte-identical to the pre-OSEM MLEM loop. d_proj_b slices outside
+     * the active subset go stale, but only bp_opt reads ratio_img, with
+     * the same ip_start/ip_count, so the update never sees them. */
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
 
