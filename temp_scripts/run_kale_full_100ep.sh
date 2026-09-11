@@ -9,7 +9,7 @@
 #   3. pybind, 512^3, all modes, 100 epochs
 #
 # CLI's 256^3 100-epoch set already exists (results_100ep_20260901_022731/,
-# already copied to submission_outputs/gtx680/) and is NOT re-run here.
+# already copied to results/intel_xeon_e5_2620_nvidia_geforce_gtx_680/) and is NOT re-run here.
 #
 # NAMING: ct_kalefull_ prefix throughout, same collision-safety rationale
 # as ct100_/ct512_/ct_topic2_ in the other scripts this session.

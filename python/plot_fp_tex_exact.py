@@ -2,7 +2,7 @@
 """Figure for the FP_TEX_EXACT precision result: default vs exact blending.
 
 plot_results.py compares MODES against each other from the fixed
-submission_outputs/ layout. This compares one mode against ITSELF with and
+results/ layout. This compares one mode against ITSELF with and
 without FP_TEX_EXACT, from arbitrary directories, which that script has no
 notion of.
 
@@ -77,7 +77,7 @@ diff_e = e[:, :, mid] - ref[:, :, mid]
 # the error is fine-grained speckle, and MSE squares it, so the 44.7x is
 # driven by a small number of extreme voxels that occupy almost no pixels.
 # The eye reads typical speckle amplitude, which changes far less. The
-# reference figure submission_outputs/hawaii/slices_diff_256_hawaii.png
+# reference figure results/intel_i7_5820k_amd_hawaii_pro/slices_diff_256_hawaii.png
 # shows the opposite failure: per-panel autoscaling makes a ~980x MSE gap
 # between gpu-buf and gpu-img look like no gap at all, because each panel
 # is normalised to its own range.

@@ -12,8 +12,8 @@ __pycache__/
 *.hdf5
 *.h5
 
-# Archived results (kept locally only, not pushed -- too large for the repo)
-submission_outputs/
+# Archived results: figures/logs/hardware.txt are tracked (see results/),
+# but *.hdf5 above already excludes the multi-GB reconstruction volumes.
 
 # macOS
 .DS_Store
@@ -21,8 +21,8 @@ submission_outputs/
 # Presentations
 *.pptx
 
-# LaTeX build artifacts only (not source/output)
-*.log
+# LaTeX build artifacts (the report itself lives under docs/, already
+# ignored below; these patterns catch stray builds elsewhere)
 *.aux
 *.toc
 *.out
@@ -41,3 +41,10 @@ sessions/
 
 # Investigation docs (local only, never pushed)
 docs/
+
+# Correspondence drafts and ad-hoc diagnostic dumps at repo root
+# (local only, not part of the submission)
+email_guangpu_yang*.txt
+diag_bp_ones_output.txt
+log_div.txt
+out.txt

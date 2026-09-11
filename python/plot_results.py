@@ -2,20 +2,24 @@
 """
 Report figures: OSEM convergence, plain-MLEM convergence (all modes,
 both dataset sizes), and reconstructed slice visualization (both
-sizes). Reads from submission_outputs/{gtx680,hawaii}/, the archived
-results layout (each source self-contained: conv_csv/ + hdf5 outputs).
+sizes). Reads from
+results/{intel_xeon_e5_2620_nvidia_geforce_gtx_680,intel_i7_5820k_amd_hawaii_pro}/,
+the archived results layout (each source self-contained: conv_csv/ +
+hdf5 outputs).
 
 Usage:
-  python3 plot_results.py osem                        # gtx680, 256^3 OSEM sweep only (hawaii has no OSEM data)
-  python3 plot_results.py mlem   [--source hawaii]
-  python3 plot_results.py slices [--source hawaii] [--scale 256|512]
-  python3 plot_results.py all    [--source hawaii]
+  python3 plot_results.py osem                                                    # Platform B, 256^3 OSEM sweep only (Platform A has no OSEM data)
+  python3 plot_results.py mlem   [--source intel_i7_5820k_amd_hawaii_pro]
+  python3 plot_results.py slices [--source intel_i7_5820k_amd_hawaii_pro] [--scale 256|512]
+  python3 plot_results.py all    [--source intel_i7_5820k_amd_hawaii_pro]
 
---source gtx680 (default): submission_outputs/gtx680/conv_csv/mlem_{scale}_{mode}.csv,
-                            submission_outputs/gtx680/output_{mode}{_512}.hdf5
---source hawaii:           submission_outputs/hawaii/conv_csv/{mode}_{scale}.csv,
-                            submission_outputs/hawaii/{mode}_{scale}.hdf5
-Output filenames get a suffix matching --source (gtx680 runs stay
+--source intel_xeon_e5_2620_nvidia_geforce_gtx_680 (default, Platform B):
+    results/intel_xeon_e5_2620_nvidia_geforce_gtx_680/conv_csv/mlem_{scale}_{mode}.csv,
+    results/intel_xeon_e5_2620_nvidia_geforce_gtx_680/output_{mode}{_512}.hdf5
+--source intel_i7_5820k_amd_hawaii_pro (Platform A):
+    results/intel_i7_5820k_amd_hawaii_pro/conv_csv/{mode}_{scale}.csv,
+    results/intel_i7_5820k_amd_hawaii_pro/{mode}_{scale}.hdf5
+Output filenames get a suffix matching --source (Platform B runs stay
 unsuffixed for backward compatibility with earlier report drafts).
 """
 import argparse
@@ -41,32 +45,36 @@ def _read_csv(path):
     return cum_t[1:], logliks[1:]
 
 
+PLATFORM_B = "intel_xeon_e5_2620_nvidia_geforce_gtx_680"
+PLATFORM_A = "intel_i7_5820k_amd_hawaii_pro"
+
+
 def _suffix(source):
-    return "" if source == "gtx680" else f"_{source}"
+    return "" if source == PLATFORM_B else f"_{source}"
 
 
 def _mlem_csv_path(source, scale, mode):
-    if source == "gtx680":
-        return f"submission_outputs/gtx680/conv_csv/mlem_{scale}_{mode}.csv"
-    return f"submission_outputs/{source}/conv_csv/{mode}_{scale}.csv"
+    if source == PLATFORM_B:
+        return f"results/{PLATFORM_B}/conv_csv/mlem_{scale}_{mode}.csv"
+    return f"results/{source}/conv_csv/{mode}_{scale}.csv"
 
 
 def _hdf5_path(source, scale, mode):
-    if source == "gtx680":
+    if source == PLATFORM_B:
         suffix = "" if scale == "256" else "_512"
-        return f"submission_outputs/gtx680/output_{mode.replace('-', '_')}{suffix}.hdf5"
-    return f"submission_outputs/{source}/{mode}_{scale}.hdf5"
+        return f"results/{PLATFORM_B}/output_{mode.replace('-', '_')}{suffix}.hdf5"
+    return f"results/{source}/{mode}_{scale}.hdf5"
 
 
-def plot_osem_convergence(source="gtx680"):
-    if source != "gtx680":
-        print("OSEM sweep is gtx680/gpu-opt/256^3 only (hawaii has no OSEM "
-              "data) -- skipping osem for --source", source)
+def plot_osem_convergence(source=PLATFORM_B):
+    if source != PLATFORM_B:
+        print("OSEM sweep is Platform B/gpu-opt/256^3 only (Platform A has "
+              "no OSEM data) -- skipping osem for --source", source)
         return
     configs = [1, 3, 5, 15, 25]
     fig, ax = plt.subplots(figsize=(8, 5.5))
     for s in configs:
-        cum_t, logliks = _read_csv(f"submission_outputs/gtx680/conv_csv/osem_s{s}.csv")
+        cum_t, logliks = _read_csv(f"results/{PLATFORM_B}/conv_csv/osem_s{s}.csv")
         label = "S=1 (plain MLEM)" if s == 1 else f"S={s}"
         ax.plot(cum_t, logliks, label=label, linewidth=1.6)
 
@@ -85,9 +93,9 @@ def plot_osem_convergence(source="gtx680"):
     print("Saved: convergence.png")
 
 
-def plot_mlem_convergence(source="gtx680"):
+def plot_mlem_convergence(source=PLATFORM_B):
     suf = _suffix(source)
-    hw_label = "AMD Hawaii PRO" if source == "hawaii" else "NVIDIA GTX 680"
+    hw_label = "Intel Core i7-5820K + AMD Hawaii PRO" if source == PLATFORM_A else "Intel Xeon E5-2620 + NVIDIA GeForce GTX 680"
     for scale in ("256", "512"):
         fig, ax = plt.subplots(figsize=(8, 5.5))
         for mode in MODES:
@@ -109,9 +117,9 @@ def plot_mlem_convergence(source="gtx680"):
         print(f"Saved: {out}")
 
 
-def plot_slices(source="gtx680", scale="256"):
+def plot_slices(source=PLATFORM_B, scale="256"):
     suf = _suffix(source)
-    hw_label = "AMD Hawaii PRO" if source == "hawaii" else "NVIDIA GTX 680"
+    hw_label = "Intel Core i7-5820K + AMD Hawaii PRO" if source == PLATFORM_A else "Intel Xeon E5-2620 + NVIDIA GeForce GTX 680"
     vols = {}
     for mode in MODES:
         path = _hdf5_path(source, scale, mode)
@@ -156,8 +164,8 @@ def plot_slices(source="gtx680", scale="256"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("what", choices=["osem", "mlem", "slices", "all"], default="all", nargs="?")
-    parser.add_argument("--source", default="gtx680", choices=["gtx680", "hawaii"],
-                         help="which machine's data to plot (default: gtx680)")
+    parser.add_argument("--source", default=PLATFORM_B, choices=[PLATFORM_B, PLATFORM_A],
+                         help=f"which machine's data to plot (default: {PLATFORM_B})")
     parser.add_argument("--scale", default=None, choices=["256", "512"],
                          help="for 'slices': only this scale (default: both)")
     args = parser.parse_args()

@@ -3,17 +3,19 @@
 Usage:
   python3 validate.py            # 256^3 outputs in cwd (default)
   python3 validate.py 512        # 512^3 outputs in cwd
-  python3 validate.py --dir submission_outputs/gtx680       # 256^3, different dir
-  python3 validate.py 512 --dir submission_outputs/hawaii   # 512^3, different dir
+  python3 validate.py --dir results/intel_xeon_e5_2620_nvidia_geforce_gtx_680       # 256^3, different dir
+  python3 validate.py 512 --dir results/intel_i7_5820k_amd_hawaii_pro               # 512^3, different dir
 
 --dir (or the VALIDATE_DIR env var) lets you point at an archived
 results directory without copying files into cwd first -- useful when
 working from a local checkout that doesn't have output_*.hdf5 sitting
 at the repo root (those are only ever written there directly on the
-actual GPU machines). Only works for submission_outputs/gtx680/, which
-uses the same output_*.hdf5 naming as cwd -- submission_outputs/hawaii/
-uses different filenames entirely (cpu_256.hdf5, not output_cpu.hdf5;
-see plot_results.py's --source kale/pool15 distinction for the same
+actual GPU machines). Only works for
+results/intel_xeon_e5_2620_nvidia_geforce_gtx_680/ (Platform B), which
+uses the same output_*.hdf5 naming as cwd --
+results/intel_i7_5820k_amd_hawaii_pro/ (Platform A) uses different
+filenames entirely (cpu_256.hdf5, not output_cpu.hdf5; see
+plot_results.py's --source Platform A/B distinction for the same
 naming split) and isn't supported by this flag.
 """
 import argparse

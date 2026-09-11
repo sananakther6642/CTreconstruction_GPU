@@ -1,0 +1,14 @@
+
+=== 256^3 validation ===
+
+Mode              min        max       mean    nan    inf  MSE vs CPU     MSE vs Python Ref
+----------------------------------------------------------------------------------------------------
+python_ref     0.0000     5.0000     0.0069      0      0  (python ref)
+cpu            0.0000     1.7303     0.0067      0      0  (reference)    MSE=3.014e-04
+gpu-buf        0.0000     1.7307     0.0067      0      0  MSE=6.436e-10  max=0.0511 MSE=3.014e-04
+           outliers(diff>10*rms)=624  worst_voxel_idx=(np.int64(10), np.int64(102), np.int64(249))  radial_dist_from_center_xy=120.2 (Nxz/2=128)
+gpu-img        0.0000     1.8741     0.0067      0      0  MSE=1.949e-07  max=1.1490 MSE=3.016e-04
+           outliers(diff>10*rms)=470  worst_voxel_idx=(np.int64(49), np.int64(211), np.int64(33))  radial_dist_from_center_xy=114.6 (Nxz/2=128)
+gpu-opt        0.0000     1.8741     0.0067      0      0  MSE=1.949e-07  max=1.1490 MSE=3.016e-04
+           outliers(diff>10*rms)=470  worst_voxel_idx=(np.int64(49), np.int64(211), np.int64(33))  radial_dist_from_center_xy=114.6 (Nxz/2=128)
+
