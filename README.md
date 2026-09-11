@@ -229,7 +229,7 @@ follows).
 †`gpu-buf` at 512³ is the one figure here that is not a stable
 measurement - see the DVFS variance note below. Every other cell is
 reproducible. CPU: Intel Core i7-5820K, 12 threads. GPU: AMD Hawaii PRO,
-2560 shaders, 2.56 TFLOPS.
+2560 shaders, ~4.85 TFLOPS at the vendor's 947MHz boost clock.
 
 ### Platform B - Intel Xeon E5-2620 + NVIDIA GeForce GTX 680, EPOCHS=100
 
