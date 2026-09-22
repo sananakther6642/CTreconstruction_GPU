@@ -99,9 +99,7 @@ __kernel void bp_image(
  * Scalar (not vec4) stores -- coalesces the same as vstore4 across 32
  * consecutive lanes, per divide_preprocess_img's precedent.
  *
- * Requires cl_khr_3d_image_writes (writes directly into vol_img, a 3D
- * image) -- gated on HAVE_3D_IMAGE_WRITES the same way vol_update_img is
- * in bp_buffer.cl; see that kernel's comment.
+ * Needs cl_khr_3d_image_writes; skipped on GPUs without it.
  */
 #ifdef HAVE_3D_IMAGE_WRITES
 #pragma OPENCL EXTENSION cl_khr_3d_image_writes : enable

@@ -269,10 +269,7 @@ __kernel void vol_update(
  * vol_update_img — same update as vol_update, but also writes the result
  * directly into vol_img (a 3D image), eliminating the separate
  * buffer-to-image copy the epoch loop used to do before fp_image's next
- * call. Requires cl_khr_3d_image_writes -- gated on HAVE_3D_IMAGE_WRITES,
- * defined by ct_gpu.c only when the device reports the extension, so this
- * kernel (and the pragma below) are absent from the compiled program on a
- * device that lacks it, rather than failing that device's whole build.
+ * call. Needs cl_khr_3d_image_writes; skipped on GPUs without it.
  * float32 mode only; --half still uses the separate float_to_half + copy
  * path since it needs an actual format conversion.
  *
