@@ -152,11 +152,57 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
     cl_int err;
     cl->mode = mode;
 
-    /* Platform + device */
-    err = clGetPlatformIDs(1, &cl->platform, NULL);
-    CL_CHECK(err, "clGetPlatformIDs");
-    err = clGetDeviceIDs(cl->platform, CL_DEVICE_TYPE_GPU, 1, &cl->device, NULL);
-    CL_CHECK(err, "clGetDeviceIDs");
+    /* Platform + device: scan every installed platform for a GPU device
+     * rather than assuming platform 0 has one (a CPU-only or unrelated
+     * ICD can be registered first, e.g. an Intel OpenCL runtime alongside
+     * the vendor GPU driver -- clGetDeviceIDs(platform[0], ...) then
+     * fails with CL_DEVICE_NOT_FOUND (-1) even though a GPU exists on a
+     * later platform). Falls back to CL_DEVICE_TYPE_ALL, then exits with
+     * a clear message rather than a bare OpenCL error code. */
+    {
+        cl_uint n_platforms = 0;
+        err = clGetPlatformIDs(0, NULL, &n_platforms);
+        CL_CHECK(err, "clGetPlatformIDs (count)");
+        if (n_platforms == 0) {
+            fprintf(stderr, "No OpenCL platforms found. Install a GPU vendor's "
+                            "OpenCL driver/ICD (e.g. via clinfo to verify).\n");
+            exit(1);
+        }
+        cl_platform_id *platforms = malloc(n_platforms * sizeof(cl_platform_id));
+        err = clGetPlatformIDs(n_platforms, platforms, NULL);
+        CL_CHECK(err, "clGetPlatformIDs");
+
+        int found = 0;
+        for (cl_uint i = 0; i < n_platforms && !found; i++) {
+            cl_uint n_devices = 0;
+            if (clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_GPU, 1,
+                                &cl->device, &n_devices) == CL_SUCCESS && n_devices > 0) {
+                cl->platform = platforms[i];
+                found = 1;
+            }
+        }
+        if (!found) {
+            /* No GPU device on any platform -- try any device type at all
+             * (accelerator/custom) before giving up, so a non-GPU OpenCL
+             * device still gets a specific error instead of silently
+             * picking one that can't run these kernels. */
+            for (cl_uint i = 0; i < n_platforms && !found; i++) {
+                cl_uint n_devices = 0;
+                if (clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_ALL, 1,
+                                    &cl->device, &n_devices) == CL_SUCCESS && n_devices > 0) {
+                    cl->platform = platforms[i];
+                    found = 1;
+                }
+            }
+        }
+        free(platforms);
+        if (!found) {
+            fprintf(stderr, "No OpenCL GPU device found on any of the %u installed "
+                            "platform(s). Run clinfo to check your GPU driver is "
+                            "installed and visible to OpenCL.\n", n_platforms);
+            exit(1);
+        }
+    }
 
     /* Print device name */
     char dev_name[256];
