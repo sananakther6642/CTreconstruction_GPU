@@ -13,6 +13,11 @@ import numpy as np
 
 from backend import KERNEL_DIR, _backend
 
+# Shared dataset path on the course lab machines (kale/pool15). Only a
+# fallback default -- pass --data explicitly if this path doesn't exist
+# on your machine.
+DEFAULT_DATA = "/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5"
+
 
 def _scalar(f, key):
     """load_hdf5/save_hdf5 (src/utils.c) store scalars as shape-(1,)
@@ -25,7 +30,7 @@ def _scalar(f, key):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data", required=True, help="input HDF5 path")
+    ap.add_argument("--data", default=DEFAULT_DATA, help="input HDF5 path")
     ap.add_argument("--out", default="output_py.hdf5", help="output HDF5 path")
     ap.add_argument(
         "--mode",
@@ -37,6 +42,12 @@ def main():
     ap.add_argument("--samples", type=int, default=0, help="0 = auto (Nxz)")
     ap.add_argument("--half", action="store_true")
     args = ap.parse_args()
+
+    if not os.path.exists(args.data):
+        raise SystemExit(
+            f"Data file not found: {args.data}\n"
+            f"Pass --data <path> pointing at your HDF5 projection file."
+        )
 
     with h5py.File(args.data, "r") as f:
         proj = f["Projection"][:].astype(np.float32)
