@@ -164,7 +164,7 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
                             "OpenCL driver/ICD (e.g. via clinfo to verify).\n");
             exit(1);
         }
-        cl_platform_id *platforms = malloc(n_platforms * sizeof(cl_platform_id));
+        cl_platform_id *platforms = (cl_platform_id *)malloc(n_platforms * sizeof(cl_platform_id));
         err = clGetPlatformIDs(n_platforms, platforms, NULL);
         CL_CHECK(err, "clGetPlatformIDs");
 
