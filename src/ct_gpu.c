@@ -11,6 +11,8 @@
         fprintf(stderr, "OpenCL error %d at %s\n", (err), (msg)); \
         exit(1); } } while(0)
 
+#define MAX_GPUS 16
+
 /* Stops on a bad kernel path before it segfaults later. */
 #define REQUIRE_SRC(s) \
     do { if (!(s)) { fprintf(stderr, "Failed to load kernel source, aborting.\n"); exit(1); } } while(0)
@@ -174,15 +176,23 @@ static void build_RT_buffers(CLState *cl, const CBpara *p)
     free(T_host);
 }
 
+/* Guess whether a GPU name is an integrated one, to prefer a discrete GPU. */
+static int name_looks_integrated(const char *name)
+{
+    const char *markers[] = {"Intel", "UHD Graphics", "Iris", "Vega 3",
+                              "Vega 6", "Vega 8", "Radeon(TM) Graphics"};
+    for (size_t i = 0; i < sizeof(markers)/sizeof(markers[0]); i++)
+        if (strstr(name, markers[i])) return 1;
+    return 0;
+}
+
 /* ── gpu_init ─────────────────────────────────────────────────────────────── */
-int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
+int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir, int device_index)
 {
     cl_int err;
     cl->mode = mode;
 
-    /* Scan every platform for a GPU device instead of assuming platform 0
-     * has one (fixes CL_DEVICE_NOT_FOUND on machines with a CPU-only ICD
-     * registered first). Falls back to any device type before giving up. */
+    /* Find every GPU on every platform, print them, then pick one. */
     {
         cl_uint n_platforms = 0;
         err = clGetPlatformIDs(0, NULL, &n_platforms);
@@ -196,16 +206,31 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         err = clGetPlatformIDs(n_platforms, platforms, NULL);
         CL_CHECK(err, "clGetPlatformIDs");
 
-        int found = 0;
-        for (cl_uint i = 0; i < n_platforms && !found; i++) {
+        cl_platform_id cand_platform[MAX_GPUS];
+        cl_device_id   cand_device[MAX_GPUS];
+        char           cand_name[MAX_GPUS][256];
+        int n_cand = 0;
+
+        for (cl_uint i = 0; i < n_platforms; i++) {
             cl_uint n_devices = 0;
-            if (clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_GPU, 1,
-                                &cl->device, &n_devices) == CL_SUCCESS && n_devices > 0) {
-                cl->platform = platforms[i];
-                found = 1;
+            clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_GPU, 0, NULL, &n_devices);
+            if (n_devices == 0) continue;
+            if (n_devices > (cl_uint)(MAX_GPUS - n_cand)) n_devices = (cl_uint)(MAX_GPUS - n_cand);
+            cl_device_id devs[MAX_GPUS];
+            if (clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_GPU, n_devices, devs, NULL) != CL_SUCCESS)
+                continue;
+            for (cl_uint d = 0; d < n_devices && n_cand < MAX_GPUS; d++) {
+                cand_platform[n_cand] = platforms[i];
+                cand_device[n_cand]   = devs[d];
+                clGetDeviceInfo(devs[d], CL_DEVICE_NAME, sizeof(cand_name[n_cand]),
+                                 cand_name[n_cand], NULL);
+                n_cand++;
             }
         }
-        if (!found) {
+
+        if (n_cand == 0) {
+            /* No GPU anywhere -- fall back to any device type at all. */
+            int found = 0;
             for (cl_uint i = 0; i < n_platforms && !found; i++) {
                 cl_uint n_devices = 0;
                 if (clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_ALL, 1,
@@ -214,20 +239,52 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
                     found = 1;
                 }
             }
+            if (!found) {
+                fprintf(stderr, "No OpenCL GPU device found on any of the %u installed "
+                                "platform(s). Run clinfo to check your GPU driver is "
+                                "installed and visible to OpenCL.\n", n_platforms);
+                free(platforms);
+                exit(1);
+            }
+            clGetDeviceInfo(cl->device, CL_DEVICE_NAME, sizeof(cl->device_name), cl->device_name, NULL);
+            printf("OpenCL device: %s\n", cl->device_name);
+        } else {
+            if (n_cand > 1) {
+                printf("Found %d GPU(s):\n", n_cand);
+                for (int i = 0; i < n_cand; i++)
+                    printf("  [%d] %s\n", i, cand_name[i]);
+            }
+
+            int chosen;
+            if (device_index >= 0) {
+                if (device_index >= n_cand) {
+                    fprintf(stderr, "--device %d requested, but only %d GPU(s) found.\n",
+                            device_index, n_cand);
+                    free(platforms);
+                    exit(1);
+                }
+                chosen = device_index;
+            } else {
+                /* Prefer a discrete GPU over an integrated one; else first found. */
+                chosen = 0;
+                if (n_cand > 1 && name_looks_integrated(cand_name[0])) {
+                    for (int i = 1; i < n_cand; i++) {
+                        if (!name_looks_integrated(cand_name[i])) { chosen = i; break; }
+                    }
+                }
+            }
+            cl->platform = cand_platform[chosen];
+            cl->device   = cand_device[chosen];
+            memcpy(cl->device_name, cand_name[chosen], sizeof(cl->device_name));
+            cl->device_name[sizeof(cl->device_name) - 1] = '\0';
+            if (n_cand > 1)
+                printf("Using [%d] %s (pass --device N to pick a different one)\n",
+                       chosen, cl->device_name);
+            else
+                printf("OpenCL device: %s\n", cl->device_name);
         }
         free(platforms);
-        if (!found) {
-            fprintf(stderr, "No OpenCL GPU device found on any of the %u installed "
-                            "platform(s). Run clinfo to check your GPU driver is "
-                            "installed and visible to OpenCL.\n", n_platforms);
-            exit(1);
-        }
     }
-
-    /* Print device name */
-    char dev_name[256];
-    clGetDeviceInfo(cl->device, CL_DEVICE_NAME, sizeof(dev_name), dev_name, NULL);
-    printf("OpenCL device: %s\n", dev_name);
 
     /* cl_khr_3d_image_writes gates the float32 vol_img fusion path
      * (OpenCL 1.2 has no 3D read-write images without it). cl_khr_fp16

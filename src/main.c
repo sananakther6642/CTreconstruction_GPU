@@ -14,6 +14,7 @@ static void print_usage(const char *prog)
         "           [--epochs N]    (default: 100)\n"
         "           [--samples N]   (ray samples per projection, default: volume Nxz)\n"
         "           [--kernels <kernel_dir>]  (default: kernels, relative to CWD)\n"
+        "           [--device N]    (pick GPU N when multiple are found; default: auto)\n"
         "           [--half]        (use half-precision vol_img texture; default: float32)\n"
         "           [--op fp|bp]    (component test: run a single fp or bp call, CPU only,\n"
         "                            on all-ones input; dumps to <out> instead of full MLEM)\n"
@@ -45,6 +46,7 @@ int main(int argc, char **argv)
     const char *conv_log     = NULL; /* --log-convergence path, NULL = off */
     const char *diag_str     = NULL; /* --diag repeat-slab:<off>:<size>:<reps> */
     int         subsets      = 1;    /* --subsets N, default 1 = plain MLEM */
+    int         device_index = -1;   /* --device N, -1 = auto-pick */
 
     /* ── Parse args ── */
     for (int i = 1; i < argc; i++) {
@@ -59,6 +61,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--log-convergence") && i+1<argc) conv_log = argv[++i];
         else if (!strcmp(argv[i], "--diag")    && i+1<argc) diag_str    = argv[++i];
         else if (!strcmp(argv[i], "--subsets") && i+1<argc) subsets     = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--device")  && i+1<argc) device_index = atoi(argv[++i]);
         else { print_usage(argv[0]); return 1; }
     }
 
@@ -179,7 +182,7 @@ int main(int argc, char **argv)
             return 1;
         }
         CLState cl;
-        if (gpu_init(&cl, GPU_MODE_BUFFER, kernel_dir) != 0) return 1;
+        if (gpu_init(&cl, GPU_MODE_BUFFER, kernel_dir, device_index) != 0) return 1;
         gpu_diag_repeat_slab(&cl, &para, volume, angle_offset, slab_size, n_repeats, realloc_at);
         gpu_cleanup(&cl);
         free(volume); free(proj_measured); free(para.angles);
@@ -200,7 +203,7 @@ int main(int argc, char **argv)
         printf("\n=== GPU mode (%s), %d epochs ===\n", mode_str, epochs);
 
         CLState cl;
-        if (gpu_init(&cl, gmode, kernel_dir) != 0) return 1;
+        if (gpu_init(&cl, gmode, kernel_dir, device_index) != 0) return 1;
         if (use_half && !cl.has_fp16) {
             fprintf(stderr, "--half requires cl_khr_fp16, which this device does not support "
                             "(see \"cl_khr_fp16: no\" above). Re-run without --half.\n");
@@ -219,7 +222,7 @@ int main(int argc, char **argv)
         printf("\n=== GPU-OPT mode (LUT+local+float4), %d epochs ===\n", epochs);
 
         CLState cl;
-        if (gpu_init(&cl, GPU_MODE_OPT, kernel_dir) != 0) return 1;
+        if (gpu_init(&cl, GPU_MODE_OPT, kernel_dir, device_index) != 0) return 1;
         if (use_half && !cl.has_fp16) {
             fprintf(stderr, "--half requires cl_khr_fp16, which this device does not support "
                             "(see \"cl_khr_fp16: no\" above). Re-run without --half.\n");

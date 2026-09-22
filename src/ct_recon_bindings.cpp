@@ -214,7 +214,7 @@ py::array_t<float> py_reconstruct_gpu_mode(
                      Nxz, Ny, W, H, num_projs, n_samples, use_half);
 
     CLState cl{};
-    if (gpu_init(&cl, mode, kernel_dir.c_str()) != 0)
+    if (gpu_init(&cl, mode, kernel_dir.c_str(), -1) != 0)
         throw std::runtime_error("gpu_init failed (see stderr for the OpenCL build log)");
 
     /* main.c:212,231 -- reject --half on a device without cl_khr_fp16
@@ -314,7 +314,7 @@ py::array_t<float> py_reconstruct_gpu_opt(
     }
 
     CLState cl{};
-    if (gpu_init(&cl, GPU_MODE_OPT, kernel_dir.c_str()) != 0)
+    if (gpu_init(&cl, GPU_MODE_OPT, kernel_dir.c_str(), -1) != 0)
         throw std::runtime_error("gpu_init failed (see stderr for the OpenCL build log)");
 
     if (use_half && !cl.has_fp16) {

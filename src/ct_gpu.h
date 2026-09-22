@@ -19,6 +19,7 @@ typedef enum {
 typedef struct {
     cl_platform_id   platform;
     cl_device_id     device;
+    char             device_name[256];
     cl_context       ctx;
     cl_command_queue queue;
 
@@ -53,8 +54,9 @@ typedef struct {
     int has_3d_image_writes; /* gates vol_update_img/bp_image_update */
 } CLState;
 
-/* Initialize OpenCL, compile kernels. Returns 0 on success. */
-int  gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir);
+/* Initialize OpenCL, compile kernels. device_index selects among multiple
+ * GPUs (-1 = auto-pick). Returns 0 on success. */
+int  gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir, int device_index);
 
 /* Free all OpenCL resources */
 void gpu_cleanup(CLState *cl);
