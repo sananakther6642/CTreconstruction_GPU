@@ -13,9 +13,7 @@ import numpy as np
 
 from backend import KERNEL_DIR, _backend
 
-# Shared dataset path on the course lab machines (kale/pool15). Only a
-# fallback default -- pass --data explicitly if this path doesn't exist
-# on your machine.
+# Lab machine's shared dataset path; pass --data if yours differs.
 DEFAULT_DATA = "/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5"
 
 
