@@ -98,7 +98,13 @@ __kernel void bp_image(
  *
  * Scalar (not vec4) stores -- coalesces the same as vstore4 across 32
  * consecutive lanes, per divide_preprocess_img's precedent.
+ *
+ * Requires cl_khr_3d_image_writes (writes directly into vol_img, a 3D
+ * image) -- gated on HAVE_3D_IMAGE_WRITES the same way vol_update_img is
+ * in bp_buffer.cl; see that kernel's comment.
  */
+#ifdef HAVE_3D_IMAGE_WRITES
+#pragma OPENCL EXTENSION cl_khr_3d_image_writes : enable
 __kernel void bp_image_update(
     __read_only  image2d_array_t proj_images,
     __global const float2 *angle_cs,
@@ -174,6 +180,7 @@ __kernel void bp_image_update(
      * convention as fp_image.cl's read and vol_update_img's write. */
     write_imagef(vol_img, (int4)(iz, out_iy, out_ix, 0), (float4)(out_v, 0.f, 0.f, 0.f));
 }
+#endif /* HAVE_3D_IMAGE_WRITES */
 
 /* ── Utility kernels reused from buffer version (included via host) ──────
  * cone_weight, proj_divide, vol_update are identical and shared.

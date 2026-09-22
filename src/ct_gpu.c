@@ -11,8 +11,41 @@
         fprintf(stderr, "OpenCL error %d at %s\n", (err), (msg)); \
         exit(1); } } while(0)
 
+/* load_source() already prints which path failed; exit here rather than
+ * passing a NULL into concat_src's strlen() (a segfault on top of a
+ * diagnostic that already explained the problem). */
+#define REQUIRE_SRC(s) \
+    do { if (!(s)) { fprintf(stderr, "Failed to load kernel source, aborting.\n"); exit(1); } } while(0)
+
 static cl_program build_program_opts(cl_context ctx, cl_device_id dev,
                                        const char *src, const char *extra_opts);
+
+/* Shrinks lws so lws[0]*lws[1]*lws[2] fits the kernel's own
+ * CL_KERNEL_WORK_GROUP_SIZE (can be below the device max under register
+ * pressure, and some CPU ICDs/iGPUs report small values). Halves the
+ * largest dimension until it fits; a no-op (silent) whenever the size
+ * already fits, which is the case on every device this project was
+ * tuned on -- this only ever activates a smaller, previously-untested
+ * launch shape on hardware those tunings never ran on. */
+static void clamp_lws_to_device(cl_kernel k, cl_device_id dev, size_t lws[3])
+{
+    size_t max_wg = 0;
+    if (clGetKernelWorkGroupInfo(k, dev, CL_KERNEL_WORK_GROUP_SIZE,
+                                  sizeof(max_wg), &max_wg, NULL) != CL_SUCCESS || max_wg == 0)
+        return; /* query failed -- leave lws as-is, matches prior behavior */
+    int warned = 0;
+    while (lws[0] * lws[1] * lws[2] > max_wg) {
+        int biggest = (lws[0] >= lws[1] && lws[0] >= lws[2]) ? 0 :
+                      (lws[1] >= lws[2]) ? 1 : 2;
+        if (lws[biggest] <= 1) break; /* can't shrink further */
+        lws[biggest] /= 2;
+        if (!warned) {
+            fprintf(stderr, "Note: work-group size clamped to fit this device "
+                            "(max=%zu)\n", max_wg);
+            warned = 1;
+        }
+    }
+}
 
 /* ── Diagnostic: per-kernel resource usage ────────────────────────────
  * OpenCL exposes no direct register count, but CL_KERNEL_PRIVATE_MEM_SIZE
@@ -45,18 +78,21 @@ static char *load_source(const char *path)
     fseek(f, 0, SEEK_END);
     long len = ftell(f);
     rewind(f);
-    char *src = (char *)malloc(len + 1);
-    fread(src, 1, len, f);
-    src[len] = '\0';
+    if (len <= 0) {
+        fprintf(stderr, "Cannot read kernel (empty or not a regular file): %s\n", path);
+        fclose(f);
+        return NULL;
+    }
+    char *src = (char *)malloc((size_t)len + 1);
+    if (!src) {
+        fprintf(stderr, "Out of memory loading kernel: %s\n", path);
+        fclose(f);
+        return NULL;
+    }
+    size_t n_read = fread(src, 1, (size_t)len, f);
+    src[n_read] = '\0';
     fclose(f);
     return src;
-}
-
-/* ── Compile a program and print build log on error ─────────────────────── */
-static cl_program build_program(cl_context ctx, cl_device_id dev,
-                                  const char *src)
-{
-    return build_program_opts(ctx, dev, src, "-cl-fast-relaxed-math");
 }
 
 /* extra_opts is appended after the always-on -cl-fast-relaxed-math, e.g.
@@ -213,11 +249,26 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         char *ext_str = (char *)malloc(ext_sz + 1);
         clGetDeviceInfo(cl->device, CL_DEVICE_EXTENSIONS, ext_sz, ext_str, NULL);
         ext_str[ext_sz] = '\0';
-        int has_3d_image_writes = (strstr(ext_str, "cl_khr_3d_image_writes") != NULL);
-        printf("  cl_khr_3d_image_writes: %s\n", has_3d_image_writes ? "yes" : "no");
+        cl->has_3d_image_writes = (strstr(ext_str, "cl_khr_3d_image_writes") != NULL);
+        printf("  cl_khr_3d_image_writes: %s\n", cl->has_3d_image_writes ? "yes" : "no");
         cl->has_fp16 = (strstr(ext_str, "cl_khr_fp16") != NULL);
         printf("  cl_khr_fp16: %s\n", cl->has_fp16 ? "yes" : "no");
         free(ext_str);
+    }
+
+    /* gpu-img/gpu-opt need vol_update_img/bp_image_update, both of which
+     * write into a 3D image and require cl_khr_3d_image_writes (neither
+     * kernel file enables the extension pragma unconditionally, since
+     * doing so on a device that lacks it would itself fail the build).
+     * Refuse cleanly here instead of letting clBuildProgram fail below
+     * with an opaque driver build log -- gpu-buf/cpu don't need this
+     * extension and are unaffected. */
+    if ((mode == GPU_MODE_IMAGE || mode == GPU_MODE_OPT) && !cl->has_3d_image_writes) {
+        fprintf(stderr,
+            "This device does not support cl_khr_3d_image_writes, which "
+            "gpu-img/gpu-opt require. Use --mode gpu-buf or --mode cpu "
+            "instead.\n");
+        exit(1);
     }
 
     cl->ctx   = clCreateContext(NULL, 1, &cl->device, NULL, NULL, &err);
@@ -243,8 +294,16 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
     {
         char *src_bp  = load_source(path_bp_buf);
         char *src_fp  = load_source(path_fp_buf);
+        REQUIRE_SRC(src_bp); REQUIRE_SRC(src_fp);
         char *combined = concat_src(src_bp, src_fp);
-        cl->prog_buffer = build_program(cl->ctx, cl->device, combined);
+        /* vol_update_img is #ifdef-gated in bp_buffer.cl on
+         * HAVE_3D_IMAGE_WRITES (see gpu_init's extension check above) --
+         * on a device without cl_khr_3d_image_writes this keeps the
+         * unconditionally-built buffer program (needed by gpu-buf and
+         * cpu-only runs) compiling cleanly, at the cost of that one
+         * kernel not existing (guarded below). */
+        cl->prog_buffer = build_program_opts(cl->ctx, cl->device, combined,
+            cl->has_3d_image_writes ? "-DHAVE_3D_IMAGE_WRITES" : "");
         free(src_bp); free(src_fp); free(combined);
 
         cl->k_bp_buf = clCreateKernel(cl->prog_buffer, "bp_buffer", &err);
@@ -259,8 +318,13 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         CL_CHECK(err, "preprocess_proj");
         cl->k_divide_preproc_img = clCreateKernel(cl->prog_buffer, "divide_preprocess_img", &err);
         CL_CHECK(err, "divide_preprocess_img");
-        cl->k_update_img = clCreateKernel(cl->prog_buffer, "vol_update_img", &err);
-        CL_CHECK(err, "vol_update_img");
+        /* Only exists in the compiled program when HAVE_3D_IMAGE_WRITES
+         * was defined; the early exit above guarantees gpu-img/gpu-opt
+         * never reach this with the flag unset, and gpu-buf/cpu never
+         * launch this kernel, so NULL here is safe either way. */
+        cl->k_update_img = cl->has_3d_image_writes
+            ? clCreateKernel(cl->prog_buffer, "vol_update_img", &err) : NULL;
+        if (cl->has_3d_image_writes) CL_CHECK(err, "vol_update_img");
         cl->k_cone_hw  = clCreateKernel(cl->prog_buffer, "cone_weight_hw", &err);
         CL_CHECK(err, "cone_weight_hw");
     }
@@ -269,9 +333,17 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
     if (mode == GPU_MODE_IMAGE || mode == GPU_MODE_OPT) {
         char *src_bp  = load_source(path_bp_img);
         char *src_fp  = load_source(path_fp_img);
+        REQUIRE_SRC(src_bp); REQUIRE_SRC(src_fp);
         char *combined = concat_src(src_bp, src_fp);
-        cl->prog_image = build_program_opts(cl->ctx, cl->device, combined,
-                                            cl->has_fp16 ? "-DHAVE_FP16" : "");
+        /* has_3d_image_writes is guaranteed true here (gpu_init exits
+         * earlier otherwise), but pass it explicitly rather than assume
+         * -- bp_image.cl's bp_image_update is gated on the same macro
+         * as bp_buffer.cl's vol_update_img. */
+        char img_opts[64];
+        snprintf(img_opts, sizeof(img_opts), "%s %s",
+                 cl->has_fp16 ? "-DHAVE_FP16" : "",
+                 cl->has_3d_image_writes ? "-DHAVE_3D_IMAGE_WRITES" : "");
+        cl->prog_image = build_program_opts(cl->ctx, cl->device, combined, img_opts);
         free(src_bp); free(src_fp); free(combined);
 
         cl->k_bp_img = clCreateKernel(cl->prog_image, "bp_image", &err);
@@ -279,9 +351,12 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         cl->k_fp_img = clCreateKernel(cl->prog_image, "fp_image", &err);
         CL_CHECK(err, "fp_image");
         /* bp_image + vol_update_img fusion -- created here regardless of
-         * IMAGE vs OPT (cheap), but only ever launched from gpu-img. */
-        cl->k_bp_img_update = clCreateKernel(cl->prog_image, "bp_image_update", &err);
-        CL_CHECK(err, "bp_image_update");
+         * IMAGE vs OPT (cheap), but only ever launched from gpu-img.
+         * Only exists in the compiled program when HAVE_3D_IMAGE_WRITES
+         * was defined; guaranteed set here by the early exit above. */
+        cl->k_bp_img_update = cl->has_3d_image_writes
+            ? clCreateKernel(cl->prog_image, "bp_image_update", &err) : NULL;
+        if (cl->has_3d_image_writes) CL_CHECK(err, "bp_image_update");
         /* float_to_half only exists in the compiled program when
          * HAVE_FP16 was defined (see kernels/fp_image.cl's #ifdef) --
          * k_f2h stays NULL on devices without cl_khr_fp16, and --half
@@ -295,8 +370,15 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
         char *src_bp   = load_source(path_bp_opt);
         /* also need utility kernels (cone_weight, proj_divide, vol_update) */
         char *src_util = load_source(path_bp_buf);
+        REQUIRE_SRC(src_bp); REQUIRE_SRC(src_util);
         char *combined = concat_src(src_bp, src_util);
-        cl->prog_opt = build_program(cl->ctx, cl->device, combined);
+        /* src_util is bp_buffer.cl, which declares the same
+         * HAVE_3D_IMAGE_WRITES-gated vol_update_img as the prog_buffer
+         * build above -- pass the same flag so it compiles consistently.
+         * (has_3d_image_writes is guaranteed true here; gpu_init exits
+         * earlier for GPU_MODE_OPT otherwise.) */
+        cl->prog_opt = build_program_opts(cl->ctx, cl->device, combined,
+            cl->has_3d_image_writes ? "-DHAVE_3D_IMAGE_WRITES" : "");
         free(src_bp); free(src_util); free(combined);
 
         cl->k_bp_opt   = clCreateKernel(cl->prog_opt, "bp_opt", &err);
@@ -338,13 +420,14 @@ void gpu_cleanup(CLState *cl)
         clReleaseKernel(cl->k_bp_buf); clReleaseKernel(cl->k_fp_buf);
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
         clReleaseKernel(cl->k_preproc);
-        clReleaseKernel(cl->k_divide_preproc_img); clReleaseKernel(cl->k_update_img);
+        clReleaseKernel(cl->k_divide_preproc_img);
+        if (cl->k_update_img) clReleaseKernel(cl->k_update_img);
         clReleaseKernel(cl->k_cone_hw);
         clReleaseProgram(cl->prog_buffer);
     }
     if (cl->mode == GPU_MODE_IMAGE) {
         clReleaseKernel(cl->k_bp_img); clReleaseKernel(cl->k_fp_img);
-        clReleaseKernel(cl->k_bp_img_update);
+        if (cl->k_bp_img_update) clReleaseKernel(cl->k_bp_img_update);
         if (cl->k_f2h) clReleaseKernel(cl->k_f2h);
         clReleaseProgram(cl->prog_image);
     }
@@ -352,10 +435,11 @@ void gpu_cleanup(CLState *cl)
         clReleaseKernel(cl->k_bp_opt);
         clReleaseKernel(cl->k_divide); clReleaseKernel(cl->k_update);
         clReleaseKernel(cl->k_preproc);
-        clReleaseKernel(cl->k_divide_preproc_img); clReleaseKernel(cl->k_update_img);
+        clReleaseKernel(cl->k_divide_preproc_img);
+        if (cl->k_update_img) clReleaseKernel(cl->k_update_img);
         clReleaseKernel(cl->k_cone_hw);
         clReleaseKernel(cl->k_fp_img); clReleaseKernel(cl->k_bp_img);
-        clReleaseKernel(cl->k_bp_img_update);
+        if (cl->k_bp_img_update) clReleaseKernel(cl->k_bp_img_update);
         if (cl->k_f2h) clReleaseKernel(cl->k_f2h);
         clReleaseProgram(cl->prog_opt);
         clReleaseProgram(cl->prog_image);
@@ -388,8 +472,9 @@ static void run_preprocess(CLState *cl, const CBpara *p,
     clSetKernelArg(k, 5, sizeof(float),  &SDD);
     clSetKernelArg(k, 6, sizeof(float),  &px);
 
-    size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
     size_t lws[3] = {16, 16, 1};
+    clamp_lws_to_device(k, cl->device, lws);
+    size_t gws[3] = {(size_t)W, (size_t)H, (size_t)np};
     for (int d = 0; d < 3; d++)
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
@@ -426,8 +511,9 @@ static void run_divide_preprocess_img(CLState *cl, const CBpara *p,
     clSetKernelArg(k, 8, sizeof(int),    &ip_start);
     clSetKernelArg(k, 9, sizeof(int),    &ip_count);
 
-    size_t gws[3] = {(size_t)W, (size_t)H, (size_t)ip_count};
     size_t lws[3] = {16, 16, 1};
+    clamp_lws_to_device(k, cl->device, lws);
+    size_t gws[3] = {(size_t)W, (size_t)H, (size_t)ip_count};
     for (int d = 0; d < 3; d++)
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     size_t offset[3] = {0, 0, (size_t)ip_start};
@@ -480,6 +566,7 @@ static void run_bp_buffer(CLState *cl, const CBpara *p,
             }
         }
     }
+    clamp_lws_to_device(k, cl->device, lws);
     size_t gws_full[3] = {(size_t)Ny, (size_t)Nxz, (size_t)Nxz};
     for (int d=0;d<3;d++)
         if (gws_full[d] % lws[d]) gws_full[d] += lws[d] - gws_full[d] % lws[d];
@@ -590,6 +677,7 @@ static void run_fp_buffer(CLState *cl, const CBpara *p,
             lws[0]=a; lws[1]=b; lws[2]=c;
         }
     }
+    clamp_lws_to_device(k, cl->device, lws);
     size_t gws_full[3] = {(size_t)W, (size_t)H, (size_t)ip_count};
     for (int d=0;d<3;d++)
         if (gws_full[d] % lws[d]) gws_full[d] += lws[d] - gws_full[d] % lws[d];
@@ -755,6 +843,7 @@ static void run_diag_repeat_slab(CLState *cl, const CBpara *p,
             lws[0]=a; lws[1]=b; lws[2]=c;
         }
     }
+    clamp_lws_to_device(k, cl->device, lws);
     size_t gws_full[3] = {(size_t)W, (size_t)H, (size_t)np};
     for (int d=0; d<2; d++)
         if (gws_full[d] % lws[d]) gws_full[d] += lws[d] - gws_full[d] % lws[d];
@@ -838,6 +927,7 @@ static void run_bp_image(CLState *cl, const CBpara *p,
             }
         }
     }
+    clamp_lws_to_device(k, cl->device, lws);
     for (int d=0;d<3;d++) {
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     }
@@ -919,6 +1009,7 @@ static void run_fp_image(CLState *cl, const CBpara *p,
             lws[0]=a; lws[1]=b; lws[2]=c;
         }
     }
+    clamp_lws_to_device(k, cl->device, lws);
     for (int d=0;d<3;d++) {
         if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
     }
@@ -1110,9 +1201,11 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     for (int epoch = 0; epoch < epochs; epoch++) {
         double t_ep = get_time_sec();
 
-        if (conv_log)
-            clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
+        if (conv_log) {
+            err = clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
                                  (size_t)vol_n * sizeof(float), v_prev_host, 0, NULL, NULL);
+            CL_CHECK(err, "ReadBuffer v_prev_host");
+        }
 
         /* forward project: b = F(v0). OSEM is implemented in
          * reconstruct_gpu_opt only; this path always uses the full
@@ -1144,9 +1237,11 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
             run_fp_image(cl, p, vol_img, d_proj_b, 0, np);
         }
 
-        if (conv_log)
-            clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
+        if (conv_log) {
+            err = clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
                                  (size_t)proj_n * sizeof(float), b_host, 0, NULL, NULL);
+            CL_CHECK(err, "ReadBuffer b_host");
+        }
 
         /* bp_ratio = bp(ratio_prep). No zero-fill needed: bp kernels
          * unconditionally overwrite every voxel in range.
@@ -1193,6 +1288,7 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
                     }
                 }
             }
+            clamp_lws_to_device(k, cl->device, lws);
             for (int d=0;d<3;d++)
                 if (gws[d] % lws[d]) gws[d] += lws[d] - gws[d] % lws[d];
             err = clEnqueueNDRangeKernel(cl->queue, k, 3, NULL, gws, lws, 0, NULL, NULL);
@@ -1234,8 +1330,9 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
         printf("  epoch %3d/%d  %.3f s\n", epoch+1, epochs, t_ep_total);
 
         if (conv_log) {
-            clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
+            err = clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
                                  (size_t)vol_n * sizeof(float), v_cur_host, 0, NULL, NULL);
+            CL_CHECK(err, "ReadBuffer v_cur_host");
             log_convergence(conv_log, epoch, t_ep_total,
                              proj_measured, b_host, (size_t)proj_n,
                              v_cur_host, (epoch == 0) ? NULL : v_prev_host, (size_t)vol_n);
@@ -1243,7 +1340,8 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     }
 
     /* Read back result */
-    clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
+    err = clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
+    CL_CHECK(err, "ReadBuffer final volume");
 
     if (b_host)      free(b_host);
     if (v_prev_host) free(v_prev_host);
@@ -1410,6 +1508,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                     }
                 }
             }
+            clamp_lws_to_device(k, cl->device, lws);
             for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
             err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
             CL_CHECK(err,"bp_opt ones");
@@ -1480,9 +1579,11 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
             int ip_start = subset_start[s];
             int ip_count = subset_count[s];
 
-            if (conv_log && s == 0)
-                clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
+            if (conv_log && s == 0) {
+                err = clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
                                      (size_t)vol_n * sizeof(float), v_prev_host, 0, NULL, NULL);
+                CL_CHECK(err, "ReadBuffer v_prev_host (opt)");
+            }
 
             if (p->use_half_vol) {
                 /* ── float d_vol → vol_img (GPU-side, no PCIe) ── */
@@ -1504,9 +1605,11 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
              * before the loop and kept current by vol_update_img. */
             run_fp_image(cl, p, vol_img, d_proj_b, ip_start, ip_count);
 
-            if (conv_log && s == 0)
-                clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
+            if (conv_log && s == 0) {
+                err = clEnqueueReadBuffer(cl->queue, d_proj_b, CL_TRUE, 0,
                                      (size_t)proj_n * sizeof(float), b_host, 0, NULL, NULL);
+                CL_CHECK(err, "ReadBuffer b_host (opt)");
+            }
 
             /* Fuses ratio=p0/b with cone_weight+flip+transpose+write-to-
              * image into one kernel -- no intermediate buffer, no
@@ -1545,6 +1648,7 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                         }
                     }
                 }
+                clamp_lws_to_device(k, cl->device, lws);
                 for(int d=0;d<3;d++) if(gws[d]%lws[d]) gws[d]+=lws[d]-gws[d]%lws[d];
                 err=clEnqueueNDRangeKernel(cl->queue,k,3,NULL,gws,lws,0,NULL,NULL);
                 CL_CHECK(err,"bp_opt ratio");
@@ -1584,8 +1688,9 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
                (S>1) ? "  (S subsets)" : "");
 
         if (conv_log) {
-            clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
+            err = clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0,
                                  (size_t)vol_n * sizeof(float), v_cur_host, 0, NULL, NULL);
+            CL_CHECK(err, "ReadBuffer v_cur_host (opt)");
             log_convergence(conv_log, epoch, t_ep_total,
                              proj_measured, b_host, (size_t)proj_n,
                              v_cur_host, (epoch == 0) ? NULL : v_prev_host, (size_t)vol_n);
@@ -1595,7 +1700,8 @@ void reconstruct_gpu_opt(CLState *cl, const CBpara *p,
     if (d_vol_half) clReleaseMemObject(d_vol_half);
     clReleaseMemObject(ratio_img);
 
-    clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
+    err = clEnqueueReadBuffer(cl->queue, d_vol, CL_TRUE, 0, vol_bytes, volume, 0,NULL,NULL);
+    CL_CHECK(err, "ReadBuffer final volume (opt)");
 
     if (b_host)      free(b_host);
     if (v_prev_host) free(v_prev_host);

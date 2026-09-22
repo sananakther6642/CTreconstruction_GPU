@@ -13,7 +13,7 @@ static void print_usage(const char *prog)
         "Usage: %s --data <file.hdf5> --out <out.hdf5> --mode <cpu|gpu-buf|gpu-img|gpu-opt>\n"
         "           [--epochs N]    (default: 100)\n"
         "           [--samples N]   (ray samples per projection, default: volume Nxz)\n"
-        "           [--kernels <kernel_dir>]  (default: ../kernels)\n"
+        "           [--kernels <kernel_dir>]  (default: kernels, relative to CWD)\n"
         "           [--half]        (use half-precision vol_img texture; default: float32)\n"
         "           [--op fp|bp]    (component test: run a single fp or bp call, CPU only,\n"
         "                            on all-ones input; dumps to <out> instead of full MLEM)\n"
@@ -37,7 +37,7 @@ int main(int argc, char **argv)
     const char *data_path    = NULL;
     const char *out_path     = NULL;
     const char *mode_str     = "gpu-buf";
-    const char *kernel_dir   = "../kernels";
+    const char *kernel_dir   = "kernels";
     int         epochs       = 100;
     int         n_samples    = 0;  /* 0 = auto (Nxz) */
     int         use_half     = 0;  /* default: float32 vol_img (accurate) */

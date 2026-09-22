@@ -50,6 +50,10 @@ typedef struct {
 
     GPUMode mode;
     int has_fp16; /* cl_khr_fp16 support -- gates --half; false on e.g. NVIDIA GTX 680 */
+    int has_3d_image_writes; /* cl_khr_3d_image_writes -- gates the vol_update_img/
+                               * bp_image_update fused kernels; both known test GPUs
+                               * have it, but a device without it must not build
+                               * kernels that need it. */
 } CLState;
 
 /* Initialize OpenCL, compile kernels. Returns 0 on success. */

@@ -269,9 +269,12 @@ __kernel void vol_update(
  * vol_update_img — same update as vol_update, but also writes the result
  * directly into vol_img (a 3D image), eliminating the separate
  * buffer-to-image copy the epoch loop used to do before fp_image's next
- * call. Requires cl_khr_3d_image_writes (checked at runtime in
- * ct_gpu.c). float32 mode only; --half still uses the separate
- * float_to_half + copy path since it needs an actual format conversion.
+ * call. Requires cl_khr_3d_image_writes -- gated on HAVE_3D_IMAGE_WRITES,
+ * defined by ct_gpu.c only when the device reports the extension, so this
+ * kernel (and the pragma below) are absent from the compiled program on a
+ * device that lacks it, rather than failing that device's whole build.
+ * float32 mode only; --half still uses the separate float_to_half + copy
+ * path since it needs an actual format conversion.
  *
  * Flat buffer index j decomposes as j = x*(Nxz*Ny) + y*Ny + z; the image
  * is (width=Ny/z-axis, height=Nxz/y-axis, depth=Nxz/x-axis), matching
@@ -279,6 +282,8 @@ __kernel void vol_update(
  * consecutive flat indices share (x,y) and differ only in z -- safe to
  * decompose one vec4 into four scalar write_imagef calls.
  */
+#ifdef HAVE_3D_IMAGE_WRITES
+#pragma OPENCL EXTENSION cl_khr_3d_image_writes : enable
 __kernel void vol_update_img(
     __global       float *volume,
     __global const float *bp_ratio,
@@ -326,3 +331,4 @@ __kernel void vol_update_img(
         }
     }
 }
+#endif /* HAVE_3D_IMAGE_WRITES */
