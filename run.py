@@ -13,11 +13,6 @@ import numpy as np
 
 from backend import KERNEL_DIR, _backend
 
-# Matches the Makefile's DATA256 default -- the shared dataset path on
-# the lab machines, not a path relative to the repo (a fresh clone has
-# no proj_256_75.hdf5 sitting in its working directory).
-DEFAULT_DATA = "/lgrp/edu-2026-1-gpulab/proj_256_75.hdf5"
-
 
 def _scalar(f, key):
     """load_hdf5/save_hdf5 (src/utils.c) store scalars as shape-(1,)
@@ -30,7 +25,7 @@ def _scalar(f, key):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data", default=DEFAULT_DATA, help="input HDF5 path")
+    ap.add_argument("--data", required=True, help="input HDF5 path")
     ap.add_argument("--out", default="output_py.hdf5", help="output HDF5 path")
     ap.add_argument(
         "--mode",
