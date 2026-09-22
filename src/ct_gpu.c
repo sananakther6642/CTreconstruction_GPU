@@ -1048,9 +1048,9 @@ void reconstruct_gpu(CLState *cl, const CBpara *p,
     if (cl->mode == GPU_MODE_IMAGE) {
         /* persistent vol image3D — CL_HALF_FLOAT halves texture bandwidth but
          * quantizes to ~3 decimal digits; use --half to opt in, default float32 */
-        cl_image_format vol_fmt_img = p->use_half_vol
-            ? (cl_image_format){CL_R, CL_HALF_FLOAT}
-            : (cl_image_format){CL_R, CL_FLOAT};
+        cl_image_format vol_fmt_img;
+        vol_fmt_img.image_channel_order = CL_R;
+        vol_fmt_img.image_channel_data_type = p->use_half_vol ? CL_HALF_FLOAT : CL_FLOAT;
         cl_image_desc vdesc={0};
         vdesc.image_type=CL_MEM_OBJECT_IMAGE3D;
         vdesc.image_width=(size_t)Ny; vdesc.image_height=(size_t)Nxz; vdesc.image_depth=(size_t)Nxz;
