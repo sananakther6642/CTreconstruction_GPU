@@ -152,13 +152,9 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
     cl_int err;
     cl->mode = mode;
 
-    /* Platform + device: scan every installed platform for a GPU device
-     * rather than assuming platform 0 has one (a CPU-only or unrelated
-     * ICD can be registered first, e.g. an Intel OpenCL runtime alongside
-     * the vendor GPU driver -- clGetDeviceIDs(platform[0], ...) then
-     * fails with CL_DEVICE_NOT_FOUND (-1) even though a GPU exists on a
-     * later platform). Falls back to CL_DEVICE_TYPE_ALL, then exits with
-     * a clear message rather than a bare OpenCL error code. */
+    /* Scan every platform for a GPU device instead of assuming platform 0
+     * has one (fixes CL_DEVICE_NOT_FOUND on machines with a CPU-only ICD
+     * registered first). Falls back to any device type before giving up. */
     {
         cl_uint n_platforms = 0;
         err = clGetPlatformIDs(0, NULL, &n_platforms);
@@ -182,10 +178,6 @@ int gpu_init(CLState *cl, GPUMode mode, const char *kernel_dir)
             }
         }
         if (!found) {
-            /* No GPU device on any platform -- try any device type at all
-             * (accelerator/custom) before giving up, so a non-GPU OpenCL
-             * device still gets a specific error instead of silently
-             * picking one that can't run these kernels. */
             for (cl_uint i = 0; i < n_platforms && !found; i++) {
                 cl_uint n_devices = 0;
                 if (clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_ALL, 1,
